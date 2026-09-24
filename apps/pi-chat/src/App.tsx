@@ -1,9 +1,8 @@
 import {
   Activity,
   AlertTriangle,
-  BarChart3,
-  Bot,
   Check,
+  ChevronDown,
   ChevronRight,
   CircleDot,
   Clock3,
@@ -12,15 +11,16 @@ import {
   GitBranch,
   Link2,
   Network,
+  PanelRight,
   Plus,
   Search,
   Send,
-  Settings,
   Sparkles,
   TimerReset,
   Wrench,
+  BarChart3,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import type {
   AgentKind,
@@ -79,9 +79,10 @@ function messageTime(iso: string) {
 export default function App() {
   const [snapshot, setSnapshot] = useState<InvestigationSnapshot>();
   const [conversations, setConversations] = useState(fallbackConversations);
-  const [selectedTab, setSelectedTab] = useState("对话与过程");
   const [connected, setConnected] = useState(false);
   const [loadError, setLoadError] = useState<string>();
+  const [rightTab, setRightTab] = useState<"overview" | "tools" | "evidence">("overview");
+  const [draft, setDraft] = useState("");
 
   useEffect(() => {
     let disposed = false;
@@ -101,9 +102,7 @@ export default function App() {
         if (initialSnapshot.status === "idle") void runInvestigation(incidentId);
       })
       .catch((error: unknown) => {
-        if (!disposed) {
-          setLoadError(error instanceof Error ? error.message : String(error));
-        }
+        if (!disposed) setLoadError(error instanceof Error ? error.message : String(error));
       });
 
     return () => {
@@ -117,23 +116,28 @@ export default function App() {
   const evidence = snapshot?.evidence ?? [];
   const toolRuns = snapshot?.toolRuns ?? [];
   const running = snapshot?.status === "running";
-  const showConclusion = Boolean(snapshot?.conclusion);
-  const phase = snapshot?.phase ?? 1;
   const doneCount = agents.filter((agent) => agent.state === "done").length;
   const runningCount = agents.filter((agent) => agent.state === "running").length;
+  const planMessages = snapshot?.messages.filter((message) => message.kind === "plan") ?? [];
+  const followupMessages = snapshot?.messages.filter((message) => message.kind !== "plan") ?? [];
 
   const investigationProgress = useMemo(() => {
-    if (showConclusion) return 100;
-    if (doneCount === 4) return 86;
-    if (phase === 3) return 78;
-    return Math.max(12, doneCount * 18 + runningCount * 8);
-  }, [doneCount, phase, runningCount, showConclusion]);
+    if (snapshot?.conclusion) return 100;
+    if (doneCount === 4) return 88;
+    return Math.max(10, doneCount * 20 + runningCount * 9);
+  }, [doneCount, runningCount, snapshot?.conclusion]);
 
   const rerun = () => {
     setLoadError(undefined);
     void runInvestigation(incidentId).catch((error: unknown) => {
       setLoadError(error instanceof Error ? error.message : String(error));
     });
+  };
+
+  const submit = () => {
+    if (!draft.trim() || running) return;
+    setDraft("");
+    rerun();
   };
 
   if (!snapshot) {
@@ -149,331 +153,224 @@ export default function App() {
   }
 
   return (
-    <div className="rca-app">
-      <header className="global-header">
-        <div className="brand">
-          <div className="brand-mark"><Activity size={18} /></div>
-          <strong>RCA 多 Agent 故障排查系统</strong>
+    <div className="chat-app">
+      <aside className="conversation-sidebar">
+        <div className="sidebar-brand">
+          <div className="brand-mark"><Activity size={17} /></div>
+          <div><strong>RCA Assistant</strong><span>Multi-Agent</span></div>
         </div>
-        <nav className="global-nav">
-          <button className="nav-item active"><Sparkles size={16} />排查</button>
-          <button className="nav-item"><Database size={16} />知识库</button>
-          <button className="nav-item"><Network size={16} />服务拓扑</button>
-          <button className="nav-item"><Settings size={16} />设置</button>
-        </nav>
-        <div className="model-badge">
-          Fake LLM <span>Server Orchestrated</span>
-          <i className={connected ? "connection-dot online" : "connection-dot"} />
-        </div>
-      </header>
 
-      <div className="workspace">
-        <aside className="history-panel">
-          <button className="primary-new"><Plus size={17} /> 新建排查</button>
-          <div className="history-title"><span>历史会话</span><Search size={16} /></div>
-          <div className="history-list">
-            {conversations.map((item) => (
-              <button key={item.id} className={`history-item ${item.id === incidentId ? "active" : ""}`}>
-                <div className="history-item-title">{item.title}</div>
-                <div className="history-meta">
-                  <span>{item.time}</span>
-                  <span className={`history-status ${item.status}`}>{item.status}</span>
-                </div>
-              </button>
-            ))}
-          </div>
-        </aside>
-
-        <main className="investigation-panel">
-          <section className="incident-header">
-            <div>
-              <div className="incident-title-row">
-                <h1>{snapshot.title}</h1>
-                <span className="severity">{snapshot.severity}</span>
-              </div>
-              <div className="incident-window"><Clock3 size={14} /> {snapshot.window}</div>
-            </div>
-            <button className="ghost-action" onClick={rerun} disabled={running}>
-              <TimerReset size={16} /> {running ? "Server 调查运行中" : "重新运行 Fake 调查"}
+        <button className="new-chat"><Plus size={16} /> 新建排查</button>
+        <div className="sidebar-section-title"><span>历史会话</span><Search size={14} /></div>
+        <div className="conversation-list">
+          {conversations.map((item) => (
+            <button key={item.id} className={`conversation-item ${item.id === incidentId ? "active" : ""}`}>
+              <strong>{item.title}</strong>
+              <span><i className={item.status === "已完成" ? "finished" : "running"} />{item.time}</span>
             </button>
-          </section>
+          ))}
+        </div>
+      </aside>
 
-          <div className="content-tabs">
-            {["对话与过程", "时间线", "工具调用", "证据", "配置"].map((tab) => (
-              <button key={tab} className={selectedTab === tab ? "active" : ""} onClick={() => setSelectedTab(tab)}>{tab}</button>
-            ))}
-          </div>
-
-          <div className="scroll-area">
-            {loadError && <div className="runtime-error">Runtime: {loadError}</div>}
-
-            {selectedTab === "工具调用" ? (
-              <ToolRunsPanel toolRuns={toolRuns} />
-            ) : selectedTab === "证据" ? (
-              <EvidencePanel evidence={evidence} />
-            ) : selectedTab === "时间线" ? (
-              <TimelinePanel snapshot={snapshot} />
-            ) : selectedTab === "配置" ? (
-              <RuntimeConfigPanel connected={connected} />
-            ) : (
-              <>
-                <div className="message user-message">
-                  <div className="avatar user-avatar">U</div>
-                  <div>
-                    <div className="speaker">用户 <span>10:24</span></div>
-                    <div className="message-bubble">order-service 从 10:31 开始 5xx 大幅上升，帮我分析一下可能的原因。</div>
-                  </div>
-                </div>
-
-                {snapshot.messages.map((message) => (
-                  <div className="message" key={message.id}>
-                    <div className="avatar coordinator-avatar">
-                      {message.kind === "conclusion" ? <Check size={17} /> : message.kind === "finding" ? <Bot size={17} /> : <Sparkles size={17} />}
-                    </div>
-                    <div className="message-body">
-                      <div className="speaker">RCA Coordinator <span>{messageTime(message.createdAt)}</span></div>
-                      <div className={`coordinator-card ${message.kind !== "plan" ? "evidence-summary" : ""}`}>
-                        <p>{message.text}</p>
-                        {message.kind === "plan" && (
-                          <ol>
-                            <li>第一轮并行分析日志错误模式与关键指标</li>
-                            <li>根据第一轮 Evidence 更新候选假设</li>
-                            <li>动态决定是否追加 Trace / Change Agent</li>
-                            <li>汇聚证据链并输出可解释 RCA 结论</li>
-                          </ol>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-
-                <section className="agent-execution-card">
-                  <div className="section-heading">
-                    <div><CircleDot size={17} /> 多 Agent 调查任务</div>
-                    <span>{running ? "Server fan-out / fan-in 执行中" : doneCount === 4 ? "Agent 结果已汇聚" : "等待执行"}</span>
-                  </div>
-                  <div className="agent-list">
-                    {agents.map((agent) => {
-                      const Icon = agentIcon[agent.id];
-                      return (
-                        <div className={`agent-row ${agent.state}`} key={agent.id}>
-                          <div className={`agent-icon ${agent.id}`}><Icon size={17} /></div>
-                          <div className="agent-main">
-                            <div className="agent-topline">
-                              <strong>{agent.name}</strong>
-                              <span className={`agent-status ${agent.state}`}>{statusLabel(agent.state)}</span>
-                            </div>
-                            <span className="agent-desc">{agent.state === "done" ? agent.result : agent.description}</span>
-                          </div>
-                          <div className="progress-track"><span style={{ width: `${agent.progress}%` }} /></div>
-                          <ChevronRight size={17} className="chevron" />
-                        </div>
-                      );
-                    })}
-                  </div>
-                </section>
-
-                {snapshot.conclusion && (
-                  <section className="conclusion-card">
-                    <div className="conclusion-title"><Check size={18} /> RCA 初步结论</div>
-                    <p><strong>根因：</strong>{snapshot.conclusion.rootCause}</p>
-                    <div className="causal-chain">
-                      {snapshot.conclusion.causalChain.map((item, index) => (
-                        <span className="chain-fragment" key={item}>
-                          <span>{item}</span>
-                          {index < snapshot.conclusion!.causalChain.length - 1 && <ChevronRight size={15} />}
-                        </span>
-                      ))}
-                    </div>
-                  </section>
-                )}
-              </>
-            )}
-          </div>
-
-          <div className="composer">
-            <input placeholder="输入你的问题，或描述故障现象..." />
-            <div className="composer-tools">
-              <button><Link2 size={15} /> 附件</button>
-              <button><Wrench size={15} /> 服务</button>
-              <button><Clock3 size={15} /> 时间范围</button>
-              <button className="send"><Send size={16} /></button>
+      <section className="chat-shell">
+        <header className="chat-topbar">
+          <div>
+            <div className="chat-title-row">
+              <h1>{snapshot.title}</h1>
+              <span className="severity">{snapshot.severity}</span>
             </div>
+            <span className="chat-subtitle"><Clock3 size={12} /> {snapshot.window}</span>
           </div>
+          <div className="topbar-actions">
+            <span className="runtime-pill">Fake LLM <i className={connected ? "connection-dot online" : "connection-dot"} /></span>
+            <button className="icon-text-button" onClick={rerun} disabled={running}><TimerReset size={15} />{running ? "排查中" : "重新运行"}</button>
+          </div>
+        </header>
+
+        <main className="conversation-stream">
+          {loadError && <div className="runtime-error">Runtime: {loadError}</div>}
+
+          <MessageRow time="10:24">
+            order-service 从 10:31 开始 5xx 大幅上升，帮我分析一下可能的原因。
+          </MessageRow>
+
+          {planMessages.map((message) => (
+            <CoordinatorMessage key={message.id} time={messageTime(message.createdAt)}>
+              <p>{message.text}</p>
+              <div className="plan-points">
+                <span>先并行看日志和指标</span>
+                <span>根据 Evidence 收敛假设</span>
+                <span>必要时继续查 Trace / Change</span>
+              </div>
+            </CoordinatorMessage>
+          ))}
+
+          <div className="inline-agent-group">
+            <div className="inline-agent-group-title">
+              <span><CircleDot size={14} /> 并行调查</span>
+              <small>{running ? "Coordinator 正在调度" : doneCount === 4 ? "4 个 Agent 已完成" : `${doneCount}/4 已完成`}</small>
+            </div>
+            {agents.map((agent) => {
+              const tool = toolRuns.find((item) => item.agent === agent.id);
+              const agentEvidence = evidence.find((item) => item.type === agent.id);
+              return <AgentTaskCard key={agent.id} agent={agent} tool={tool} evidence={agentEvidence} />;
+            })}
+          </div>
+
+          {followupMessages.map((message) => (
+            <CoordinatorMessage key={message.id} time={messageTime(message.createdAt)} conclusion={message.kind === "conclusion"}>
+              <p>{message.text}</p>
+            </CoordinatorMessage>
+          ))}
+
+          {snapshot.conclusion && (
+            <section className="inline-conclusion">
+              <div className="inline-conclusion-title"><Check size={16} /> RCA 结论</div>
+              <p><strong>根因：</strong>{snapshot.conclusion.rootCause}</p>
+              <div className="causal-chain">
+                {snapshot.conclusion.causalChain.map((item, index) => (
+                  <span className="chain-fragment" key={item}>
+                    <span>{item}</span>
+                    {index < snapshot.conclusion!.causalChain.length - 1 && <ChevronRight size={14} />}
+                  </span>
+                ))}
+              </div>
+            </section>
+          )}
+          <div className="bottom-anchor" />
         </main>
 
-        <aside className="insight-panel">
-          <div className="right-tabs"><button className="active">调查概览</button><button>服务关系</button><button>相关图表</button></div>
-
-          <section className="side-card progress-card">
-            <div className="side-card-title">调查进度 <span>{investigationProgress}%</span></div>
-            <div className="stage-line">
-              {[
-                [1, "收集证据"], [2, "分析验证"], [3, "定位根因"], [4, "输出结论"],
-              ].map(([index, label], i) => (
-                <div className={`stage ${phase >= Number(index) ? "active" : ""}`} key={String(label)}>
-                  <div className="stage-dot">{phase > Number(index) ? <Check size={12} /> : i + 1}</div>
-                  <span>{label}</span>
-                </div>
-              ))}
+        <form className="composer" onSubmit={(event) => { event.preventDefault(); submit(); }}>
+          <textarea
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            placeholder="继续追问，或描述新的故障现象…"
+            rows={2}
+          />
+          <div className="composer-footer">
+            <div className="composer-tools">
+              <button type="button"><Link2 size={14} />附件</button>
+              <button type="button"><Wrench size={14} />服务</button>
+              <button type="button"><Clock3 size={14} />时间范围</button>
             </div>
-          </section>
+            <button className="send-button" type="submit" disabled={!draft.trim() || running} aria-label="发送"><Send size={16} /></button>
+          </div>
+        </form>
+      </section>
 
-          <section className="side-card">
-            <div className="side-card-title">Agent 状态 <span>{doneCount}/4</span></div>
-            <div className="agent-mini-list">
-              {agents.map((agent) => {
-                const Icon = agentIcon[agent.id];
-                return (
-                  <div className="agent-mini" key={agent.id}>
-                    <Icon size={15} />
-                    <strong>{agent.name}</strong>
-                    <span className={`agent-status ${agent.state}`}>{statusLabel(agent.state)}</span>
+      <aside className="investigation-sidebar">
+        <div className="investigation-header"><PanelRight size={15} /><strong>调查上下文</strong></div>
+        <div className="right-tabs">
+          <button className={rightTab === "overview" ? "active" : ""} onClick={() => setRightTab("overview")}>概览</button>
+          <button className={rightTab === "tools" ? "active" : ""} onClick={() => setRightTab("tools")}>工具</button>
+          <button className={rightTab === "evidence" ? "active" : ""} onClick={() => setRightTab("evidence")}>证据</button>
+        </div>
+
+        {rightTab === "overview" && (
+          <>
+            <section className="context-section">
+              <div className="context-heading"><strong>调查进度</strong><span>{investigationProgress}%</span></div>
+              <div className="progress-bar"><span style={{ width: `${investigationProgress}%` }} /></div>
+              <div className="phase-text">{snapshot.conclusion ? "根因已收敛" : running ? "正在收集和验证证据" : "等待开始"}</div>
+            </section>
+
+            <section className="context-section">
+              <div className="context-heading"><strong>Agent</strong><span>{doneCount}/4</span></div>
+              <div className="compact-agent-list">
+                {agents.map((agent) => {
+                  const Icon = agentIcon[agent.id];
+                  return <div className="compact-agent" key={agent.id}><Icon size={13} /><span>{agent.name}</span><i className={`state-dot ${agent.state}`} title={statusLabel(agent.state)} /></div>;
+                })}
+              </div>
+            </section>
+
+            <section className="context-section">
+              <div className="context-heading"><strong>Hypotheses</strong><span>{hypotheses.length}</span></div>
+              <div className="compact-hypothesis-list">
+                {hypotheses.map((item) => (
+                  <div className="compact-hypothesis" key={item.id}>
+                    <span className="hypothesis-id">{item.id}</span>
+                    <span>{item.title}</span>
+                    <small className={item.state}>{hypothesisLabel(item.state)}</small>
                   </div>
-                );
-              })}
-            </div>
-          </section>
+                ))}
+              </div>
+            </section>
 
-          <section className="side-card">
-            <div className="side-card-title">假设列表 <button>+ 新增假设</button></div>
-            <div className="hypothesis-list">
-              {hypotheses.map((item) => (
-                <div className="hypothesis" key={item.id}>
-                  <span className="hypothesis-id">{item.id}</span>
-                  <span className="hypothesis-title">{item.title}</span>
-                  <span className={`hypothesis-status ${item.state}`}>{hypothesisLabel(item.state)}</span>
-                </div>
-              ))}
-            </div>
-          </section>
+            <section className="context-section">
+              <div className="context-heading"><strong>Key Evidence</strong><span>{evidence.length}</span></div>
+              <div className="compact-evidence-list">
+                {evidence.slice(0, 4).map((item) => <div className="compact-evidence" key={item.id}><b>{item.id}</b><span>{item.label}</span></div>)}
+                {evidence.length === 0 && <span className="context-empty">等待 Agent 生成 Evidence…</span>}
+              </div>
+            </section>
 
-          <section className="side-card">
-            <div className="side-card-title">关键证据 <button>查看全部</button></div>
-            <div className="evidence-list">
-              {evidence.map((item) => (
-                <button className="evidence-item" key={item.id} title={`${item.summary}\n${item.rawRef}`}>
-                  <span className="evidence-id">{item.id}</span>
-                  <span>{item.label}</span>
-                  <small>{item.type}</small>
-                </button>
-              ))}
-              {evidence.length === 0 && <div className="empty-evidence">等待 Agent 生成 Evidence…</div>}
-            </div>
-          </section>
+            <section className={`context-section context-result ${snapshot.conclusion ? "ready" : ""}`}>
+              <div className="context-heading"><strong><AlertTriangle size={13} /> 当前结论</strong></div>
+              <p>{snapshot.conclusion ? snapshot.conclusion.rootCause : "Coordinator 正在等待更多证据，暂不下结论。"}</p>
+            </section>
+          </>
+        )}
 
-          <section className={`side-card result-card ${showConclusion ? "ready" : ""}`}>
-            <div className="side-card-title"><AlertTriangle size={16} /> 初步结论 <span>{showConclusion ? "已生成" : "生成中"}</span></div>
-            <p>{snapshot.conclusion ? `已关联 ${snapshot.conclusion.evidenceIds.length} 条 Evidence，发布变更与连接池异常构成连续因果链。` : "Coordinator 正在汇总各 Agent 结果，并根据 Evidence 动态更新候选根因。"}</p>
-          </section>
-        </aside>
-      </div>
+        {rightTab === "tools" && <CompactTools toolRuns={toolRuns} />}
+        {rightTab === "evidence" && <CompactEvidence evidence={evidence} />}
+      </aside>
     </div>
   );
 }
 
-function ToolRunsPanel({ toolRuns }: { toolRuns: InvestigationSnapshot["toolRuns"] }) {
+function MessageRow({ time, children }: { time: string; children: ReactNode }) {
   return (
-    <section className="detail-panel">
-      <div className="detail-heading">
-        <div><Wrench size={17} /><strong>Tool Gateway 调用</strong></div>
-        <span>Agent 只通过受控 Tool 获取证据</span>
-      </div>
-      <div className="tool-run-list">
-        {toolRuns.map((tool) => (
-          <article className="tool-run-card" key={tool.id}>
-            <div className="tool-run-topline">
-              <span className={`tool-agent ${tool.agent}`}>{tool.agent.toUpperCase()}</span>
-              <strong>{tool.name}</strong>
-              <span className={`tool-run-status ${tool.status}`}>{tool.status}</span>
-              <time>{messageTime(tool.startedAt)}</time>
-            </div>
-            <pre>{JSON.stringify(tool.args, null, 2)}</pre>
+    <div className="chat-message user-chat-message">
+      <div className="avatar user-avatar">U</div>
+      <div className="message-content"><div className="speaker">用户 <span>{time}</span></div><div className="user-bubble">{children}</div></div>
+    </div>
+  );
+}
+
+function CoordinatorMessage({ time, children, conclusion = false }: { time: string; children: ReactNode; conclusion?: boolean }) {
+  return (
+    <div className="chat-message assistant-chat-message">
+      <div className={`avatar assistant-avatar ${conclusion ? "done" : ""}`}>{conclusion ? <Check size={15} /> : <Sparkles size={15} />}</div>
+      <div className="message-content"><div className="speaker">RCA Coordinator <span>{time}</span></div><div className="assistant-copy">{children}</div></div>
+    </div>
+  );
+}
+
+function AgentTaskCard({ agent, tool, evidence }: {
+  agent: InvestigationSnapshot["agents"][number];
+  tool?: InvestigationSnapshot["toolRuns"][number];
+  evidence?: InvestigationSnapshot["evidence"][number];
+}) {
+  const Icon = agentIcon[agent.id];
+  return (
+    <details className={`agent-task ${agent.state}`} open={agent.state === "running"}>
+      <summary>
+        <div className={`agent-task-icon ${agent.id}`}><Icon size={15} /></div>
+        <div className="agent-task-main">
+          <div><strong>{agent.name}</strong><span className={`agent-status ${agent.state}`}>{statusLabel(agent.state)}</span></div>
+          <p>{agent.state === "done" ? agent.result : agent.description}</p>
+        </div>
+        <ChevronDown size={15} className="details-chevron" />
+      </summary>
+      <div className="agent-task-detail">
+        {tool ? (
+          <div className="inline-tool-call">
+            <div><Wrench size={13} /><strong>{tool.name}</strong><span>{tool.status}</span></div>
+            <code>{JSON.stringify(tool.args)}</code>
             {tool.result && <p>{tool.result}</p>}
-          </article>
-        ))}
-        {toolRuns.length === 0 && <div className="detail-empty">等待 Coordinator 派发 Agent Tool Call…</div>}
-      </div>
-    </section>
-  );
-}
-
-function EvidencePanel({ evidence }: { evidence: InvestigationSnapshot["evidence"] }) {
-  return (
-    <section className="detail-panel">
-      <div className="detail-heading">
-        <div><Database size={17} /><strong>Evidence Store</strong></div>
-        <span>evidenceId / rawRef / queryKey</span>
-      </div>
-      <div className="evidence-detail-grid">
-        {evidence.map((item) => (
-          <article className="evidence-detail-card" key={item.id}>
-            <div className="evidence-detail-head">
-              <span>{item.id}</span><strong>{item.label}</strong><small>{item.source}</small>
-            </div>
-            <p>{item.summary}</p>
-            <dl>
-              <div><dt>rawRef</dt><dd>{item.rawRef}</dd></div>
-              <div><dt>queryKey</dt><dd>{item.queryKey}</dd></div>
-            </dl>
-          </article>
-        ))}
-        {evidence.length === 0 && <div className="detail-empty">Evidence 尚未生成。</div>}
-      </div>
-    </section>
-  );
-}
-
-function TimelinePanel({ snapshot }: { snapshot: InvestigationSnapshot }) {
-  const items = [
-    ...snapshot.messages.map((item) => ({
-      id: `m-${item.id}`,
-      time: item.createdAt,
-      title: `Coordinator · ${item.kind}`,
-      text: item.text,
-    })),
-    ...snapshot.evidence.map((item) => ({
-      id: `e-${item.id}`,
-      time: item.createdAt,
-      title: `${item.id} · ${item.label}`,
-      text: item.summary,
-    })),
-    ...snapshot.toolRuns.map((item) => ({
-      id: `t-${item.id}`,
-      time: item.startedAt,
-      title: `${item.agent} · ${item.name}`,
-      text: item.result ?? "Tool running…",
-    })),
-  ].sort((a, b) => a.time.localeCompare(b.time));
-
-  return (
-    <section className="detail-panel">
-      <div className="detail-heading"><div><Clock3 size={17} /><strong>调查时间线</strong></div><span>{items.length} 个事件</span></div>
-      <div className="timeline-list">
-        {items.map((item) => (
-          <div className="timeline-row" key={item.id}>
-            <time>{messageTime(item.time)}</time>
-            <span className="timeline-dot" />
-            <div><strong>{item.title}</strong><p>{item.text}</p></div>
           </div>
-        ))}
+        ) : <div className="inline-empty">等待 Tool Call…</div>}
+        {evidence && <div className="inline-evidence"><Database size={13} /><b>{evidence.id}</b><span>{evidence.label}</span><small>{evidence.type}</small></div>}
       </div>
-    </section>
+    </details>
   );
 }
 
-function RuntimeConfigPanel({ connected }: { connected: boolean }) {
-  return (
-    <section className="detail-panel">
-      <div className="detail-heading"><div><Settings size={17} /><strong>Runtime 配置</strong></div><span>Demo</span></div>
-      <div className="config-grid">
-        <div><span>Coordinator</span><strong>Server Orchestrated</strong></div>
-        <div><span>LLM Provider</span><strong>FakeLlmClient</strong></div>
-        <div><span>Tool Gateway</span><strong>FakeToolGateway</strong></div>
-        <div><span>Transport</span><strong>{connected ? "SSE Connected" : "SSE Reconnecting"}</strong></div>
-        <div><span>Parallel Strategy</span><strong>Log + Metric → Trace + Change</strong></div>
-        <div><span>Evidence Cache</span><strong>normalized queryKey</strong></div>
-      </div>
-    </section>
-  );
+function CompactTools({ toolRuns }: { toolRuns: InvestigationSnapshot["toolRuns"] }) {
+  return <div className="context-scroll-list">{toolRuns.map((tool) => <article className="compact-tool-card" key={tool.id}><div><span className={`tool-kind ${tool.agent}`}>{tool.agent}</span><strong>{tool.name}</strong></div><code>{JSON.stringify(tool.args)}</code>{tool.result && <p>{tool.result}</p>}</article>)}{toolRuns.length === 0 && <span className="context-empty">等待 Tool Call…</span>}</div>;
+}
+
+function CompactEvidence({ evidence }: { evidence: InvestigationSnapshot["evidence"] }) {
+  return <div className="context-scroll-list">{evidence.map((item) => <article className="compact-evidence-card" key={item.id}><div><b>{item.id}</b><strong>{item.label}</strong></div><p>{item.summary}</p><code>{item.rawRef}</code></article>)}{evidence.length === 0 && <span className="context-empty">Evidence 尚未生成。</span>}</div>;
 }
