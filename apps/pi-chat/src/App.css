@@ -61,6 +61,24 @@ button { cursor: pointer; }
 .plan-points { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }
 .plan-points span { padding: 4px 7px; border: 1px solid #e6e6e6; border-radius: 999px; background: #fafafa; color: #777; font-size: 8.5px; }
 
+.thinking-item { margin: -7px 0 20px 38px; border: 1px solid #e8e8e8; border-radius: 9px; background: #fbfbfb; overflow: hidden; }
+.thinking-item > summary { min-height: 38px; list-style: none; display: grid; grid-template-columns: 24px minmax(0,1fr) 18px; align-items: center; gap: 7px; padding: 5px 9px; cursor: pointer; }
+.thinking-item > summary::-webkit-details-marker { display: none; }
+.thinking-item > summary:hover { background: #f7f7f7; }
+.thinking-icon { width: 23px; height: 23px; display: grid; place-items: center; border-radius: 7px; color: #7660c7; background: #f1edff; }
+.thinking-heading { min-width: 0; display: flex; align-items: baseline; gap: 7px; }
+.thinking-heading strong { color: #555b64; font-size: 9.5px; font-weight: 700; }
+.thinking-heading small { color: #a0a4aa; font-size: 7.5px; }
+.thinking-chevron { color: #aaa; transition: transform .16s ease; }
+.thinking-item[open] .thinking-chevron { transform: rotate(180deg); }
+.thinking-body { position: relative; padding: 0 10px 10px 40px; color: #72777f; font-size: 9px; line-height: 1.65; }
+.thinking-body p { margin: 0; white-space: pre-wrap; }
+.thinking-item.streaming { border-color: #dfd8fa; background: #fdfcff; }
+.thinking-item.streaming .thinking-icon { animation: thinkingPulse 1.2s ease-in-out infinite; }
+.thinking-cursor { display: inline-block; width: 5px; height: 10px; margin: 1px 0 0 3px; vertical-align: text-bottom; border-radius: 1px; background: #8d79d5; animation: cursorBlink .85s steps(1) infinite; }
+@keyframes thinkingPulse { 0%,100% { opacity: .6; } 50% { opacity: 1; } }
+@keyframes cursorBlink { 0%,48% { opacity: 1; } 49%,100% { opacity: 0; } }
+
 .inline-agent-group { margin: -6px 0 25px 38px; border: 1px solid #e8e8e8; border-radius: 10px; overflow: hidden; background: #fff; }
 .inline-agent-group-title { min-height: 35px; display: flex; align-items: center; justify-content: space-between; padding: 0 10px; border-bottom: 1px solid #ededed; background: #fafafa; }
 .inline-agent-group-title > span { display: flex; align-items: center; gap: 5px; color: #50555f; font-size: 9.5px; font-weight: 700; }
@@ -175,7 +193,7 @@ button { cursor: pointer; }
   .chat-topbar { padding: 0 13px; }
   .runtime-pill { display: none; }
   .conversation-stream { padding: 22px 13px 145px; }
-  .inline-agent-group, .inline-conclusion { margin-left: 0; }
+  .thinking-item, .inline-agent-group, .inline-conclusion { margin-left: 0; }
   .composer { left: 12px; right: 12px; bottom: 10px; }
   .composer-tools button { font-size: 0; }
 }

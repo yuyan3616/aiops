@@ -43,6 +43,18 @@ export interface ToolRunView {
   completedAt?: string;
 }
 
+export type ThinkingStage = "plan" | "evidence" | "synthesis";
+
+export interface ThinkingView {
+  id: string;
+  stage: ThinkingStage;
+  title: string;
+  text: string;
+  completed: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface CoordinatorMessage {
   id: string;
   kind: "plan" | "finding" | "decision" | "conclusion";
@@ -61,6 +73,7 @@ export interface InvestigationSnapshot {
   hypotheses: HypothesisView[];
   evidence: EvidenceView[];
   messages: CoordinatorMessage[];
+  thinking: ThinkingView[];
   toolRuns: ToolRunView[];
   conclusion?: {
     rootCause: string;
@@ -79,6 +92,9 @@ export type RcaEventType =
   | "hypothesis.updated"
   | "evidence.created"
   | "coordinator.message"
+  | "thinking.started"
+  | "thinking.delta"
+  | "thinking.completed"
   | "tool.started"
   | "tool.completed"
   | "rca.completed"

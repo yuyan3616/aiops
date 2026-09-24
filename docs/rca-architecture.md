@@ -70,11 +70,16 @@ tool.completed
 evidence.created
 hypothesis.updated
 coordinator.message
+thinking.started
+thinking.delta
+thinking.completed
 rca.completed
 runtime.error
 ```
 
 Every event contains monotonically increasing `id` and a stable `streamId` so the UI can replay missed events after reconnecting.
+
+`thinking.*` carries a user-visible RCA analysis summary, not hidden model chain-of-thought. The fake runtime emits three stages: planning, first-wave evidence update, and final synthesis. The browser renders an active block expanded while deltas arrive and collapsible after completion.
 
 ## Evidence contract
 
@@ -105,7 +110,7 @@ Coordinator sees both point to the payment database connection pool, supports H1
 - Trace Agent → `query_traces`
 - Change Agent → `get_deployments`
 
-The second round connects the database latency to the deployment/config change. The synthesizer then emits a causal-chain RCA result.
+The second round connects the database latency to the deployment/config change. The synthesizer then emits a causal-chain RCA result. Between these phases the Coordinator streams bounded analysis summaries so the chat retains the original Pi-style thinking experience without exposing private chain-of-thought.
 
 ## Real integration path
 

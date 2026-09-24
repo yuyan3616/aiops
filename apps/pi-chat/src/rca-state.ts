@@ -4,6 +4,7 @@ import type {
   EvidenceView,
   HypothesisView,
   InvestigationSnapshot,
+  ThinkingView,
   RcaStreamEvent,
   ToolRunView,
 } from "@shared/rca-types";
@@ -66,6 +67,40 @@ export function applyRcaEvent(
         messages: replaceById(snapshot.messages, event.payload as CoordinatorMessage),
         stream,
       };
+    case "thinking.started":
+      return {
+        ...snapshot,
+        thinking: replaceById(snapshot.thinking, event.payload as ThinkingView),
+        stream,
+      };
+    case "thinking.delta": {
+      const payload = event.payload as { id: string; delta: string; updatedAt: string };
+      const current = snapshot.thinking.find((item) => item.id === payload.id);
+      if (!current) return { ...snapshot, stream };
+      return {
+        ...snapshot,
+        thinking: replaceById(snapshot.thinking, {
+          ...current,
+          text: current.text + payload.delta,
+          updatedAt: payload.updatedAt,
+        }),
+        stream,
+      };
+    }
+    case "thinking.completed": {
+      const payload = event.payload as { id: string; completed: true; updatedAt: string };
+      const current = snapshot.thinking.find((item) => item.id === payload.id);
+      if (!current) return { ...snapshot, stream };
+      return {
+        ...snapshot,
+        thinking: replaceById(snapshot.thinking, {
+          ...current,
+          completed: true,
+          updatedAt: payload.updatedAt,
+        }),
+        stream,
+      };
+    }
     case "rca.completed":
       return {
         ...snapshot,

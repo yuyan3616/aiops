@@ -119,7 +119,17 @@ export default function App() {
   const doneCount = agents.filter((agent) => agent.state === "done").length;
   const runningCount = agents.filter((agent) => agent.state === "running").length;
   const planMessages = snapshot?.messages.filter((message) => message.kind === "plan") ?? [];
-  const followupMessages = snapshot?.messages.filter((message) => message.kind !== "plan") ?? [];
+  const decisionMessages = snapshot?.messages.filter((message) => message.kind === "decision") ?? [];
+  const findingMessages = snapshot?.messages.filter((message) => message.kind === "finding") ?? [];
+  const conclusionMessages = snapshot?.messages.filter((message) => message.kind === "conclusion") ?? [];
+  const thinking = snapshot?.thinking ?? [];
+  const planThinking = thinking.filter((item) => item.stage === "plan");
+  const evidenceThinking = thinking.filter((item) => item.stage === "evidence");
+  const synthesisThinking = thinking.filter((item) => item.stage === "synthesis");
+  const firstWaveAgents = agents.filter((agent) => agent.id === "log" || agent.id === "metric");
+  const secondWaveAgents = agents.filter((agent) => agent.id === "trace" || agent.id === "change");
+  const showSecondWave =
+    decisionMessages.length > 0 || secondWaveAgents.some((agent) => agent.state !== "waiting");
 
   const investigationProgress = useMemo(() => {
     if (snapshot?.conclusion) return 100;
@@ -205,20 +215,42 @@ export default function App() {
             </CoordinatorMessage>
           ))}
 
-          <div className="inline-agent-group">
-            <div className="inline-agent-group-title">
-              <span><CircleDot size={14} /> 并行调查</span>
-              <small>{running ? "Coordinator 正在调度" : doneCount === 4 ? "4 个 Agent 已完成" : `${doneCount}/4 已完成`}</small>
-            </div>
-            {agents.map((agent) => {
-              const tool = toolRuns.find((item) => item.agent === agent.id);
-              const agentEvidence = evidence.find((item) => item.type === agent.id);
-              return <AgentTaskCard key={agent.id} agent={agent} tool={tool} evidence={agentEvidence} />;
-            })}
-          </div>
+          {planThinking.map((item) => <ThinkingItem key={item.id} item={item} />)}
 
-          {followupMessages.map((message) => (
-            <CoordinatorMessage key={message.id} time={messageTime(message.createdAt)} conclusion={message.kind === "conclusion"}>
+          <AgentGroup
+            title="第一轮并行调查"
+            agents={firstWaveAgents}
+            toolRuns={toolRuns}
+            evidence={evidence}
+          />
+
+          {evidenceThinking.map((item) => <ThinkingItem key={item.id} item={item} />)}
+
+          {decisionMessages.map((message) => (
+            <CoordinatorMessage key={message.id} time={messageTime(message.createdAt)}>
+              <p>{message.text}</p>
+            </CoordinatorMessage>
+          ))}
+
+          {showSecondWave && (
+            <AgentGroup
+              title="第二轮验证"
+              agents={secondWaveAgents}
+              toolRuns={toolRuns}
+              evidence={evidence}
+            />
+          )}
+
+          {findingMessages.map((message) => (
+            <CoordinatorMessage key={message.id} time={messageTime(message.createdAt)}>
+              <p>{message.text}</p>
+            </CoordinatorMessage>
+          ))}
+
+          {synthesisThinking.map((item) => <ThinkingItem key={item.id} item={item} />)}
+
+          {conclusionMessages.map((message) => (
+            <CoordinatorMessage key={message.id} time={messageTime(message.createdAt)} conclusion>
               <p>{message.text}</p>
             </CoordinatorMessage>
           ))}
@@ -333,6 +365,48 @@ function CoordinatorMessage({ time, children, conclusion = false }: { time: stri
     <div className="chat-message assistant-chat-message">
       <div className={`avatar assistant-avatar ${conclusion ? "done" : ""}`}>{conclusion ? <Check size={15} /> : <Sparkles size={15} />}</div>
       <div className="message-content"><div className="speaker">RCA Coordinator <span>{time}</span></div><div className="assistant-copy">{children}</div></div>
+    </div>
+  );
+}
+
+function ThinkingItem({ item }: { item: InvestigationSnapshot["thinking"][number] }) {
+  return (
+    <details className={`thinking-item ${item.completed ? "completed" : "streaming"}`} open={!item.completed}>
+      <summary>
+        <span className="thinking-icon"><Sparkles size={13} /></span>
+        <div className="thinking-heading">
+          <strong>{item.completed ? item.title : `正在${item.title}`}</strong>
+          <small>{item.completed ? "分析摘要" : "实时更新中"}</small>
+        </div>
+        <ChevronDown size={14} className="thinking-chevron" />
+      </summary>
+      <div className="thinking-body">
+        <p>{item.text || "正在整理当前信号与下一步调查方向…"}</p>
+        {!item.completed && <span className="thinking-cursor" aria-hidden />}
+      </div>
+    </details>
+  );
+}
+
+function AgentGroup({ title, agents, toolRuns, evidence }: {
+  title: string;
+  agents: InvestigationSnapshot["agents"];
+  toolRuns: InvestigationSnapshot["toolRuns"];
+  evidence: InvestigationSnapshot["evidence"];
+}) {
+  const completed = agents.filter((agent) => agent.state === "done").length;
+  const active = agents.some((agent) => agent.state === "running");
+  return (
+    <div className="inline-agent-group">
+      <div className="inline-agent-group-title">
+        <span><CircleDot size={14} /> {title}</span>
+        <small>{active ? "Agent 执行中" : `${completed}/${agents.length} 已完成`}</small>
+      </div>
+      {agents.map((agent) => {
+        const tool = toolRuns.find((item) => item.agent === agent.id);
+        const agentEvidence = evidence.find((item) => item.type === agent.id);
+        return <AgentTaskCard key={agent.id} agent={agent} tool={tool} evidence={agentEvidence} />;
+      })}
     </div>
   );
 }

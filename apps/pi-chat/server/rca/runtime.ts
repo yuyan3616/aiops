@@ -8,6 +8,8 @@ import type {
   InvestigationPhase,
   InvestigationSnapshot,
   InvestigationStatus,
+  ThinkingStage,
+  ThinkingView,
   ToolRunView,
 } from "../../shared/rca-types";
 import { AgentManager } from "./agent-manager";
@@ -89,6 +91,7 @@ export class RcaRuntime {
   private agents = new Map<AgentKind, AgentView>();
   private hypotheses = new Map<string, HypothesisView>();
   private messages: CoordinatorMessage[] = [];
+  private thinking: ThinkingView[] = [];
   private toolRuns = new Map<string, ToolRunView>();
   private phase: InvestigationPhase = 1;
   private status: InvestigationStatus = "idle";
@@ -112,6 +115,7 @@ export class RcaRuntime {
       hypotheses: [...this.hypotheses.values()],
       evidence: this.evidenceStore.list(),
       messages: [...this.messages],
+      thinking: [...this.thinking],
       toolRuns: [...this.toolRuns.values()],
       conclusion: this.conclusion,
       runId: this.runId,
@@ -141,6 +145,7 @@ export class RcaRuntime {
       ]),
     );
     this.toolRuns.clear();
+    this.thinking = [];
     this.messages = [
       {
         id: randomUUID(),
@@ -180,9 +185,48 @@ export class RcaRuntime {
     this.channel.publish("coordinator.message", message);
   }
 
+
+  private async streamThinking(
+    stage: ThinkingStage,
+    title: string,
+    chunks: string[],
+  ) {
+    const now = new Date().toISOString();
+    const thinking: ThinkingView = {
+      id: randomUUID(),
+      stage,
+      title,
+      text: "",
+      completed: false,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.thinking.push(thinking);
+    this.channel.publish("thinking.started", thinking);
+
+    for (const chunk of chunks) {
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      thinking.text += chunk;
+      thinking.updatedAt = new Date().toISOString();
+      this.channel.publish("thinking.delta", { id: thinking.id, delta: chunk, updatedAt: thinking.updatedAt });
+    }
+
+    thinking.completed = true;
+    thinking.updatedAt = new Date().toISOString();
+    this.channel.publish("thinking.completed", {
+      id: thinking.id,
+      completed: true,
+      updatedAt: thinking.updatedAt,
+    });
+  }
+
   private async execute() {
     this.resetState(true);
     this.setStatus("running");
+    await this.streamThinking("plan", "分析计划", [
+      "已确定异常起点在 10:31，当前最直接的两个信号是 order-service 5xx 上升与 payment-service timeout。",
+      "先并行检查 payment-service 错误日志和数据库连接池指标，用低成本证据判断是否需要继续扩大调查范围。",
+    ]);
     this.setPhase(2);
 
     const toolGateway = new FakeToolGateway();
@@ -218,6 +262,10 @@ export class RcaRuntime {
         state: "rejected",
         contradictingEvidenceIds: metricEvidence.map((item) => item.id),
       });
+      await this.streamThinking("evidence", "证据更新", [
+        "EV01 显示 connection timeout 从 10:31 开始集中出现，EV02 显示 db_pool_active 同期接近上限，两条独立证据同时支持 H1。",
+        "order-service 自身资源异常缺少指标支持，因此 H4 可以暂时排除；接下来需要验证异常耗时是否落在 DB，以及故障前是否存在配置变更。",
+      ]);
       this.addMessage(
         "decision",
         "第一轮证据共同指向 payment-service 的数据库连接池问题。下一轮动态补充 Trace Agent 与 Change Agent，用调用链确认耗时位置，并检查故障前是否存在变更。",
@@ -249,6 +297,10 @@ export class RcaRuntime {
         "finding",
         "Trace 显示异常耗时集中在 payment-service 的数据库访问，同时 Change Agent 发现故障前 3 分钟发布 v1.8.4 并修改连接池配置，H1 与 H2 形成连续证据链。",
       );
+      await this.streamThinking("synthesis", "结论收敛", [
+        "EV03 将延迟位置收敛到 payment-service 的数据库调用，EV04 则把异常前的 v1.8.4 发布与连接池配置变更关联起来。",
+        "目前 H1 与 H2 获得支持，H3 与 H4 已被反证；证据链已经闭合，可以生成 RCA 结论。",
+      ]);
 
       const synthesis = await this.llm.synthesize();
       this.conclusion = {
