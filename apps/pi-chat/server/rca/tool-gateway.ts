@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import type { AgentKind } from "../../shared/rca-types";
 import type { PutEvidenceInput } from "./evidence-store";
-import type { AgentTask } from "./fake-llm";
+import type { AgentTask } from "./types";
 
 export interface ToolPlan {
   id: string;

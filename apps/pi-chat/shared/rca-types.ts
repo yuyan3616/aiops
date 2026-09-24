@@ -68,6 +68,7 @@ export interface InvestigationSnapshot {
   severity: "P1" | "P2" | "P3";
   window: string;
   status: InvestigationStatus;
+  error?: string;
   phase: InvestigationPhase;
   agents: AgentView[];
   hypotheses: HypothesisView[];

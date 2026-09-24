@@ -148,7 +148,7 @@ export default function App() {
     setActivePrompt(normalizedPrompt);
     setShowWelcome(false);
     setLoadError(undefined);
-    void runInvestigation(incidentId).catch((error: unknown) => {
+    void runInvestigation(incidentId, normalizedPrompt).catch((error: unknown) => {
       setLoadError(error instanceof Error ? error.message : String(error));
     });
   };
@@ -204,7 +204,7 @@ export default function App() {
             <span className="chat-subtitle"><Clock3 size={12} /> {hasInvestigationStarted ? snapshot.window : "选择推荐示例，或直接描述故障现象"}</span>
           </div>
           <div className="topbar-actions">
-            <span className="runtime-pill">Fake LLM <i className={connected ? "connection-dot online" : "connection-dot"} /></span>
+            <span className="runtime-pill">Pi Agent · Fake Tools <i className={connected ? "connection-dot online" : "connection-dot"} /></span>
             {hasInvestigationStarted && (
               <button className="icon-text-button" onClick={rerun} disabled={running}><TimerReset size={15} />{running ? "排查中" : "重新运行"}</button>
             )}
@@ -212,7 +212,7 @@ export default function App() {
         </header>
 
         <main className={`conversation-stream ${!hasInvestigationStarted ? "empty-stream" : ""}`}>
-          {loadError && <div className="runtime-error">Runtime: {loadError}</div>}
+          {(loadError || snapshot.error) && <div className="runtime-error">Runtime: {loadError ?? snapshot.error}</div>}
 
           {!hasInvestigationStarted ? (
             <DemoWelcome onRun={() => startInvestigation(DEMO_PROMPT)} running={running} />
@@ -226,9 +226,9 @@ export default function App() {
             <CoordinatorMessage key={message.id} time={messageTime(message.createdAt)}>
               <p>{message.text}</p>
               <div className="plan-points">
-                <span>先并行看日志和指标</span>
-                <span>根据 Evidence 收敛假设</span>
-                <span>必要时继续查 Trace / Change</span>
+                <span>Coordinator 动态选择 Agent</span>
+                <span>Evidence 驱动假设更新</span>
+                <span>同轮 Agent 并行执行</span>
               </div>
             </CoordinatorMessage>
           ))}
@@ -401,7 +401,7 @@ function DemoWelcome({ onRun, running }: { onRun(): void; running: boolean }) {
         </button>
       </div>
 
-      <span className="demo-welcome-hint">也可以直接在下方输入自己的故障描述。</span>
+      <span className="demo-welcome-hint">也可以直接输入故障描述；当前观测数据源仍使用内置 Demo 数据。</span>
     </section>
   );
 }

@@ -15,8 +15,16 @@ import type {
 import { AgentManager } from "./agent-manager";
 import { EvidenceStore } from "./evidence-store";
 import { EventChannel } from "./event-channel";
-import { FakeLlmClient } from "./fake-llm";
+import {
+  type DelegationAssignment,
+  type FinalRcaInput,
+  type HypothesisUpdateInput,
+  PiRcaAgentClient,
+} from "./pi-agent-client";
 import { FakeToolGateway } from "./tool-gateway";
+
+const DEFAULT_PROMPT = "order-service 从 10:31 开始 5xx 大幅上升，帮我分析一下可能的原因。";
+const INCIDENT_WINDOW = "2026-09-23 10:20 ~ 2026-09-23 11:00";
 
 const BASE_AGENTS: AgentView[] = [
   {
@@ -84,10 +92,25 @@ const BASE_HYPOTHESES: HypothesisView[] = [
   },
 ];
 
+const DEFAULT_SERVICE: Record<AgentKind, string> = {
+  log: "payment-service",
+  metric: "payment-service",
+  trace: "order-service",
+  change: "payment-service",
+};
+
+const AGENT_NAME: Record<AgentKind, string> = {
+  log: "Log Agent",
+  metric: "Metric Agent",
+  trace: "Trace Agent",
+  change: "Change Agent",
+};
+
 export class RcaRuntime {
   readonly channel = new EventChannel();
   private readonly evidenceStore = new EvidenceStore();
-  private readonly llm = new FakeLlmClient();
+  private readonly llm = new PiRcaAgentClient();
+  private readonly toolGateway = new FakeToolGateway();
   private agents = new Map<AgentKind, AgentView>();
   private hypotheses = new Map<string, HypothesisView>();
   private messages: CoordinatorMessage[] = [];
@@ -95,9 +118,12 @@ export class RcaRuntime {
   private toolRuns = new Map<string, ToolRunView>();
   private phase: InvestigationPhase = 1;
   private status: InvestigationStatus = "idle";
+  private error?: string;
   private conclusion: InvestigationSnapshot["conclusion"];
   private runId = randomUUID();
   private runPromise?: Promise<void>;
+  private activeThinking?: ThinkingView;
+  private currentPrompt = DEFAULT_PROMPT;
 
   constructor(readonly incidentId: string) {
     this.resetState(false);
@@ -108,8 +134,9 @@ export class RcaRuntime {
       incidentId: this.incidentId,
       title: "order-service 5xx 激增",
       severity: "P1",
-      window: "2026-09-23 10:20 ~ 2026-09-23 11:00",
+      window: INCIDENT_WINDOW,
       status: this.status,
+      error: this.error,
       phase: this.phase,
       agents: [...this.agents.values()],
       hypotheses: [...this.hypotheses.values()],
@@ -123,19 +150,26 @@ export class RcaRuntime {
     };
   }
 
-  start() {
+  start(prompt = DEFAULT_PROMPT) {
     if (this.runPromise) return this.runPromise;
+    this.currentPrompt = prompt.trim() || DEFAULT_PROMPT;
     this.runPromise = this.execute().finally(() => {
       this.runPromise = undefined;
     });
     return this.runPromise;
   }
 
+  modelLabel() {
+    return this.llm.modelLabel();
+  }
+
   private resetState(publish: boolean) {
     this.runId = randomUUID();
     this.phase = 1;
     this.status = "idle";
+    this.error = undefined;
     this.conclusion = undefined;
+    this.activeThinking = undefined;
     this.evidenceStore.reset();
     this.agents = new Map(BASE_AGENTS.map((agent) => [agent.id, { ...agent }]));
     this.hypotheses = new Map(
@@ -146,31 +180,37 @@ export class RcaRuntime {
     );
     this.toolRuns.clear();
     this.thinking = [];
-    this.messages = [
-      {
-        id: randomUUID(),
-        kind: "plan",
-        text: "我已理解当前故障现象，将先并行调用 Log Agent 与 Metric Agent 建立异常基线，再根据证据动态决定下一轮调查。",
-        createdAt: new Date().toISOString(),
-      },
-    ];
+    this.messages = [];
     if (publish) this.channel.publish("investigation.reset", this.snapshot());
   }
 
   private setStatus(status: InvestigationStatus) {
     this.status = status;
+    if (status !== "error") this.error = undefined;
     this.channel.publish("investigation.status", { status });
   }
 
   private setPhase(phase: InvestigationPhase) {
+    if (this.phase === phase) return;
     this.phase = phase;
     this.channel.publish("investigation.phase", { phase });
   }
 
-  private updateHypothesis(id: string, patch: Partial<HypothesisView>) {
-    const current = this.hypotheses.get(id)!;
-    const next = { ...current, ...patch };
-    this.hypotheses.set(id, next);
+  private updateHypothesis(input: HypothesisUpdateInput) {
+    const current = this.hypotheses.get(input.id);
+    if (!current) return;
+    const knownEvidence = new Set(this.evidenceStore.list().map((item) => item.id));
+    const next: HypothesisView = {
+      ...current,
+      state: input.state,
+      supportingEvidenceIds: (input.supportingEvidenceIds ?? current.supportingEvidenceIds).filter(
+        (id) => knownEvidence.has(id),
+      ),
+      contradictingEvidenceIds: (
+        input.contradictingEvidenceIds ?? current.contradictingEvidenceIds
+      ).filter((id) => knownEvidence.has(id)),
+    };
+    this.hypotheses.set(input.id, next);
     this.channel.publish("hypothesis.updated", next);
   }
 
@@ -185,12 +225,16 @@ export class RcaRuntime {
     this.channel.publish("coordinator.message", message);
   }
 
+  private thinkingStage(): { stage: ThinkingStage; title: string } {
+    const evidenceCount = this.evidenceStore.list().length;
+    if (evidenceCount === 0) return { stage: "plan", title: "分析计划" };
+    if (evidenceCount < 3) return { stage: "evidence", title: "证据更新" };
+    return { stage: "synthesis", title: "结论收敛" };
+  }
 
-  private async streamThinking(
-    stage: ThinkingStage,
-    title: string,
-    chunks: string[],
-  ) {
+  private startThinking() {
+    if (this.activeThinking) this.completeThinking();
+    const { stage, title } = this.thinkingStage();
     const now = new Date().toISOString();
     const thinking: ThinkingView = {
       id: randomUUID(),
@@ -201,16 +245,26 @@ export class RcaRuntime {
       createdAt: now,
       updatedAt: now,
     };
+    this.activeThinking = thinking;
     this.thinking.push(thinking);
     this.channel.publish("thinking.started", thinking);
+  }
 
-    for (const chunk of chunks) {
-      await new Promise((resolve) => setTimeout(resolve, 120));
-      thinking.text += chunk;
-      thinking.updatedAt = new Date().toISOString();
-      this.channel.publish("thinking.delta", { id: thinking.id, delta: chunk, updatedAt: thinking.updatedAt });
-    }
+  private appendThinking(delta: string) {
+    if (!this.activeThinking) this.startThinking();
+    const thinking = this.activeThinking!;
+    thinking.text += delta;
+    thinking.updatedAt = new Date().toISOString();
+    this.channel.publish("thinking.delta", {
+      id: thinking.id,
+      delta,
+      updatedAt: thinking.updatedAt,
+    });
+  }
 
+  private completeThinking() {
+    const thinking = this.activeThinking;
+    if (!thinking) return;
     thinking.completed = true;
     thinking.updatedAt = new Date().toISOString();
     this.channel.publish("thinking.completed", {
@@ -218,104 +272,93 @@ export class RcaRuntime {
       completed: true,
       updatedAt: thinking.updatedAt,
     });
+    this.activeThinking = undefined;
+  }
+
+  private async delegate(manager: AgentManager, assignments: DelegationAssignment[]) {
+    const deduped = [...new Map(assignments.map((item) => [item.agent, item])).values()];
+    const hasDeepAgent = deduped.some((item) => item.agent === "trace" || item.agent === "change");
+    this.setPhase(hasDeepAgent ? 3 : 2);
+
+    const names = deduped.map((item) => AGENT_NAME[item.agent]).join("、");
+    this.addMessage(
+      this.evidenceStore.list().length === 0 ? "plan" : "decision",
+      `${this.evidenceStore.list().length === 0 ? "开始第一轮调查" : "根据当前证据继续验证"}：并行派发 ${names}。`,
+    );
+
+    const results = await Promise.all(
+      deduped.map((assignment) =>
+        manager.run(assignment.agent, {
+          service: assignment.service?.trim() || DEFAULT_SERVICE[assignment.agent],
+          window: INCIDENT_WINDOW,
+          goal: assignment.goal,
+        }),
+      ),
+    );
+
+    this.addMessage(
+      "finding",
+      results.map((item) => `${AGENT_NAME[item.agent]}：${item.summary}`).join("\n"),
+    );
+    return results;
+  }
+
+  private finalize(input: FinalRcaInput) {
+    const knownEvidence = new Set(this.evidenceStore.list().map((item) => item.id));
+    const evidenceIds = [...new Set(input.evidenceIds.filter((id) => knownEvidence.has(id)))];
+    if (evidenceIds.length === 0) {
+      throw new Error("finalize_rca requires at least one valid evidence id.");
+    }
+    this.conclusion = {
+      rootCause: input.rootCause,
+      causalChain: input.causalChain,
+      evidenceIds,
+    };
+    this.setPhase(4);
+    this.addMessage("conclusion", input.rootCause);
+    this.channel.publish("rca.completed", this.conclusion);
   }
 
   private async execute() {
     this.resetState(true);
     this.setStatus("running");
-    await this.streamThinking("plan", "分析计划", [
-      "已确定异常起点在 10:31，当前最直接的两个信号是 order-service 5xx 上升与 payment-service timeout。",
-      "先并行检查 payment-service 错误日志和数据库连接池指标，用低成本证据判断是否需要继续扩大调查范围。",
-    ]);
-    this.setPhase(2);
 
-    const toolGateway = new FakeToolGateway();
     const manager = new AgentManager(
       this.channel,
       this.evidenceStore,
       this.llm,
-      toolGateway,
+      this.toolGateway,
       this.agents,
       this.toolRuns,
     );
-    const window = "2026-09-23 10:20 ~ 2026-09-23 11:00";
 
     try {
-      const [logEvidence, metricEvidence] = await Promise.all([
-        manager.run("log", {
-          service: "payment-service",
-          window,
-          goal: "识别错误模式和异常开始时间",
-        }),
-        manager.run("metric", {
-          service: "payment-service",
-          window,
-          goal: "验证资源、延迟与数据库连接池是否异常",
-        }),
-      ]);
-
-      this.updateHypothesis("H1", {
-        state: "supported",
-        supportingEvidenceIds: [...logEvidence, ...metricEvidence].map((item) => item.id),
+      await this.llm.runCoordinator(this.currentPrompt, {
+        onTextStart: () => this.startThinking(),
+        onTextDelta: (delta) => this.appendThinking(delta),
+        onTextEnd: () => this.completeThinking(),
+        delegate: (assignments) => this.delegate(manager, assignments),
+        updateHypotheses: (updates) => {
+          for (const update of updates) this.updateHypothesis(update);
+        },
+        finalize: (input) => this.finalize(input),
       });
-      this.updateHypothesis("H4", {
-        state: "rejected",
-        contradictingEvidenceIds: metricEvidence.map((item) => item.id),
-      });
-      await this.streamThinking("evidence", "证据更新", [
-        "EV01 显示 connection timeout 从 10:31 开始集中出现，EV02 显示 db_pool_active 同期接近上限，两条独立证据同时支持 H1。",
-        "order-service 自身资源异常缺少指标支持，因此 H4 可以暂时排除；接下来需要验证异常耗时是否落在 DB，以及故障前是否存在配置变更。",
-      ]);
-      this.addMessage(
-        "decision",
-        "第一轮证据共同指向 payment-service 的数据库连接池问题。下一轮动态补充 Trace Agent 与 Change Agent，用调用链确认耗时位置，并检查故障前是否存在变更。",
-      );
+      this.completeThinking();
 
-      const [traceEvidence, changeEvidence] = await Promise.all([
-        manager.run("trace", {
-          service: "order-service",
-          window,
-          goal: "确认 order → payment 的异常耗时是否集中于数据库调用",
-        }),
-        manager.run("change", {
-          service: "payment-service",
-          window,
-          goal: "检查故障前发布和配置变更",
-        }),
-      ]);
-
-      this.updateHypothesis("H2", {
-        state: "supported",
-        supportingEvidenceIds: changeEvidence.map((item) => item.id),
-      });
-      this.updateHypothesis("H3", {
-        state: "rejected",
-        contradictingEvidenceIds: traceEvidence.map((item) => item.id),
-      });
-      this.setPhase(3);
-      this.addMessage(
-        "finding",
-        "Trace 显示异常耗时集中在 payment-service 的数据库访问，同时 Change Agent 发现故障前 3 分钟发布 v1.8.4 并修改连接池配置，H1 与 H2 形成连续证据链。",
-      );
-      await this.streamThinking("synthesis", "结论收敛", [
-        "EV03 将延迟位置收敛到 payment-service 的数据库调用，EV04 则把异常前的 v1.8.4 发布与连接池配置变更关联起来。",
-        "目前 H1 与 H2 获得支持，H3 与 H4 已被反证；证据链已经闭合，可以生成 RCA 结论。",
-      ]);
-
-      const synthesis = await this.llm.synthesize();
-      this.conclusion = {
-        ...synthesis,
-        evidenceIds: this.evidenceStore.list().map((item) => item.id),
-      };
-      this.setPhase(4);
+      if (!this.conclusion) {
+        throw new Error(
+          "Coordinator finished without calling finalize_rca. Check model/tool support or RCA prompt configuration.",
+        );
+      }
       this.setStatus("completed");
-      this.addMessage("conclusion", synthesis.rootCause);
-      this.channel.publish("rca.completed", this.conclusion);
     } catch (error) {
+      this.completeThinking();
       this.status = "error";
+      this.error = error instanceof Error ? error.message : String(error);
       this.channel.publish("runtime.error", {
-        message: error instanceof Error ? error.message : String(error),
+        message: this.error,
       });
+      this.channel.publish("investigation.status", { status: "error" });
     }
   }
 }

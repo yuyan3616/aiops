@@ -12,9 +12,11 @@ export function createRcaRoutes(service: RcaService) {
     return ctx.json(runtime.snapshot());
   });
 
-  app.post("/incidents/:id/run", (ctx) => {
+  app.post("/incidents/:id/run", async (ctx) => {
     const runtime = service.get(ctx.req.param("id"));
-    void runtime.start();
+    const body = (await ctx.req.json().catch(() => ({}))) as { prompt?: unknown };
+    const prompt = typeof body.prompt === "string" ? body.prompt : undefined;
+    void runtime.start(prompt);
     return ctx.json({ accepted: true, runId: runtime.snapshot().runId }, 202);
   });
 

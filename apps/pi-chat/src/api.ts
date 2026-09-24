@@ -24,10 +24,14 @@ export function getInvestigation(id: string) {
   return readJson<InvestigationSnapshot>(`/api/rca/incidents/${encodeURIComponent(id)}`);
 }
 
-export function runInvestigation(id: string) {
+export function runInvestigation(id: string, prompt: string) {
   return readJson<{ accepted: true; runId: string }>(
     `/api/rca/incidents/${encodeURIComponent(id)}/run`,
-    { method: "POST" },
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt }),
+    },
   );
 }
 

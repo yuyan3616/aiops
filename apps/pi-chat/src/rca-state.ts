@@ -108,7 +108,12 @@ export function applyRcaEvent(
         stream,
       };
     case "runtime.error":
-      return { ...snapshot, status: "error", stream };
+      return {
+        ...snapshot,
+        status: "error",
+        error: (event.payload as { message?: string }).message ?? "RCA Runtime error",
+        stream,
+      };
     default:
       return { ...snapshot, stream };
   }

@@ -1,69 +1,145 @@
-# RCA Multi-Agent Prototype
+# RCA Multi-Agent Prototype — v7 Pi AgentSession
 
-This branch turns the `pi-lessons` chat shell into a server-orchestrated multi-Agent RCA workspace.
+This branch turns the `pi-lessons` chat shell into a chat-first multi-Agent RCA workspace.
 
-## What is real vs fake
+## v7 status: reasoning is real, observability data is still fake
 
-The **LLM and observability data sources are fake** for now. The following engineering path is real:
+The **LLM / Agent layer now uses real Pi AgentSession**. The observability integrations intentionally remain fake so you can validate multi-Agent orchestration before wiring production Loki / Prometheus / Tempo / deployment systems.
 
-- Coordinator multi-round orchestration
-- parallel Agent fan-out / fan-in
-- Agent lifecycle state
-- controlled Tool Gateway
-- Tool call records
+### Real in v7
+
+- Pi `ModelRuntime` authentication and model selection
+- real Coordinator `AgentSession`
+- independent real specialist `AgentSession`s: Log / Metric / Trace / Change
+- Coordinator tool-driven orchestration (`delegate_agents`)
+- same-round specialist fan-out / fan-in with `Promise.all`
+- specialist tool isolation: each specialist only receives its own observability tool
 - Evidence Store (`evidenceId`, `rawRef`, normalized `queryKey`)
-- hypothesis support/rejection
-- ordered SSE domain events and replay cursor
-- streamed RCA analysis summaries (`thinking.started/delta/completed`)
-- Pi Chat visual parity: original neutral palette, message bubbles, Thinking and ToolCard interaction patterns
-- one-click recommended demo entry on the empty chat screen
-- server snapshot + frontend reducer
-- RCA conclusion and causal chain
+- model-driven hypothesis updates (`update_hypotheses`)
+- model-driven RCA completion (`finalize_rca`)
+- user-visible streamed analysis summaries over SSE
+- one-click recommended demo entry
+- manual user prompts are forwarded to the real Coordinator
 
-## Demo flow
+### Still fake in v7
+
+- `get_log_overview` → fake Loki response
+- `query_metrics` → fake Prometheus response
+- `query_traces` → fake Tempo / Jaeger response
+- `get_deployments` → fake deployment/config response
+
+So the boundary is now:
 
 ```text
-Coordinator
-   |
-   +--> Log Agent ----> get_log_overview --+
-   |                                         |
-   +--> Metric Agent -> query_metrics -------+--> Evidence + Hypothesis update
-                                             |
-                                      dynamic decision
-                                             |
-   +--> Trace Agent --> query_traces --------+
-   |                                         |
-   +--> Change Agent -> get_deployments -----+--> Synthesis --> RCA conclusion
+Real Pi Coordinator
+        |
+        | delegate_agents
+        v
++-------------------------------+
+| Real specialist Pi Sessions   |
+| Log / Metric / Trace / Change |
++-------------------------------+
+        |
+        | isolated custom tool
+        v
+FakeToolGateway
+        |
+        v
+EvidenceStore
+        |
+        +---- back to Coordinator
 ```
 
-## Run
+## Local run with a real model
+
+Pi `0.86.1` requires **Node.js >= 22.19.0**.
 
 ```bash
 cd apps/pi-chat
+cp .env.example .env
+```
+
+Edit `.env` and configure at least one model provider, for example:
+
+```bash
+OPENAI_API_KEY=sk-...
+```
+
+or:
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+or:
+
+```bash
+GEMINI_API_KEY=...
+```
+
+Then:
+
+```bash
 npm install
 npm run dev
 ```
 
-- Web: Vite default dev address
+Open the Vite address shown in the terminal. The empty page contains **“为你推荐” → order-service 5xx 激增**. Click **一键运行** and the request will go through the real Coordinator and real specialist Pi sessions.
+
+### Optional: pin a specific model
+
+Normally Pi uses its configured default model and otherwise falls back to the first authenticated available model. To pin one explicitly:
+
+```bash
+RCA_MODEL_PROVIDER=openai
+RCA_MODEL_ID=<a model id registered by your Pi installation>
+```
+
+Both values must be supplied together. If you leave them unset, Pi chooses an available model automatically.
+
+## What happens after clicking the recommended demo
+
+```text
+User prompt
+   |
+   v
+Pi Coordinator AgentSession
+   |
+   | user-visible summary streamed to thinking.*
+   |
+   +--> delegate_agents([log, metric])  (model decides)
+   |          |
+   |          +--> Log Agent Pi Session --> get_log_overview --> EVxx
+   |          +--> Metric Agent Pi Session --> query_metrics  --> EVxx
+   |
+   +--> update_hypotheses(...)
+   |
+   +--> delegate_agents([trace, change]) (only if model decides it is useful)
+   |          |
+   |          +--> Trace Agent Pi Session  --> query_traces    --> EVxx
+   |          +--> Change Agent Pi Session --> get_deployments --> EVxx
+   |
+   +--> update_hypotheses(...)
+   |
+   +--> finalize_rca(...)
+   v
+RCA conclusion + causal chain
+```
+
+The prompt strongly recommends Log + Metric as the low-cost first round for the bundled demo, but the orchestration is no longer a hard-coded two-round state machine: the Coordinator chooses which agents to dispatch through tools based on the evidence it sees.
+
+## API / SSE
+
 - API: `http://127.0.0.1:4328`
 - Health: `/health`
 - Snapshot: `/api/rca/incidents/demo`
-- Start investigation: `POST /api/rca/incidents/demo/run`
+- Start: `POST /api/rca/incidents/demo/run` with `{ "prompt": "..." }`
 - SSE: `/api/rca/incidents/demo/stream?after=0`
 
-The UI opens on a Pi Chat-style empty state with a **“为你推荐”** demo card. Clicking the card automatically sends the built-in `order-service 5xx` incident prompt and starts the full Fake multi-Agent investigation. The normal composer remains available for manual input. Thinking summaries stream inline in the chat and can be expanded/collapsed after completion.
+## Important safety / isolation detail
 
-## Validation performed in this workspace
+RCA Pi sessions do **not** receive Pi's default coding tools (`read`, `bash`, `edit`, `write`). v7 uses `noTools: "builtin"` and disables discovered extensions, skills, prompt templates, themes, and context files for these embedded RCA sessions. The Coordinator only receives orchestration tools; each specialist only receives its corresponding fake observability tool.
 
-The cloud environment could not download npm dependencies, so a full Vite/Hono build could not be executed here. The implementation was still validated with `git diff --check` plus an independently transpiled and executed pure RCA runtime:
+This makes the eventual production replacement seam straightforward: replace `FakeToolGateway`, not the Coordinator or UI.
 
-- The pure RCA runtime completed end-to-end:
-   - 4 Agents completed
-   - 4 Tool calls succeeded
-   - EV01–EV04 generated
-   - H1/H2 supported and H3/H4 rejected
-   - 3 streamed thinking-summary blocks completed
-   - final status `completed`, phase `4`
-   - 54 ordered domain events emitted
-
-See [`docs/rca-architecture.md`](docs/rca-architecture.md) for the event protocol and replacement seams for real Pi/LLM and observability providers.
+See [`docs/rca-architecture.md`](docs/rca-architecture.md) for details.
