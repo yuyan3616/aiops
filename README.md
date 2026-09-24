@@ -1,25 +1,66 @@
-# RCA Multi-Agent UI Prototype
+# RCA Multi-Agent Prototype
 
-Based on the `ai-hermes/pi-lessons` `feat/pi-chat-0920` frontend shape, redesigned as a multi-agent RCA investigation workspace.
+This branch turns the `pi-lessons` chat shell into a server-orchestrated multi-Agent RCA workspace.
 
-## Fake flow
+## What is real vs fake
 
-The first version intentionally does not call a real LLM. Click **重新运行 Fake 调查** to simulate:
+The **LLM and observability data sources are fake** for now. The following engineering path is real:
 
-1. Coordinator creates an investigation plan.
-2. Log + Metric agents run in parallel.
-3. Trace + Change agents continue validation.
-4. Hypotheses are supported/rejected from collected evidence.
-5. A causal-chain RCA conclusion is generated.
+- Coordinator multi-round orchestration
+- parallel Agent fan-out / fan-in
+- Agent lifecycle state
+- controlled Tool Gateway
+- Tool call records
+- Evidence Store (`evidenceId`, `rawRef`, normalized `queryKey`)
+- hypothesis support/rejection
+- ordered SSE domain events and replay cursor
+- server snapshot + frontend reducer
+- RCA conclusion and causal chain
+
+## Demo flow
+
+```text
+Coordinator
+   |
+   +--> Log Agent ----> get_log_overview --+
+   |                                         |
+   +--> Metric Agent -> query_metrics -------+--> Evidence + Hypothesis update
+                                             |
+                                      dynamic decision
+                                             |
+   +--> Trace Agent --> query_traces --------+
+   |                                         |
+   +--> Change Agent -> get_deployments -----+--> Synthesis --> RCA conclusion
+```
 
 ## Run
 
 ```bash
 cd apps/pi-chat
-pnpm install
-pnpm dev
+npm install
+npm run dev
 ```
 
-## Next integration seam
+- Web: Vite default dev address
+- API: `http://127.0.0.1:4328`
+- Health: `/health`
+- Snapshot: `/api/rca/incidents/demo`
+- Start investigation: `POST /api/rca/incidents/demo/run`
+- SSE: `/api/rca/incidents/demo/stream?after=0`
 
-Replace the local timeout-driven state transitions in `src/App.tsx` with existing pi-lessons SSE events, while keeping the UI data contracts for Agent, Hypothesis and Evidence.
+The UI automatically starts the demo investigation when the server snapshot is idle.
+
+## Validation performed in this workspace
+
+The cloud environment could not download npm dependencies, so a full Vite/Hono build could not be executed here. The implementation was still validated in two ways:
+
+1. TypeScript syntax transpilation across all TS/TSX source files: no syntax diagnostics.
+2. The pure RCA runtime was transpiled independently and executed end-to-end:
+   - 4 Agents completed
+   - 4 Tool calls succeeded
+   - EV01–EV04 generated
+   - H1/H2 supported and H3/H4 rejected
+   - final status `completed`, phase `4`
+   - 42 ordered domain events emitted
+
+See [`docs/rca-architecture.md`](docs/rca-architecture.md) for the event protocol and replacement seams for real Pi/LLM and observability providers.
