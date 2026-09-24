@@ -41,6 +41,7 @@ import { applyRcaEvent } from "./rca-state";
 import "./App.css";
 
 const incidentId = "demo";
+const DEMO_PROMPT = "order-service 从 10:31 开始 5xx 大幅上升，帮我分析一下可能的原因。";
 
 const fallbackConversations: IncidentSummary[] = [
   { id: "demo", title: "order-service 5xx 激增", time: "今天 10:24", status: "进行中" },
@@ -84,6 +85,8 @@ export default function App() {
   const [loadError, setLoadError] = useState<string>();
   const [rightTab, setRightTab] = useState<"overview" | "tools" | "evidence">("overview");
   const [draft, setDraft] = useState("");
+  const [activePrompt, setActivePrompt] = useState(DEMO_PROMPT);
+  const [showWelcome, setShowWelcome] = useState(true);
 
   useEffect(() => {
     let disposed = false;
@@ -94,13 +97,13 @@ export default function App() {
         if (disposed) return;
         setSnapshot(initialSnapshot);
         setConversations(incidentList);
+        if (initialSnapshot.status === "running") setShowWelcome(false);
         source = connectInvestigationEvents(
           incidentId,
           initialSnapshot.stream.lastEventId,
           (event) => setSnapshot((current) => (current ? applyRcaEvent(current, event) : current)),
           setConnected,
         );
-        if (initialSnapshot.status === "idle") void runInvestigation(incidentId);
       })
       .catch((error: unknown) => {
         if (!disposed) setLoadError(error instanceof Error ? error.message : String(error));
@@ -117,6 +120,7 @@ export default function App() {
   const evidence = snapshot?.evidence ?? [];
   const toolRuns = snapshot?.toolRuns ?? [];
   const running = snapshot?.status === "running";
+  const hasInvestigationStarted = !showWelcome;
   const doneCount = agents.filter((agent) => agent.state === "done").length;
   const runningCount = agents.filter((agent) => agent.state === "running").length;
   const planMessages = snapshot?.messages.filter((message) => message.kind === "plan") ?? [];
@@ -138,17 +142,24 @@ export default function App() {
     return Math.max(10, doneCount * 20 + runningCount * 9);
   }, [doneCount, runningCount, snapshot?.conclusion]);
 
-  const rerun = () => {
+  const startInvestigation = (prompt: string) => {
+    if (running) return;
+    const normalizedPrompt = prompt.trim() || DEMO_PROMPT;
+    setActivePrompt(normalizedPrompt);
+    setShowWelcome(false);
     setLoadError(undefined);
     void runInvestigation(incidentId).catch((error: unknown) => {
       setLoadError(error instanceof Error ? error.message : String(error));
     });
   };
 
+  const rerun = () => startInvestigation(activePrompt);
+
   const submit = () => {
-    if (!draft.trim() || running) return;
+    const prompt = draft.trim();
+    if (!prompt || running) return;
     setDraft("");
-    rerun();
+    startInvestigation(prompt);
   };
 
   if (!snapshot) {
@@ -171,13 +182,13 @@ export default function App() {
           <div><strong>RCA Assistant</strong><span>Multi-Agent</span></div>
         </div>
 
-        <button className="new-chat"><Plus size={16} /> 新建排查</button>
+        <button className="new-chat" onClick={() => setShowWelcome(true)} disabled={running}><Plus size={16} /> 新建排查</button>
         <div className="sidebar-section-title"><span>历史会话</span><Search size={14} /></div>
         <div className="conversation-list">
           {conversations.map((item) => (
-            <button key={item.id} className={`conversation-item ${item.id === incidentId ? "active" : ""}`}>
+            <button key={item.id} className={`conversation-item ${item.id === incidentId && hasInvestigationStarted ? "active" : ""}`}>
               <strong>{item.title}</strong>
-              <span><i className={item.status === "已完成" ? "finished" : "running"} />{item.time}</span>
+              <span><i className={item.status === "已完成" ? "finished" : "running"} />{item.id === incidentId && !hasInvestigationStarted ? "推荐示例" : item.time}</span>
             </button>
           ))}
         </div>
@@ -187,22 +198,28 @@ export default function App() {
         <header className="chat-topbar">
           <div>
             <div className="chat-title-row">
-              <h1>{snapshot.title}</h1>
-              <span className="severity">{snapshot.severity}</span>
+              <h1>{hasInvestigationStarted ? snapshot.title : "新排查"}</h1>
+              {hasInvestigationStarted && <span className="severity">{snapshot.severity}</span>}
             </div>
-            <span className="chat-subtitle"><Clock3 size={12} /> {snapshot.window}</span>
+            <span className="chat-subtitle"><Clock3 size={12} /> {hasInvestigationStarted ? snapshot.window : "选择推荐示例，或直接描述故障现象"}</span>
           </div>
           <div className="topbar-actions">
             <span className="runtime-pill">Fake LLM <i className={connected ? "connection-dot online" : "connection-dot"} /></span>
-            <button className="icon-text-button" onClick={rerun} disabled={running}><TimerReset size={15} />{running ? "排查中" : "重新运行"}</button>
+            {hasInvestigationStarted && (
+              <button className="icon-text-button" onClick={rerun} disabled={running}><TimerReset size={15} />{running ? "排查中" : "重新运行"}</button>
+            )}
           </div>
         </header>
 
-        <main className="conversation-stream">
+        <main className={`conversation-stream ${!hasInvestigationStarted ? "empty-stream" : ""}`}>
           {loadError && <div className="runtime-error">Runtime: {loadError}</div>}
 
+          {!hasInvestigationStarted ? (
+            <DemoWelcome onRun={() => startInvestigation(DEMO_PROMPT)} running={running} />
+          ) : (
+            <>
           <MessageRow time="10:24">
-            order-service 从 10:31 开始 5xx 大幅上升，帮我分析一下可能的原因。
+            {activePrompt}
           </MessageRow>
 
           {planMessages.map((message) => (
@@ -271,13 +288,15 @@ export default function App() {
             </section>
           )}
           <div className="bottom-anchor" />
+            </>
+          )}
         </main>
 
         <form className="composer" onSubmit={(event) => { event.preventDefault(); submit(); }}>
           <textarea
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
-            placeholder="继续追问，或描述新的故障现象…"
+            placeholder={hasInvestigationStarted ? "继续追问，或描述新的故障现象…" : "描述故障现象，或点击上方推荐示例…"}
             rows={2}
           />
           <div className="composer-footer">
@@ -300,6 +319,13 @@ export default function App() {
         </div>
 
         {rightTab === "overview" && (
+          !hasInvestigationStarted ? (
+            <div className="context-welcome">
+              <Sparkles size={17} />
+              <strong>等待开始排查</strong>
+              <p>运行推荐示例后，这里会实时显示 Agent、Hypothesis、Evidence 和 RCA 结论。</p>
+            </div>
+          ) : (
           <>
             <section className="context-section">
               <div className="context-heading"><strong>调查进度</strong><span>{investigationProgress}%</span></div>
@@ -343,12 +369,40 @@ export default function App() {
               <p>{snapshot.conclusion ? snapshot.conclusion.rootCause : "Coordinator 正在等待更多证据，暂不下结论。"}</p>
             </section>
           </>
+          )
         )}
 
         {rightTab === "tools" && <CompactTools toolRuns={toolRuns} />}
         {rightTab === "evidence" && <CompactEvidence evidence={evidence} />}
       </aside>
     </div>
+  );
+}
+
+function DemoWelcome({ onRun, running }: { onRun(): void; running: boolean }) {
+  return (
+    <section className="demo-welcome">
+      <div className="demo-welcome-icon"><Activity size={28} /></div>
+      <h2>从一次真实感 RCA 演示开始</h2>
+      <p>不需要记 Prompt。点击推荐案例后，会自动发送故障描述并运行完整的多 Agent 排查流程。</p>
+
+      <div className="recommendation-section">
+        <div className="recommendation-label"><Sparkles size={14} /> 为你推荐</div>
+        <button className="recommendation-card" type="button" onClick={onRun} disabled={running}>
+          <div className="recommendation-card-main">
+            <span className="recommendation-badge">P1 · 推荐演示</span>
+            <strong>order-service 5xx 激增</strong>
+            <p>{DEMO_PROMPT}</p>
+            <div className="recommendation-flow">
+              <span>Log + Metric</span><ChevronRight size={13} /><span>Trace + Change</span><ChevronRight size={13} /><span>RCA 结论</span>
+            </div>
+          </div>
+          <span className="recommendation-action">{running ? "运行中" : "一键运行"}<ChevronRight size={15} /></span>
+        </button>
+      </div>
+
+      <span className="demo-welcome-hint">也可以直接在下方输入自己的故障描述。</span>
+    </section>
   );
 }
 

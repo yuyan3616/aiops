@@ -583,3 +583,175 @@ button { cursor: pointer; }
   .composer { left: 12px; right: 12px; bottom: 10px; }
   .composer-tools button { font-size: 0; }
 }
+
+/* Empty state keeps Pi Chat's original centered welcome pattern and adds one demo shortcut. */
+.empty-stream {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding-bottom: 170px;
+}
+
+.demo-welcome {
+  width: min(100%, 620px);
+  margin-top: -36px;
+  text-align: center;
+}
+
+.demo-welcome-icon {
+  width: 58px;
+  height: 58px;
+  margin: 0 auto 14px;
+  display: grid;
+  place-items: center;
+  color: #1d1d1f;
+}
+
+.demo-welcome h2 {
+  margin: 0;
+  color: #1d1d1f;
+  font-size: 24px;
+  font-weight: 650;
+  letter-spacing: -0.035em;
+}
+
+.demo-welcome > p {
+  width: min(100%, 500px);
+  margin: 9px auto 22px;
+  color: #777;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.recommendation-section {
+  width: min(100%, 560px);
+  margin: 0 auto;
+  text-align: left;
+}
+
+.recommendation-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 2px 8px;
+  color: #666;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.recommendation-card {
+  width: 100%;
+  min-height: 132px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 18px;
+  padding: 16px;
+  border: 1px solid #e5e5e5;
+  border-radius: 10px;
+  background: #fff;
+  color: #1d1d1f;
+  text-align: left;
+  transition: border-color .15s ease, background .15s ease;
+}
+
+.recommendation-card:hover:not(:disabled),
+.recommendation-card:focus-visible:not(:disabled) {
+  border-color: #bdbdbd;
+  background: #fafafa;
+  outline: none;
+}
+
+.recommendation-card:disabled {
+  cursor: not-allowed;
+  opacity: .65;
+}
+
+.recommendation-card-main {
+  min-width: 0;
+}
+
+.recommendation-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  margin-bottom: 8px;
+  padding: 0 6px;
+  border-radius: 5px;
+  background: #f2f2f2;
+  color: #666;
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.recommendation-card-main > strong {
+  display: block;
+  margin-bottom: 5px;
+  color: #1d1d1f;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.recommendation-card-main > p {
+  margin: 0;
+  color: #666;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.recommendation-flow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: 10px;
+  color: #999;
+}
+
+.recommendation-flow span {
+  padding: 3px 6px;
+  border-radius: 5px;
+  background: #f2f2f2;
+  color: #666;
+  font-size: 10px;
+}
+
+.recommendation-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: #444;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.demo-welcome-hint {
+  display: block;
+  margin-top: 12px;
+  color: #999;
+  font-size: 11px;
+}
+
+.context-welcome {
+  display: grid;
+  justify-items: start;
+  gap: 7px;
+  padding: 18px 12px;
+  color: #777;
+}
+
+.context-welcome svg { color: #777; }
+.context-welcome strong { color: #555; font-size: 11px; font-weight: 500; }
+.context-welcome p { margin: 0; color: #999; font-size: 10px; line-height: 1.55; }
+
+@media (max-width: 760px) {
+  .empty-stream { padding: 30px 14px 160px; }
+  .demo-welcome { margin-top: 0; }
+  .demo-welcome-icon { width: 50px; height: 50px; }
+  .demo-welcome h2 { font-size: 22px; }
+  .demo-welcome > p { font-size: 12px; }
+  .recommendation-card { grid-template-columns: 1fr; gap: 12px; padding: 14px; }
+  .recommendation-action { justify-content: flex-end; }
+}
+.new-chat:disabled { cursor: not-allowed; opacity: .5; }

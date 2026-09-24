@@ -16,6 +16,7 @@ The **LLM and observability data sources are fake** for now. The following engin
 - ordered SSE domain events and replay cursor
 - streamed RCA analysis summaries (`thinking.started/delta/completed`)
 - Pi Chat visual parity: original neutral palette, message bubbles, Thinking and ToolCard interaction patterns
+- one-click recommended demo entry on the empty chat screen
 - server snapshot + frontend reducer
 - RCA conclusion and causal chain
 
@@ -50,7 +51,7 @@ npm run dev
 - Start investigation: `POST /api/rca/incidents/demo/run`
 - SSE: `/api/rca/incidents/demo/stream?after=0`
 
-The UI automatically starts the demo investigation when the server snapshot is idle. Thinking summaries stream inline in the chat and can be expanded/collapsed after completion.
+The UI opens on a Pi Chat-style empty state with a **“为你推荐”** demo card. Clicking the card automatically sends the built-in `order-service 5xx` incident prompt and starts the full Fake multi-Agent investigation. The normal composer remains available for manual input. Thinking summaries stream inline in the chat and can be expanded/collapsed after completion.
 
 ## Validation performed in this workspace
 
