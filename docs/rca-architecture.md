@@ -119,3 +119,15 @@ The second round connects the database latency to the deployment/config change. 
 3. Persist Evidence/Investigation state in a repository instead of in-memory maps.
 4. Add timeout/budget/cancellation and per-Agent concurrency limits.
 5. Add tool query coverage reuse (requested range contained by existing evidence), not only exact query-key reuse.
+
+## UI theme alignment
+
+The RCA workspace intentionally inherits Pi Chat's original visual language rather than introducing a separate dashboard theme:
+
+- base colors: `#1d1d1f`, `#fafafa`, `#f2f2f2`, `#e5e5e5`, `#777`, `#999`
+- status colors are limited to Pi Chat-style success/error semantics (`#067647`, `#b42318`)
+- user messages use the original right-aligned gray bubble treatment
+- coordinator output remains an assistant-style transparent message instead of a colored card
+- streamed RCA thinking reuses the original Brain + collapsible left-rule pattern
+- Agent tasks visually reuse the ToolCard border/summary/details pattern; agent types do not receive separate theme colors
+- the investigation sidebar stays neutral and secondary to the chat stream

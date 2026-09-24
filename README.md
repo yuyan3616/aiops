@@ -15,6 +15,7 @@ The **LLM and observability data sources are fake** for now. The following engin
 - hypothesis support/rejection
 - ordered SSE domain events and replay cursor
 - streamed RCA analysis summaries (`thinking.started/delta/completed`)
+- Pi Chat visual parity: original neutral palette, message bubbles, Thinking and ToolCard interaction patterns
 - server snapshot + frontend reducer
 - RCA conclusion and causal chain
 

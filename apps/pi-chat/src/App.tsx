@@ -19,6 +19,7 @@ import {
   TimerReset,
   Wrench,
   BarChart3,
+  Brain,
 } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 
@@ -353,34 +354,40 @@ export default function App() {
 
 function MessageRow({ time, children }: { time: string; children: ReactNode }) {
   return (
-    <div className="chat-message user-chat-message">
-      <div className="avatar user-avatar">U</div>
-      <div className="message-content"><div className="speaker">用户 <span>{time}</span></div><div className="user-bubble">{children}</div></div>
-    </div>
+    <article className="message-row user-row">
+      <div className="message-column">
+        <div className="bubble user-bubble">{children}</div>
+        <div className="message-meta">{time}</div>
+      </div>
+    </article>
   );
 }
 
 function CoordinatorMessage({ time, children, conclusion = false }: { time: string; children: ReactNode; conclusion?: boolean }) {
   return (
-    <div className="chat-message assistant-chat-message">
-      <div className={`avatar assistant-avatar ${conclusion ? "done" : ""}`}>{conclusion ? <Check size={15} /> : <Sparkles size={15} />}</div>
-      <div className="message-content"><div className="speaker">RCA Coordinator <span>{time}</span></div><div className="assistant-copy">{children}</div></div>
-    </div>
+    <article className="message-row assistant-row">
+      <div className="message-column">
+        <div className="assistant-meta">
+          <span>{conclusion ? <Check size={13} /> : <Sparkles size={13} />}</span>
+          RCA Coordinator
+          <small>{time}</small>
+        </div>
+        <div className="bubble assistant-bubble">{children}</div>
+      </div>
+    </article>
   );
 }
 
 function ThinkingItem({ item }: { item: InvestigationSnapshot["thinking"][number] }) {
   return (
-    <details className={`thinking-item ${item.completed ? "completed" : "streaming"}`} open={!item.completed}>
+    <details className={`thinking ${item.completed ? "completed" : "streaming"}`} open={!item.completed}>
       <summary>
-        <span className="thinking-icon"><Sparkles size={13} /></span>
-        <div className="thinking-heading">
-          <strong>{item.completed ? item.title : `正在${item.title}`}</strong>
-          <small>{item.completed ? "分析摘要" : "实时更新中"}</small>
-        </div>
-        <ChevronDown size={14} className="thinking-chevron" />
+        <Brain size={16} />
+        <span>{item.completed ? item.title : `正在${item.title}`}</span>
+        <small>{item.completed ? "分析摘要" : "实时更新中"}</small>
+        <ChevronDown size={15} className="thinking-chevron" />
       </summary>
-      <div className="thinking-body">
+      <div className="thinking-content-body">
         <p>{item.text || "正在整理当前信号与下一步调查方向…"}</p>
         {!item.completed && <span className="thinking-cursor" aria-hidden />}
       </div>
