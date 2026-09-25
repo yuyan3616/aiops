@@ -1,28 +1,26 @@
 import {
   Activity,
-  AlertTriangle,
   Check,
   ChevronDown,
   ChevronRight,
   CircleDot,
-  Clock3,
   Database,
   FileSearch,
   GitBranch,
-  Link2,
+  Menu,
   Network,
   PanelRight,
   Plus,
-  Search,
   Send,
   Sparkles,
   Square,
   TimerReset,
   Wrench,
+  X,
   BarChart3,
   Brain,
 } from "lucide-react";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import type {
   AgentKind,
@@ -94,6 +92,20 @@ function historyTime(iso: string) {
   return date.toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" });
 }
 
+function shortInvestigationId(id: string) {
+  return id.length > 14 ? id.slice(-10).toUpperCase() : id.toUpperCase();
+}
+
+function investigationStateText(snapshot: InvestigationSnapshot) {
+  if (snapshot.conclusion) return "根因已收敛";
+  if (snapshot.status === "interrupted") return "服务重启后调查已中断";
+  if (snapshot.status === "error") return "调查执行失败";
+  if (snapshot.status === "cancelled") return "调查已停止";
+  if (snapshot.status === "stopping") return "正在停止 Agent 任务";
+  if (snapshot.status === "running") return "正在收集和验证证据";
+  return "等待开始";
+}
+
 export default function App() {
   const [incidentId, setIncidentId] = useState("demo");
   const [snapshot, setSnapshot] = useState<InvestigationSnapshot>();
@@ -103,6 +115,7 @@ export default function App() {
   const [rightTab, setRightTab] = useState<"overview" | "tools" | "evidence">("overview");
   const [draft, setDraft] = useState("");
   const [showWelcome, setShowWelcome] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   useEffect(() => {
     let disposed = false;
@@ -133,6 +146,10 @@ export default function App() {
   }, [incidentId]);
 
   useEffect(() => {
+    setRightTab("overview");
+  }, [incidentId]);
+
+  useEffect(() => {
     if (!snapshot || incidentId === "demo") return;
     setConversations((current) => current.map((item) =>
       item.id === incidentId
@@ -145,12 +162,11 @@ export default function App() {
   const hypotheses = snapshot?.hypotheses ?? [];
   const evidence = snapshot?.evidence ?? [];
   const toolRuns = snapshot?.toolRuns ?? [];
-  const tasks = snapshot?.tasks ?? [];
   const running = snapshot?.status === "running" || snapshot?.status === "stopping";
   const stopping = snapshot?.status === "stopping";
   const hasInvestigationStarted = !showWelcome;
-  const doneCount = agents.filter((agent) => agent.state === "done").length;
-  const runningCount = agents.filter((agent) => agent.state === "running").length;
+  const currentSummary = conversations.find((item) => item.id === incidentId);
+  const promptTime = currentSummary ? messageTime(currentSummary.createdAt) : "--:--";
   const planMessages = snapshot?.messages.filter((message) => message.kind === "plan") ?? [];
   const decisionMessages = snapshot?.messages.filter((message) => message.kind === "decision") ?? [];
   const findingMessages = snapshot?.messages.filter((message) => message.kind === "finding") ?? [];
@@ -160,12 +176,6 @@ export default function App() {
   const evidenceThinking = thinking.filter((item) => item.stage === "evidence");
   const synthesisThinking = thinking.filter((item) => item.stage === "synthesis");
   const visibleAgents = agents.filter((agent) => agent.state !== "waiting");
-
-  const investigationProgress = useMemo(() => {
-    if (snapshot?.conclusion) return 100;
-    if (doneCount === 4) return 88;
-    return Math.max(10, doneCount * 20 + runningCount * 9);
-  }, [doneCount, runningCount, snapshot?.conclusion]);
 
   const startInvestigation = async (prompt: string) => {
     if (running) return;
@@ -198,6 +208,7 @@ export default function App() {
     if (running) return;
     setLoadError(undefined);
     setShowWelcome(true);
+    setSidebarOpen(false);
     setIncidentId("demo");
   };
 
@@ -205,6 +216,7 @@ export default function App() {
     if (running || id === incidentId) return;
     setLoadError(undefined);
     setShowWelcome(false);
+    setSidebarOpen(false);
     setIncidentId(id);
   };
 
@@ -229,14 +241,17 @@ export default function App() {
 
   return (
     <div className="chat-app">
-      <aside className="conversation-sidebar">
+      <aside className={`conversation-sidebar ${sidebarOpen ? "mobile-open" : ""}`}>
         <div className="sidebar-brand">
           <div className="brand-mark"><Activity size={17} /></div>
-          <div><strong>RCA Assistant</strong><span>Multi-Agent</span></div>
+          <div className="sidebar-brand-copy"><strong>AI Ops RCA</strong><span>基于 Pi 的多智能体根因分析</span></div>
+          <button className="sidebar-mobile-close" type="button" onClick={() => setSidebarOpen(false)} aria-label="关闭历史调查">
+            <X size={16} />
+          </button>
         </div>
 
-        <button className="new-chat" onClick={newInvestigation} disabled={running}><Plus size={16} /> 新建排查</button>
-        <div className="sidebar-section-title"><span>历史会话</span><Search size={14} /></div>
+        <button className="new-chat" onClick={newInvestigation} disabled={running}><Plus size={16} /> 新的调查</button>
+        <div className="sidebar-section-title"><span>历史调查</span></div>
         <div className="conversation-list">
           {conversations.map((item) => (
             <button
@@ -245,34 +260,46 @@ export default function App() {
               onClick={() => openHistory(item.id)}
             >
               <strong>{item.title}</strong>
-              <span>
-                <i className={item.status === "completed" ? "finished" : "running"} />
+              <span className="conversation-meta">
+                <i className={`history-status-dot ${item.status}`} />
                 {investigationStatusLabel(item.status)} · {historyTime(item.updatedAt)}
               </span>
+              <small className="conversation-submeta">RCA100 · {item.datasetTaskId} · {shortInvestigationId(item.id)}</small>
             </button>
           ))}
           {conversations.length === 0 && <div className="history-empty">暂无历史调查</div>}
         </div>
       </aside>
 
+      {sidebarOpen && <button className="mobile-sidebar-backdrop" type="button" onClick={() => setSidebarOpen(false)} aria-label="关闭历史调查" />}
+
       <section className="chat-shell">
         <header className="chat-topbar">
-          <div>
-            <div className="chat-title-row">
-              <h1>{hasInvestigationStarted ? snapshot.title : "新排查"}</h1>
-              {hasInvestigationStarted && <span className="severity">{snapshot.severity}</span>}
+          <div className="topbar-main">
+            <button className="mobile-history-toggle" type="button" onClick={() => setSidebarOpen(true)} aria-label="打开历史调查">
+              <Menu size={17} />
+            </button>
+            <div>
+              <div className="chat-title-row">
+                <h1>{hasInvestigationStarted ? snapshot.title : "新排查"}</h1>
+                {hasInvestigationStarted && <span className={`investigation-status-pill ${snapshot.status}`}>{investigationStatusLabel(snapshot.status)}</span>}
+              </div>
+              <span className="chat-subtitle">
+                {hasInvestigationStarted
+                  ? `${snapshot.dataset.name} · ${snapshot.dataset.taskId} · ${shortInvestigationId(incidentId)} · ${snapshot.severity} · ${snapshot.window}`
+                  : "选择推荐示例，或直接描述故障现象"}
+              </span>
             </div>
-            <span className="chat-subtitle"><Clock3 size={12} /> {hasInvestigationStarted ? snapshot.window : "选择推荐示例，或直接描述故障现象"}</span>
           </div>
           <div className="topbar-actions">
-            <span className="runtime-pill">Pi Agent · RCA100 {snapshot.dataset.taskId}{snapshot.dataset.telemetryReady ? " · Ready" : " · On demand"} <i className={connected ? "connection-dot online" : "connection-dot"} /></span>
+            {running && <span className="runtime-pill">Pi Agent · {connected ? "实时连接" : "连接中"} <i className={connected ? "connection-dot online" : "connection-dot"} /></span>}
             {hasInvestigationStarted && (
               running ? (
                 <button className="icon-text-button stop-investigation" onClick={stopInvestigation} disabled={stopping}>
                   <Square size={13} />{stopping ? "停止中" : "停止排查"}
                 </button>
               ) : (
-                <button className="icon-text-button" onClick={rerun}><TimerReset size={15} />重新运行</button>
+                <button className="icon-text-button rerun-button" onClick={rerun}><TimerReset size={15} />再次运行</button>
               )
             )}
           </div>
@@ -285,18 +312,13 @@ export default function App() {
             <DemoWelcome onRun={() => void startInvestigation(DEMO_PROMPT)} running={running} />
           ) : (
             <>
-          <MessageRow time="09:20">
+          <MessageRow time={promptTime}>
             {snapshot.prompt}
           </MessageRow>
 
           {planMessages.map((message) => (
             <CoordinatorMessage key={message.id} time={messageTime(message.createdAt)}>
               <p>{message.text}</p>
-              <div className="plan-points">
-                <span>Coordinator 动态选择 Agent</span>
-                <span>Evidence 驱动假设更新</span>
-                <span>同轮 Agent 并行执行</span>
-              </div>
             </CoordinatorMessage>
           ))}
 
@@ -353,30 +375,37 @@ export default function App() {
           )}
         </main>
 
-        <form className="composer" onSubmit={(event) => { event.preventDefault(); submit(); }}>
-          <textarea
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            placeholder={hasInvestigationStarted ? "继续追问，或描述新的故障现象…" : "描述故障现象，或点击上方推荐示例…"}
-            rows={2}
-          />
-          <div className="composer-footer">
-            <div className="composer-tools">
-              <button type="button"><Link2 size={14} />附件</button>
-              <button type="button"><Wrench size={14} />服务</button>
-              <button type="button"><Clock3 size={14} />时间范围</button>
+        {!hasInvestigationStarted ? (
+          <form className="composer" onSubmit={(event) => { event.preventDefault(); submit(); }}>
+            <textarea
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              placeholder="描述故障现象，或点击上方推荐示例…"
+              rows={2}
+            />
+            <div className="composer-footer">
+              <span className="composer-hint">发送后会创建一条新的 Investigation</span>
+              <button className="send-button" type="submit" disabled={!draft.trim()} aria-label="发送"><Send size={16} /></button>
             </div>
-            <button className="send-button" type="submit" disabled={!draft.trim() || running} aria-label="发送"><Send size={16} /></button>
+          </form>
+        ) : running ? (
+          <div className="investigation-footer live-footer">
+            <div><span className="live-dot" /> <strong>调查进行中</strong><small>{investigationStateText(snapshot)}</small></div>
+            <span>页面会随 Agent / Tool / Evidence 实时更新</span>
           </div>
-        </form>
+        ) : (
+          <div className="investigation-footer history-readonly">
+            <div><strong>历史调查 · 只读</strong><small>当前版本不会在已结束的 Investigation 内继续调用模型或工具。</small></div>
+            <button type="button" onClick={rerun}><TimerReset size={14} /> 再次运行</button>
+          </div>
+        )}
       </section>
 
       <aside className="investigation-sidebar">
-        <div className="investigation-header"><PanelRight size={15} /><strong>调查上下文</strong></div>
-        <div className="right-tabs">
-          <button className={rightTab === "overview" ? "active" : ""} onClick={() => setRightTab("overview")}>概览</button>
-          <button className={rightTab === "tools" ? "active" : ""} onClick={() => setRightTab("tools")}>工具</button>
-          <button className={rightTab === "evidence" ? "active" : ""} onClick={() => setRightTab("evidence")}>证据</button>
+        <div className="investigation-header">
+          <PanelRight size={15} />
+          <strong>{rightTab === "overview" ? "调查上下文" : rightTab === "tools" ? "工具调用" : "全部证据"}</strong>
+          {rightTab !== "overview" && <button type="button" onClick={() => setRightTab("overview")}>返回</button>}
         </div>
 
         {rightTab === "overview" && (
@@ -384,40 +413,22 @@ export default function App() {
             <div className="context-welcome">
               <Sparkles size={17} />
               <strong>等待开始排查</strong>
-              <p>运行 RCA100 t039 后，这里会实时显示 Agent、Hypothesis、Evidence 和 RCA 结论。</p>
+              <p>开始 Investigation 后，这里只展示当前调查的关键上下文与状态摘要。</p>
             </div>
           ) : (
           <>
-            <section className="context-section">
-              <div className="context-heading"><strong>调查进度</strong><span>{investigationProgress}%</span></div>
-              <div className="progress-bar"><span style={{ width: `${investigationProgress}%` }} /></div>
-              <div className="phase-text">{snapshot.conclusion ? "根因已收敛" : snapshot.status === "interrupted" ? "调查在服务重启时中断" : snapshot.status === "error" ? "调查执行失败" : snapshot.status === "cancelled" ? "调查已停止" : stopping ? "正在停止 Agent 任务" : running ? "正在收集和验证证据" : "等待开始"}</div>
-            </section>
-
-            <section className="context-section">
-              <div className="context-heading"><strong>Agent</strong><span>{doneCount}/4</span></div>
-              <div className="compact-agent-list">
-                {agents.map((agent) => {
-                  const Icon = agentIcon[agent.id];
-                  return <div className="compact-agent" key={agent.id}><Icon size={13} /><span>{agent.name}</span><i className={`state-dot ${agent.state}`} title={statusLabel(agent.state)} /></div>;
-                })}
+            <section className="context-section context-basics">
+              <div className="context-heading"><strong>基本信息</strong></div>
+              <div className="context-facts">
+                <div><span>状态</span><strong className={`fact-status ${snapshot.status}`}>{investigationStatusLabel(snapshot.status)}</strong></div>
+                <div><span>数据集</span><b>{snapshot.dataset.name} · {snapshot.dataset.taskId}</b></div>
+                <div><span>调查 ID</span><code>{shortInvestigationId(incidentId)}</code></div>
+                <div><span>当前阶段</span><b>{investigationStateText(snapshot)}</b></div>
               </div>
             </section>
 
             <section className="context-section">
-              <div className="context-heading"><strong>Tasks</strong><span>{tasks.filter((task) => task.status === "succeeded").length}/{tasks.length}</span></div>
-              <div className="compact-task-list">
-                {tasks.slice(-6).map((task) => (
-                  <div className="compact-task" key={task.id}>
-                    <b>{task.id}</b><span>{task.agent}</span><small className={task.status}>{task.status}</small>
-                  </div>
-                ))}
-                {tasks.length === 0 && <span className="context-empty">等待 Coordinator 创建 AgentTask…</span>}
-              </div>
-            </section>
-
-            <section className="context-section">
-              <div className="context-heading"><strong>Hypotheses</strong><span>{hypotheses.length}</span></div>
+              <div className="context-heading"><strong>假设与验证</strong><span>{hypotheses.length}</span></div>
               <div className="compact-hypothesis-list">
                 {hypotheses.map((item) => (
                   <div className="compact-hypothesis" key={item.id}>
@@ -430,16 +441,31 @@ export default function App() {
             </section>
 
             <section className="context-section">
-              <div className="context-heading"><strong>Key Evidence</strong><span>{evidence.length}</span></div>
+              <div className="context-heading"><strong>关键证据</strong><span>{evidence.length}</span></div>
               <div className="compact-evidence-list">
-                {evidence.slice(0, 4).map((item) => <div className="compact-evidence" key={item.id}><b>{item.id}</b><span>{item.label}</span></div>)}
+                {evidence.slice(0, 4).map((item) => (
+                  <div className="compact-evidence" key={item.id}>
+                    <b>{item.id}</b><span>{item.label}</span>
+                  </div>
+                ))}
                 {evidence.length === 0 && <span className="context-empty">等待 Agent 生成 Evidence…</span>}
               </div>
             </section>
 
-            <section className={`context-section context-result ${snapshot.conclusion ? "ready" : ""}`}>
-              <div className="context-heading"><strong><AlertTriangle size={13} /> 当前结论</strong></div>
-              <p>{snapshot.conclusion ? snapshot.conclusion.rootCause : "Coordinator 正在等待更多证据，暂不下结论。"}</p>
+            <section className="context-section">
+              <div className="context-heading"><strong>已派发 Agent</strong><span>{visibleAgents.length}</span></div>
+              <div className="compact-agent-list">
+                {visibleAgents.map((agent) => {
+                  const Icon = agentIcon[agent.id];
+                  return <div className="compact-agent" key={agent.id}><Icon size={13} /><span>{agent.name}</span><small>{statusLabel(agent.state)}</small><i className={`state-dot ${agent.state}`} /></div>;
+                })}
+                {visibleAgents.length === 0 && <span className="context-empty">Coordinator 尚未派发 Agent。</span>}
+              </div>
+            </section>
+
+            <section className="context-actions">
+              <button type="button" onClick={() => setRightTab("tools")}><Wrench size={14} /><span>查看工具调用详情</span><ChevronRight size={14} /></button>
+              <button type="button" onClick={() => setRightTab("evidence")}><Database size={14} /><span>查看全部 Evidence</span><ChevronRight size={14} /></button>
             </section>
           </>
           )
@@ -507,7 +533,7 @@ function CoordinatorMessage({ time, children, conclusion = false }: { time: stri
 
 function ThinkingItem({ item }: { item: InvestigationSnapshot["thinking"][number] }) {
   return (
-    <details className={`thinking ${item.completed ? "completed" : "streaming"}`} open={!item.completed}>
+    <details className={`thinking ${item.completed ? "completed" : "streaming"}`}>
       <summary>
         <Brain size={16} />
         <span>{item.completed ? item.title : `正在${item.title}`}</span>
@@ -555,7 +581,7 @@ function AgentTaskCard({ agent, tools, evidence }: {
 }) {
   const Icon = agentIcon[agent.id];
   return (
-    <details className={`agent-task ${agent.state}`} open={agent.state === "running"}>
+    <details className={`agent-task ${agent.state}`}>
       <summary>
         <div className={`agent-task-icon ${agent.id}`}><Icon size={15} /></div>
         <div className="agent-task-main">
