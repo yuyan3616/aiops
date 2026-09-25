@@ -1,11 +1,10 @@
-import type { InvestigationSnapshot, RcaStreamEvent } from "@shared/rca-types";
+import type {
+  InvestigationSnapshot,
+  InvestigationSummary,
+  RcaStreamEvent,
+} from "@shared/rca-types";
 
-export interface IncidentSummary {
-  id: string;
-  title: string;
-  time: string;
-  status: string;
-}
+export type IncidentSummary = InvestigationSummary;
 
 async function readJson<T>(input: RequestInfo | URL, init?: RequestInit): Promise<T> {
   const response = await fetch(input, init);
@@ -18,6 +17,17 @@ async function readJson<T>(input: RequestInfo | URL, init?: RequestInit): Promis
 
 export function listIncidents() {
   return readJson<IncidentSummary[]>("/api/rca/incidents");
+}
+
+export function createInvestigation(taskId = "t039") {
+  return readJson<{ investigation: { id: string; snapshot: InvestigationSnapshot } }>(
+    "/api/rca/incidents",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ taskId }),
+    },
+  );
 }
 
 export function getInvestigation(id: string) {
@@ -58,7 +68,7 @@ export function connectInvestigationEvents(
     try {
       onEvent(JSON.parse(message.data) as RcaStreamEvent);
     } catch {
-      // Ignore malformed demo events and let the next valid SSE event continue the stream.
+      // Ignore malformed events and let the next valid SSE event continue the stream.
     }
   };
   return source;

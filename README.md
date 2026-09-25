@@ -1,6 +1,6 @@
-# Pi Chat RCA — v8.1 Controlled Harness
+# Pi Chat RCA — v8.1.1 History MVP
 
-A chat-first multi-agent RCA system built on Pi `0.86.1`. v8.0 replaced hard-coded observability answers with real queries over the public RCA100 v1.1 `t039` telemetry. v8.1 keeps that real-data loop and adds a **Controlled Investigation Harness** around Pi AgentSession so specialist work is bounded, cancellable, context-controlled and traceable.
+A chat-first multi-agent RCA system built on Pi `0.86.1`. v8.1 keeps the real RCA100 + Controlled Harness loop. v8.1.1 restores the original Pi Chat history model for RCA: investigations are listed from disk after restart, while Coordinator/Specialist transcripts use Pi native JSONL sessions.
 
 Current demo baseline:
 
@@ -63,6 +63,34 @@ AgentManager
 ```
 
 Pi still owns the LLM loop, model/provider integration, one AgentSession's transcript, provider retry and tool-calling protocol. The RCA Harness owns task lifecycle, scheduling, cross-Agent context assembly, hard budgets, cancellation and investigation-level correlation metadata.
+
+
+## v8.1.1 History MVP
+
+RCA history now follows the original Pi Chat persistence idea instead of keeping every investigation only in the Node process:
+
+```text
+~/.pi/agent/pi-chat/rca/
+├── investigations/      RCA snapshot + Pi session references
+├── sessions/            Pi SessionManager JSONL transcripts
+└── workspaces/           per-investigation/per-role workspaces
+```
+
+The five RCA roles no longer use `SessionManager.inMemory()`. Coordinator and any Specialist role actually used by an investigation get a persistent Pi session through `SessionManager.create(...)`; an existing session reference is reopened with `SessionManager.open(...)`.
+
+The left sidebar contains real persisted investigations only. Restarting the Node server does not remove completed history. A record that was persisted as `running`/`stopping` is presented as `interrupted` after restart; automatic task resume is intentionally deferred to v8.2.
+
+Use `PI_CHAT_ROOT_DIR` only when you want to override the default Pi Chat local-state root.
+
+```env
+# PI_CHAT_ROOT_DIR=/absolute/path/to/pi-chat-state
+```
+
+Run deterministic History tests with:
+
+```bash
+npm run history:test
+```
 
 ## v8.1 Harness behavior
 

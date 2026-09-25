@@ -766,3 +766,6 @@ button { cursor: pointer; }
 .compact-task small { color: #888; font-size: 10px; }
 .compact-task small.succeeded { color: #067647; }
 .compact-task small.failed, .compact-task small.timed_out { color: #b42318; }
+.compact-task small.interrupted { color: #777; }
+
+.history-empty { padding: 12px 10px; color: #999; font-size: 11px; text-align: center; }

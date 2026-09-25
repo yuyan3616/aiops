@@ -38,6 +38,14 @@ export class EvidenceStore {
     this.idByQueryKey.clear();
   }
 
+  restore(items: EvidenceView[]) {
+    this.reset();
+    for (const item of items) {
+      this.byId.set(item.id, structuredClone(item));
+      this.idByQueryKey.set(item.queryKey, item.id);
+    }
+  }
+
   queryKey(input: Pick<PutEvidenceInput, "datasetTaskId" | "type" | "query">) {
     return `${input.datasetTaskId}:${input.type}:${stableStringify(input.query)}`;
   }

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import type {
   AgentKind,
+  AgentTaskView,
   AgentView,
   CoordinatorMessage,
   HypothesisView,
@@ -26,6 +27,8 @@ import {
   type FinalRcaInput,
   type HypothesisUpdateInput,
 } from "./pi-agent-client";
+import { normalizeRestoredSnapshot } from "./history/restore";
+import type { PersistentAgentSessionRegistry } from "./history/session-registry";
 import { Rca100ToolGateway } from "./tool-gateway";
 
 const DEFAULT_TASK_ID = "t039";
@@ -131,10 +134,15 @@ function windowLabel(task: Rca100Task) {
   return `${format(start)} ~ ${format(end)}`;
 }
 
+export interface RcaRuntimeOptions {
+  sessionRegistry: PersistentAgentSessionRegistry;
+  restoredSnapshot?: InvestigationSnapshot;
+}
+
 export class RcaRuntime {
   readonly channel = new EventChannel();
   private readonly evidenceStore = new EvidenceStore();
-  private readonly llm = new PiRcaAgentClient();
+  private readonly llm: PiRcaAgentClient;
   private readonly toolGateway = new Rca100ToolGateway();
   private agents = new Map<AgentKind, AgentView>();
   private hypotheses = new Map<string, HypothesisView>();
@@ -153,20 +161,31 @@ export class RcaRuntime {
   private task: Rca100Task = structuredClone(T039_FALLBACK_TASK);
   private telemetryReady = false;
   private currentPrompt = this.task.prompt_text;
+  private restoredTasks: AgentTaskView[] = [];
+  private displayTitle = this.task.alert_title;
+  private displayWindow = windowLabel(this.task);
+  private datasetVersion = this.task.task_version || "v1.1";
 
-  constructor(readonly incidentId: string, readonly taskId = DEFAULT_TASK_ID) {
+  constructor(
+    readonly incidentId: string,
+    readonly taskId = DEFAULT_TASK_ID,
+    options: RcaRuntimeOptions,
+  ) {
+    this.llm = new PiRcaAgentClient(options.sessionRegistry);
     this.resetState(false);
+    if (options.restoredSnapshot) this.restoreSnapshot(options.restoredSnapshot);
   }
 
   snapshot(): InvestigationSnapshot {
     return {
       incidentId: this.incidentId,
-      title: this.task.alert_title,
+      prompt: this.currentPrompt,
+      title: this.displayTitle,
       severity: "P1",
-      window: windowLabel(this.task),
+      window: this.displayWindow,
       dataset: {
         name: "RCA100",
-        version: this.task.task_version || "v1.1",
+        version: this.datasetVersion,
         taskId: this.taskId,
         telemetryReady: this.telemetryReady,
       },
@@ -174,7 +193,7 @@ export class RcaRuntime {
       error: this.error,
       phase: this.phase,
       agents: [...this.agents.values()],
-      tasks: this.harness?.taskViews() ?? [],
+      tasks: this.harness?.taskViews() ?? structuredClone(this.restoredTasks),
       hypotheses: [...this.hypotheses.values()],
       evidence: this.evidenceStore.list(),
       messages: [...this.messages],
@@ -188,6 +207,9 @@ export class RcaRuntime {
 
   start(prompt = this.task.prompt_text) {
     if (this.runPromise) return this.runPromise;
+    if (this.status !== "idle") {
+      throw new Error(`Investigation ${this.incidentId} has already started; create a new investigation to run RCA again.`);
+    }
     this.currentPrompt = prompt.trim() || this.task.prompt_text;
     this.runPromise = this.execute().finally(() => {
       this.runPromise = undefined;
@@ -208,6 +230,10 @@ export class RcaRuntime {
     return this.llm.modelLabel();
   }
 
+  sessionRefs() {
+    return this.llm.sessionRefs();
+  }
+
   recommendedPrompt() {
     return this.task.prompt_text;
   }
@@ -223,6 +249,10 @@ export class RcaRuntime {
     this.conclusion = undefined;
     this.telemetryReady = false;
     this.activeThinking = undefined;
+    this.restoredTasks = [];
+    this.displayTitle = this.task.alert_title;
+    this.displayWindow = windowLabel(this.task);
+    this.datasetVersion = this.task.task_version || "v1.1";
     this.evidenceStore.reset();
     this.agents = new Map(BASE_AGENTS.map((agent) => [agent.id, { ...agent }]));
     this.hypotheses = new Map(
@@ -235,6 +265,28 @@ export class RcaRuntime {
     this.thinking = [];
     this.messages = [];
     if (publish) this.channel.publish("investigation.reset", this.snapshot());
+  }
+
+
+  private restoreSnapshot(input: InvestigationSnapshot) {
+    const snapshot = normalizeRestoredSnapshot(input);
+    this.currentPrompt = snapshot.prompt || this.task.prompt_text;
+    this.phase = snapshot.phase;
+    this.status = snapshot.status;
+    this.error = snapshot.error;
+    this.conclusion = snapshot.conclusion ? structuredClone(snapshot.conclusion) : undefined;
+    this.telemetryReady = snapshot.dataset.telemetryReady;
+    this.runId = snapshot.runId;
+    this.displayTitle = snapshot.title;
+    this.displayWindow = snapshot.window;
+    this.datasetVersion = snapshot.dataset.version;
+    this.agents = new Map(snapshot.agents.map((agent) => [agent.id, structuredClone(agent)]));
+    this.hypotheses = new Map(snapshot.hypotheses.map((item) => [item.id, structuredClone(item)]));
+    this.messages = structuredClone(snapshot.messages);
+    this.thinking = structuredClone(snapshot.thinking);
+    this.toolRuns = new Map(snapshot.toolRuns.map((item) => [item.id, structuredClone(item)]));
+    this.restoredTasks = structuredClone(snapshot.tasks);
+    this.evidenceStore.restore(snapshot.evidence);
   }
 
   private setStatus(status: InvestigationStatus) {
@@ -414,6 +466,9 @@ export class RcaRuntime {
       if (controller.signal.aborted) throw controller.signal.reason;
       this.task = await this.toolGateway.getTask(this.taskId, true);
       if (controller.signal.aborted) throw controller.signal.reason;
+      this.displayTitle = this.task.alert_title;
+      this.displayWindow = windowLabel(this.task);
+      this.datasetVersion = this.task.task_version || "v1.1";
       this.telemetryReady = true;
       const readySnapshot = this.snapshot();
       this.channel.publish("dataset.ready", {
