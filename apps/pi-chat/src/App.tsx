@@ -116,6 +116,7 @@ export default function App() {
   const [draft, setDraft] = useState("");
   const [showWelcome, setShowWelcome] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [detailOpen, setDetailOpen] = useState(false);
 
   useEffect(() => {
     let disposed = false;
@@ -147,6 +148,7 @@ export default function App() {
 
   useEffect(() => {
     setRightTab("overview");
+    setDetailOpen(false);
   }, [incidentId]);
 
   useEffect(() => {
@@ -294,6 +296,11 @@ export default function App() {
           <div className="topbar-actions">
             {running && <span className="runtime-pill">Pi Agent · {connected ? "实时连接" : "连接中"} <i className={connected ? "connection-dot online" : "connection-dot"} /></span>}
             {hasInvestigationStarted && (
+              <button className="icon-text-button detail-trigger" type="button" onClick={() => setDetailOpen(true)}>
+                <PanelRight size={14} />调查详情
+              </button>
+            )}
+            {hasInvestigationStarted && (
               running ? (
                 <button className="icon-text-button stop-investigation" onClick={stopInvestigation} disabled={stopping}>
                   <Square size={13} />{stopping ? "停止中" : "停止排查"}
@@ -332,6 +339,9 @@ export default function App() {
               evidence={evidence}
             />
           )}
+
+          {evidence.length > 0 && <EvidenceTimelineSummary evidence={evidence} />}
+          {hypotheses.length > 0 && <HypothesisTimelineSummary hypotheses={hypotheses} />}
 
           {evidenceThinking.map((item) => <ThinkingItem key={item.id} item={item} />)}
 
@@ -401,79 +411,65 @@ export default function App() {
         )}
       </section>
 
-      <aside className="investigation-sidebar">
-        <div className="investigation-header">
-          <PanelRight size={15} />
-          <strong>{rightTab === "overview" ? "调查上下文" : rightTab === "tools" ? "工具调用" : "全部证据"}</strong>
-          {rightTab !== "overview" && <button type="button" onClick={() => setRightTab("overview")}>返回</button>}
-        </div>
-
-        {rightTab === "overview" && (
-          !hasInvestigationStarted ? (
-            <div className="context-welcome">
-              <Sparkles size={17} />
-              <strong>等待开始排查</strong>
-              <p>开始 Investigation 后，这里只展示当前调查的关键上下文与状态摘要。</p>
+      {detailOpen && hasInvestigationStarted && (
+        <>
+          <button className="detail-backdrop" type="button" onClick={() => setDetailOpen(false)} aria-label="关闭调查详情" />
+          <aside className="investigation-drawer" aria-label="调查详情">
+            <div className="drawer-header">
+              <div><PanelRight size={15} /><strong>调查详情</strong></div>
+              <button type="button" onClick={() => setDetailOpen(false)} aria-label="关闭调查详情"><X size={16} /></button>
             </div>
-          ) : (
-          <>
-            <section className="context-section context-basics">
-              <div className="context-heading"><strong>基本信息</strong></div>
-              <div className="context-facts">
-                <div><span>状态</span><strong className={`fact-status ${snapshot.status}`}>{investigationStatusLabel(snapshot.status)}</strong></div>
-                <div><span>数据集</span><b>{snapshot.dataset.name} · {snapshot.dataset.taskId}</b></div>
-                <div><span>调查 ID</span><code>{shortInvestigationId(incidentId)}</code></div>
-                <div><span>当前阶段</span><b>{investigationStateText(snapshot)}</b></div>
-              </div>
-            </section>
 
-            <section className="context-section">
-              <div className="context-heading"><strong>假设与验证</strong><span>{hypotheses.length}</span></div>
-              <div className="compact-hypothesis-list">
-                {hypotheses.map((item) => (
-                  <div className="compact-hypothesis" key={item.id}>
-                    <span className="hypothesis-id">{item.id}</span>
-                    <span>{item.title}</span>
-                    <small className={item.state}>{hypothesisLabel(item.state)}</small>
+            <div className="drawer-tabs">
+              <button className={rightTab === "overview" ? "active" : ""} onClick={() => setRightTab("overview")}>概览</button>
+              <button className={rightTab === "tools" ? "active" : ""} onClick={() => setRightTab("tools")}>工具</button>
+              <button className={rightTab === "evidence" ? "active" : ""} onClick={() => setRightTab("evidence")}>证据</button>
+            </div>
+
+            {rightTab === "overview" && (
+              <div className="drawer-content">
+                <section className="context-section context-basics">
+                  <div className="context-heading"><strong>基本信息</strong></div>
+                  <div className="context-facts">
+                    <div><span>状态</span><strong className={`fact-status ${snapshot.status}`}>{investigationStatusLabel(snapshot.status)}</strong></div>
+                    <div><span>数据集</span><b>{snapshot.dataset.name} · {snapshot.dataset.taskId}</b></div>
+                    <div><span>调查 ID</span><code>{shortInvestigationId(incidentId)}</code></div>
+                    <div><span>当前阶段</span><b>{investigationStateText(snapshot)}</b></div>
                   </div>
-                ))}
-              </div>
-            </section>
+                </section>
 
-            <section className="context-section">
-              <div className="context-heading"><strong>关键证据</strong><span>{evidence.length}</span></div>
-              <div className="compact-evidence-list">
-                {evidence.slice(0, 4).map((item) => (
-                  <div className="compact-evidence" key={item.id}>
-                    <b>{item.id}</b><span>{item.label}</span>
+                <section className="context-section">
+                  <div className="context-heading"><strong>已派发 Agent</strong><span>{visibleAgents.length}</span></div>
+                  <div className="compact-agent-list">
+                    {visibleAgents.map((agent) => {
+                      const Icon = agentIcon[agent.id];
+                      return <div className="compact-agent" key={agent.id}><Icon size={13} /><span>{agent.name}</span><small>{statusLabel(agent.state)}</small><i className={`state-dot ${agent.state}`} /></div>;
+                    })}
+                    {visibleAgents.length === 0 && <span className="context-empty">Coordinator 尚未派发 Agent。</span>}
                   </div>
-                ))}
-                {evidence.length === 0 && <span className="context-empty">等待 Agent 生成 Evidence…</span>}
+                </section>
+
+                <section className="context-section">
+                  <div className="context-heading"><strong>假设</strong><span>{hypotheses.length}</span></div>
+                  <div className="compact-hypothesis-list">
+                    {hypotheses.map((item) => (
+                      <div className="compact-hypothesis" key={item.id}>
+                        <span className="hypothesis-id">{item.id}</span>
+                        <span>{item.title}</span>
+                        <small className={item.state}>{hypothesisLabel(item.state)}</small>
+                      </div>
+                    ))}
+                    {hypotheses.length === 0 && <span className="context-empty">尚未形成 Hypothesis。</span>}
+                  </div>
+                </section>
               </div>
-            </section>
+            )}
 
-            <section className="context-section">
-              <div className="context-heading"><strong>已派发 Agent</strong><span>{visibleAgents.length}</span></div>
-              <div className="compact-agent-list">
-                {visibleAgents.map((agent) => {
-                  const Icon = agentIcon[agent.id];
-                  return <div className="compact-agent" key={agent.id}><Icon size={13} /><span>{agent.name}</span><small>{statusLabel(agent.state)}</small><i className={`state-dot ${agent.state}`} /></div>;
-                })}
-                {visibleAgents.length === 0 && <span className="context-empty">Coordinator 尚未派发 Agent。</span>}
-              </div>
-            </section>
-
-            <section className="context-actions">
-              <button type="button" onClick={() => setRightTab("tools")}><Wrench size={14} /><span>查看工具调用详情</span><ChevronRight size={14} /></button>
-              <button type="button" onClick={() => setRightTab("evidence")}><Database size={14} /><span>查看全部 Evidence</span><ChevronRight size={14} /></button>
-            </section>
-          </>
-          )
-        )}
-
-        {rightTab === "tools" && <CompactTools toolRuns={toolRuns} />}
-        {rightTab === "evidence" && <CompactEvidence evidence={evidence} />}
-      </aside>
+            {rightTab === "tools" && <CompactTools toolRuns={toolRuns} />}
+            {rightTab === "evidence" && <CompactEvidence evidence={evidence} />}
+          </aside>
+        </>
+      )}
     </div>
   );
 }
@@ -601,6 +597,58 @@ function AgentTaskCard({ agent, tools, evidence }: {
         {evidence.map((item) => (
           <div className="inline-evidence" key={item.id}>
             <Database size={13} /><b>{item.id}</b><span>{item.label}</span><small>{item.modality}</small>
+          </div>
+        ))}
+      </div>
+    </details>
+  );
+}
+
+function EvidenceTimelineSummary({ evidence }: { evidence: InvestigationSnapshot["evidence"] }) {
+  return (
+    <details className="timeline-summary evidence-summary">
+      <summary>
+        <span className="timeline-summary-icon"><Database size={14} /></span>
+        <span className="timeline-summary-main">
+          <strong>Evidence 更新</strong>
+          <small>已生成 {evidence.length} 条可引用证据</small>
+        </span>
+        <ChevronDown size={15} className="details-chevron" />
+      </summary>
+      <div className="timeline-summary-body">
+        {evidence.map((item) => (
+          <div className="timeline-evidence-row" key={item.id}>
+            <b>{item.id}</b>
+            <span>{item.label}</span>
+            <small>{item.modality}</small>
+          </div>
+        ))}
+      </div>
+    </details>
+  );
+}
+
+function HypothesisTimelineSummary({ hypotheses }: { hypotheses: InvestigationSnapshot["hypotheses"] }) {
+  const supported = hypotheses.filter((item) => item.state === "supported").length;
+  const validating = hypotheses.filter((item) => item.state === "validating" || item.state === "possible").length;
+  const rejected = hypotheses.filter((item) => item.state === "rejected").length;
+
+  return (
+    <details className="timeline-summary hypothesis-summary">
+      <summary>
+        <span className="timeline-summary-icon"><CircleDot size={14} /></span>
+        <span className="timeline-summary-main">
+          <strong>假设更新</strong>
+          <small>{supported} 支持 · {validating} 待验证 · {rejected} 已排除</small>
+        </span>
+        <ChevronDown size={15} className="details-chevron" />
+      </summary>
+      <div className="timeline-summary-body">
+        {hypotheses.map((item) => (
+          <div className="timeline-hypothesis-row" key={item.id}>
+            <b>{item.id}</b>
+            <span>{item.title}</span>
+            <small className={item.state}>{hypothesisLabel(item.state)}</small>
           </div>
         ))}
       </div>
