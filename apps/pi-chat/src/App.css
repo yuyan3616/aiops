@@ -1257,3 +1257,29 @@ button { cursor: pointer; }
 @media (prefers-reduced-motion: reduce) {
   .investigation-drawer { transition: none; }
 }
+
+
+/* Pi Chat footer correction: only the welcome composer floats at the bottom. */
+.conversation-stream {
+  padding-bottom: 36px;
+}
+
+.conversation-stream.empty-stream {
+  padding-bottom: 170px;
+}
+
+.investigation-footer,
+.live-footer,
+.history-readonly {
+  display: none !important;
+}
+
+@media (max-width: 760px) {
+  .conversation-stream {
+    padding-bottom: 28px;
+  }
+
+  .conversation-stream.empty-stream {
+    padding-bottom: 160px;
+  }
+}
