@@ -205,7 +205,7 @@ test("H81-065 ToolGuard rejects oversized input, bounds rows, and rejects oversi
   const makeEvidence = (index: number, summary = "x") => ({
     taskId: "T1",
     datasetTaskId: "t039",
-    type: "log",
+    type: "log" as const,
     modality: "log" as const,
     label: `E${index}`,
     source: "RCA100-v1.1",

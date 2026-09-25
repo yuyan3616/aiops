@@ -153,7 +153,7 @@ export class RcaRuntime {
   private status: InvestigationStatus = "idle";
   private error?: string;
   private conclusion: InvestigationSnapshot["conclusion"];
-  private runId = randomUUID();
+  private runId: string = randomUUID();
   private runPromise?: Promise<void>;
   private runAbortController?: AbortController;
   private harness?: InvestigationHarness;
