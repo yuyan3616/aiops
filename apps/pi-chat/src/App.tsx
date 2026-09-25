@@ -533,7 +533,7 @@ function CoordinatorMessage({ time, children, conclusion = false }: { time: stri
 
 function ThinkingItem({ item }: { item: InvestigationSnapshot["thinking"][number] }) {
   return (
-    <details className={`thinking ${item.completed ? "completed" : "streaming"}`} open={!item.completed}>
+    <details className={`thinking ${item.completed ? "completed" : "streaming"}`}>
       <summary>
         <Brain size={16} />
         <span>{item.completed ? item.title : `正在${item.title}`}</span>
@@ -581,7 +581,7 @@ function AgentTaskCard({ agent, tools, evidence }: {
 }) {
   const Icon = agentIcon[agent.id];
   return (
-    <details className={`agent-task ${agent.state}`} open={agent.state === "running"}>
+    <details className={`agent-task ${agent.state}`}>
       <summary>
         <div className={`agent-task-icon ${agent.id}`}><Icon size={15} /></div>
         <div className="agent-task-main">
