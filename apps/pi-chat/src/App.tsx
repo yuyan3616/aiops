@@ -146,6 +146,10 @@ export default function App() {
   }, [incidentId]);
 
   useEffect(() => {
+    setRightTab("overview");
+  }, [incidentId]);
+
+  useEffect(() => {
     if (!snapshot || incidentId === "demo") return;
     setConversations((current) => current.map((item) =>
       item.id === incidentId
@@ -241,7 +245,7 @@ export default function App() {
       <aside className={`conversation-sidebar ${sidebarOpen ? "mobile-open" : ""}`}>
         <div className="sidebar-brand">
           <div className="brand-mark"><Activity size={17} /></div>
-          <div><strong>AI Ops RCA</strong><span>基于 Pi 的多智能体根因分析</span></div>
+          <div className="sidebar-brand-copy"><strong>AI Ops RCA</strong><span>基于 Pi 的多智能体根因分析</span></div>
           <button className="sidebar-mobile-close" type="button" onClick={() => setSidebarOpen(false)} aria-label="关闭历史调查">
             <X size={16} />
           </button>
