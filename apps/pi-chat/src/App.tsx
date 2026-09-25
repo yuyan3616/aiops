@@ -162,7 +162,6 @@ export default function App() {
   const hypotheses = snapshot?.hypotheses ?? [];
   const evidence = snapshot?.evidence ?? [];
   const toolRuns = snapshot?.toolRuns ?? [];
-  const tasks = snapshot?.tasks ?? [];
   const running = snapshot?.status === "running" || snapshot?.status === "stopping";
   const stopping = snapshot?.status === "stopping";
   const hasInvestigationStarted = !showWelcome;
