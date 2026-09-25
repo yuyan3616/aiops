@@ -385,7 +385,7 @@ export default function App() {
           )}
         </main>
 
-        {!hasInvestigationStarted ? (
+        {!hasInvestigationStarted && (
           <form className="composer" onSubmit={(event) => { event.preventDefault(); submit(); }}>
             <textarea
               value={draft}
@@ -398,16 +398,6 @@ export default function App() {
               <button className="send-button" type="submit" disabled={!draft.trim()} aria-label="发送"><Send size={16} /></button>
             </div>
           </form>
-        ) : running ? (
-          <div className="investigation-footer live-footer">
-            <div><span className="live-dot" /> <strong>调查进行中</strong><small>{investigationStateText(snapshot)}</small></div>
-            <span>页面会随 Agent / Tool / Evidence 实时更新</span>
-          </div>
-        ) : (
-          <div className="investigation-footer history-readonly">
-            <div><strong>历史调查 · 只读</strong><small>当前版本不会在已结束的 Investigation 内继续调用模型或工具。</small></div>
-            <button type="button" onClick={rerun}><TimerReset size={14} /> 再次运行</button>
-          </div>
         )}
       </section>
 
