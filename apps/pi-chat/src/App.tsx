@@ -167,6 +167,16 @@ export default function App() {
   const running = snapshot?.status === "running" || snapshot?.status === "stopping";
   const stopping = snapshot?.status === "stopping";
   const hasInvestigationStarted = !showWelcome;
+  const composerPlaceholder = running
+    ? "当前调查正在运行，可以先输入下一条问题…"
+    : hasInvestigationStarted
+      ? "继续输入问题，发送后将创建新的 Investigation…"
+      : "描述故障现象，或点击上方推荐示例…";
+  const composerHint = running
+    ? "当前调查运行中，完成后即可发送"
+    : hasInvestigationStarted
+      ? "发送后会创建新的 Investigation，不会修改当前历史"
+      : "发送后会创建一条新的 Investigation";
   const currentSummary = conversations.find((item) => item.id === incidentId);
   const promptTime = currentSummary ? messageTime(currentSummary.createdAt) : "--:--";
   const planMessages = snapshot?.messages.filter((message) => message.kind === "plan") ?? [];
@@ -385,20 +395,18 @@ export default function App() {
           )}
         </main>
 
-        {!hasInvestigationStarted && (
-          <form className="composer" onSubmit={(event) => { event.preventDefault(); submit(); }}>
-            <textarea
-              value={draft}
-              onChange={(event) => setDraft(event.target.value)}
-              placeholder="描述故障现象，或点击上方推荐示例…"
-              rows={2}
-            />
-            <div className="composer-footer">
-              <span className="composer-hint">发送后会创建一条新的 Investigation</span>
-              <button className="send-button" type="submit" disabled={!draft.trim()} aria-label="发送"><Send size={16} /></button>
-            </div>
-          </form>
-        )}
+        <form className="composer" onSubmit={(event) => { event.preventDefault(); submit(); }}>
+          <textarea
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            placeholder={composerPlaceholder}
+            rows={2}
+          />
+          <div className="composer-footer">
+            <span className="composer-hint">{composerHint}</span>
+            <button className="send-button" type="submit" disabled={!draft.trim() || running} aria-label="发送"><Send size={16} /></button>
+          </div>
+        </form>
       </section>
 
       {detailOpen && hasInvestigationStarted && (
