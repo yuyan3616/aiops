@@ -1283,3 +1283,31 @@ button { cursor: pointer; }
     padding-bottom: 160px;
   }
 }
+
+
+/* Pi Chat composer: persistent across welcome, running and history states. */
+.conversation-stream,
+.conversation-stream.empty-stream {
+  padding-bottom: 148px;
+}
+
+.composer {
+  z-index: 12;
+}
+
+.composer-hint {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 760px) {
+  .conversation-stream,
+  .conversation-stream.empty-stream {
+    padding-bottom: 142px;
+  }
+
+  .composer-hint {
+    max-width: calc(100vw - 92px);
+  }
+}
