@@ -160,3 +160,15 @@ get_topology_*   -> CMDB / service catalog / trace-derived graph
 ```
 
 The important invariant is that Tools continue to return the same Evidence contract.
+
+## Next milestone: v8.1 Investigation Harness
+
+v8.0 proves the real-data RCA business loop. The next milestone focuses on execution control rather than adding more Agent roles or UI features.
+
+Planning documents:
+
+- [`rca-harness-roadmap.md`](./rca-harness-roadmap.md) — v8.1 through v8.4 sequencing and architecture boundaries.
+- [`v8.1-harness-spec.md`](./v8.1-harness-spec.md) — implementation contract for TaskPolicy, scheduling, context, budgets, cancellation and guardrails.
+- [`v8.1-harness-tasks.md`](./v8.1-harness-tasks.md) — task IDs, development order and acceptance gates.
+
+The implementation rule for v8.1 is: **Pi continues to own the Agent loop; the RCA Harness owns bounded multi-Agent execution.**
