@@ -1,154 +1,252 @@
-# RCA Architecture — v8.0
+# RCA Architecture — v8.1 Controlled Harness
 
 ## Goal
 
-v8.0 proves one complete data-driven RCA loop on RCA100 `t039`: real Pi AgentSessions select tools, tools execute real queries over public telemetry files, and the Coordinator can finalize only from recorded Evidence.
+v8.0 proved the real-data RCA loop on RCA100 `t039`. v8.1 keeps the same Coordinator/Specialist/Tool/Evidence behavior while adding a lightweight RCA-specific Harness around Pi so specialist execution is bounded, cancellable, context-controlled and traceable.
+
+The core rule is:
+
+> **Agent decides what to investigate; Harness decides how that work executes safely.**
 
 ## Runtime layers
 
 ```text
-User / recommended RCA100 case
-              |
-              v
-        RcaRuntime
-              |
-              v
-     Pi Coordinator Session
-        |      |      |
-        | RCA investigation Skill
-        |      |      |
-        v      v      v
-   delegate  hypotheses  finalize
-        |
-        +-------------------------------+
-        |              |                |
-        v              v                v
-     Log Agent     Metric Agent     Trace Agent      Context Agent
-        |              |                |                 |
-        +--------------+-------+--------+-----------------+
-                               |
-                               v
-                      Rca100ToolGateway
-                               |
-                     normalized query args
-                               |
-                 +-------------+-------------+
-                 |                           |
-                 v                           v
-          DuckDbParquetEngine          topology.json
-                 |
-                 v
-   metrics/logs/traces/events/alerts.parquet
-                 |
-                 v
-                         EvidenceStore
-                               |
-                               v
-                      Coordinator context
+Web Client
+   | HTTP / SSE
+   v
+RcaRuntime
+   |
+   v
+Pi Coordinator AgentSession
+   |
+   | delegate_agents(assignments)
+   v
+InvestigationHarness
+   |
+   +--> AgentTask / TaskPolicy
+   +--> TaskScheduler
+   +--> ContextBuilder
+   +--> Investigation AbortController
+   |
+   v
+AgentManager
+   |
+   +--> persistent Log AgentSession
+   +--> persistent Metric AgentSession
+   +--> persistent Trace AgentSession
+   `--> persistent Context AgentSession
+          |
+          v
+      BudgetGuard
+          |
+      ToolGuard
+          |
+      ToolGateway
+          |
+      EvidenceStore
+          |
+   RCA100 Repository
+       /       \
+   DuckDB    topology.json
 ```
 
-## Responsibility boundaries
+## Ownership boundaries
 
-### System prompt
+### Pi Runtime owns
 
-Defines identity and hard constraints. The Coordinator cannot claim a root cause without Evidence, and Specialist Agents cannot use generic coding tools.
+- provider/model integration;
+- Agent turn loop;
+- one AgentSession's own transcript;
+- provider-level transient retry;
+- tool-calling protocol;
+- model streaming.
 
-### RCA Skill
+### RCA Harness owns
 
-`apps/pi-chat/skills/rca-investigation/SKILL.md` contains investigation methodology. It teaches *how to investigate* but performs no data access.
+- AgentTask lifecycle;
+- per-Agent serialization and global specialist concurrency;
+- TaskPolicy and hard budgets;
+- cross-Agent context assembly;
+- investigation/task cancellation propagation;
+- Tool input/output guardrails;
+- task/tool/evidence correlation metadata.
 
-### Tools
+### RCA Domain owns
 
-Tools perform concrete read/query operations. They return factual observations plus Evidence. They never return a root-cause label as a shortcut.
+- Coordinator planning and hypotheses;
+- specialist role boundaries;
+- EvidenceStore;
+- RCA conclusion validation;
+- RCA100 task/case semantics.
 
-### Dataset adapter
+## AgentTask
 
-`server/datasets/rca100` owns RCA100 file locations, downloads, validation and DuckDB access. Agent code does not know OSS URLs or Parquet paths.
-
-### EvidenceStore
-
-Evidence is the contract between Tool execution and reasoning. Each record contains modality, normalized query payload, structured observation, entity references, time range and raw reference.
-
-### Ground truth
-
-Ground truth is outside the investigation runtime. v8.0 never downloads `answer_key`. A later evaluator will use a separate context/process so the Agent cannot observe labels before completing its prediction.
-
-## Agent roles
-
-### Coordinator
-
-- reads alert/task context;
-- applies RCA Skill;
-- maintains hypotheses;
-- dynamically chooses specialists;
-- requires multi-modal support before finalizing;
-- outputs root-cause entity, fault type, causal chain and evidence IDs.
-
-### Log Agent
-
-Tools:
-- `query_logs`
-- `analyze_log_patterns`
-
-Focus: application error/warning/message evidence and recurring log patterns.
-
-### Metric Agent
-
-Tools:
-- `list_metrics`
-- `query_metrics`
-
-Focus: metric discovery and incident-window statistics. Metric names should be discovered before assuming an unknown name.
-
-### Trace Agent
-
-Tools:
-- `search_traces`
-- `get_trace`
-
-Focus: latency/error spans, service propagation and concrete trace structure.
-
-### Context Agent
-
-Tools:
-- `query_events`
-- `query_alerts`
-- `get_topology_neighbors`
-
-Focus: Kubernetes/environment context, related alert lifecycle and reference topology.
-
-## Data flow
-
-1. `RcaRuntime` publishes `investigation.reset` and running status.
-2. Repository prepares the seven t039 case files.
-3. Runtime emits `dataset.ready`.
-4. Coordinator starts and emits user-visible reasoning summaries.
-5. Coordinator calls `delegate_agents`.
-6. Specialists call scoped custom tools.
-7. Tool Gateway queries RCA100 and writes Evidence.
-8. Evidence IDs are returned to Specialists and then Coordinator.
-9. Coordinator updates hypotheses and may delegate another round.
-10. `finalize_rca` validates at least two valid Evidence IDs across at least two modalities.
-11. Runtime publishes `rca.completed`.
-
-## RCA100 t039 case files
+A specialist assignment is no longer an implicit method call. The Harness creates a stable Task before execution:
 
 ```text
-data/rca100/cases/t039/
-├── task.json
-├── metrics.parquet
-├── logs.parquet
-├── traces.parquet
-├── events.parquet
-├── alerts.parquet
-└── topology.json
+queued -> running -> succeeded
+                |-> failed
+                |-> timed_out
+queued/running  |-> cancelled
 ```
 
-Data files are ignored by Git and not included in release archives.
+Task and dataset IDs are intentionally different:
+
+```text
+T002  = Harness AgentTask
+ t039 = RCA100 dataset case
+```
+
+This distinction is carried into Evidence and ToolRun correlation.
+
+## Scheduling
+
+One active investigation owns one persistent Specialist Pi Session per Agent role.
+
+```text
+Log Session     concurrency = 1
+Metric Session  concurrency = 1
+Trace Session   concurrency = 1
+Context Session concurrency = 1
+
+global specialist concurrency = 3 by default
+```
+
+Therefore two Log tasks serialize, while Log + Metric may overlap. The Coordinator still decides which roles to delegate; the Scheduler only controls execution safety.
+
+## ContextBuilder
+
+Specialists never receive other Agents' complete transcripts. `ContextBuilder` produces `SpecialistExecutionContext` from:
+
+1. case/incident metadata;
+2. current assignment;
+3. explicitly referenced Evidence;
+4. Evidence attached to selected hypotheses;
+5. bounded relevant/recent Evidence;
+6. current TaskPolicy constraints.
+
+The maximum Evidence set is deterministic and bounded by `maxEvidence`.
+
+The Specialist's own Pi Session may retain its own role-local history across tasks; cross-Agent knowledge is shared through structured Evidence/Hypothesis state rather than transcript copying.
+
+## Budgets
+
+Default TaskPolicy:
+
+```text
+timeoutMs     60000
+maxTurns          6
+maxToolCalls     10
+maxEvidence      12
+maxAttempts       1
+```
+
+`BudgetGuard` counts specialist turns and tool calls in canonical execution points. The over-budget call/turn is rejected/aborted before unrestricted continuation. Reused Evidence does not consume the new-Evidence budget.
+
+Pi remains responsible for provider-level transient retry; v8.1 does not multiply retries at Task/Tool layers.
+
+## Cancellation
+
+```text
+POST /api/rca/incidents/:id/abort
+          |
+          v
+Investigation AbortController
+      /            \
+queued tasks      running tasks
+   |                  |
+cancelled        child signal
+                      |
+                AgentSession.abort()
+```
+
+No new tasks are accepted after root cancellation. Fatal runtime termination also aborts in-flight work instead of leaving orphan Specialist runs.
+
+## ToolGuard and ToolGateway
+
+The layers have different responsibilities:
+
+```text
+Agent intent
+   |
+ToolGuard input
+   |- ACL
+   |- string/array/limit caps
+   `- incident time-window validation
+   |
+ToolGateway
+   |- translate intent to RCA100/DuckDB query
+   `- return factual observation + Evidence candidate
+   |
+ToolGuard output
+   |- row/string/serialized-size bounds
+   |- Evidence shape validation
+   |- opaque rawRef validation
+   `- filesystem / answer-key leak prevention
+```
+
+Neither layer returns a root-cause shortcut.
+
+## EvidenceStore
+
+Evidence is the shared fact contract between otherwise isolated AgentSessions. A record includes:
+
+- Harness `taskId`;
+- RCA100 `datasetTaskId`;
+- modality/source;
+- normalized query payload used by the current exact-key cache;
+- structured observation;
+- compact summary;
+- entity/time references;
+- opaque `rawRef`.
+
+Exact-query reuse is preserved. Coverage/subset matching is deferred to v8.3.
+
+## Task and tracing events
+
+The EventChannel carries task lifecycle events in addition to Agent/Tool/Evidence events:
+
+```text
+task.created
+task.started
+task.completed
+task.failed
+task.cancelled
+task.timed_out
+```
+
+Relevant events carry correlation fields:
+
+```text
+investigationId
+runId
+taskId
+agent
+toolCallId
+evidenceId
+```
+
+This makes one failed/slow task traceable from Coordinator delegation through AgentSession, Tool execution and Evidence/error.
+
+## RCA100 / Ground Truth boundary
+
+The investigation runtime sees only:
+
+```text
+task.json
+metrics.parquet
+logs.parquet
+traces.parquet
+events.parquet
+alerts.parquet
+topology.json
+```
+
+`answer_key` remains outside the runtime and is not downloaded by the application. Evaluation stays deferred to v8.4.
 
 ## Production replacement seam
 
-The Agent/Coordinator contracts should survive a future production migration. Replace the dataset-backed query layer with adapters such as:
+The Harness and Agent contracts should survive replacing RCA100 with production adapters:
 
 ```text
 query_logs       -> Loki / Elasticsearch
@@ -159,16 +257,12 @@ query_alerts     -> alert platform
 get_topology_*   -> CMDB / service catalog / trace-derived graph
 ```
 
-The important invariant is that Tools continue to return the same Evidence contract.
+The invariant is that Tools continue to return bounded factual results and Evidence contracts.
 
-## Next milestone: v8.1 Investigation Harness
+## Planning documents
 
-v8.0 proves the real-data RCA business loop. The next milestone focuses on execution control rather than adding more Agent roles or UI features.
+- [`rca-harness-roadmap.md`](./rca-harness-roadmap.md)
+- [`v8.1-harness-spec.md`](./v8.1-harness-spec.md)
+- [`v8.1-harness-tasks.md`](./v8.1-harness-tasks.md)
 
-Planning documents:
-
-- [`rca-harness-roadmap.md`](./rca-harness-roadmap.md) — v8.1 through v8.4 sequencing and architecture boundaries.
-- [`v8.1-harness-spec.md`](./v8.1-harness-spec.md) — implementation contract for TaskPolicy, scheduling, context, budgets, cancellation and guardrails.
-- [`v8.1-harness-tasks.md`](./v8.1-harness-tasks.md) — task IDs, development order and acceptance gates.
-
-The implementation rule for v8.1 is: **Pi continues to own the Agent loop; the RCA Harness owns bounded multi-Agent execution.**
+v8.2 remains persistence/resume, v8.3 remains Evidence intelligence, and v8.4 remains benchmark/evaluation. Those concerns are intentionally not folded into v8.1.

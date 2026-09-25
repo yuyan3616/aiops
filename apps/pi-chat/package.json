@@ -1,6 +1,6 @@
 {
   "name": "pi-chat-rca",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,7 +10,8 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "rca100:download": "node scripts/download-rca100.mjs",
-    "rca100:smoke": "node scripts/smoke-rca100.mjs"
+    "rca100:smoke": "node scripts/smoke-rca100.mjs",
+    "harness:test": "node --experimental-strip-types --test server/rca/__tests__/harness.test.ts"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.86.1",

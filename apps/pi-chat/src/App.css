@@ -755,3 +755,14 @@ button { cursor: pointer; }
   .recommendation-action { justify-content: flex-end; }
 }
 .new-chat:disabled { cursor: not-allowed; opacity: .5; }
+
+.icon-text-button.stop-investigation { color: #b42318; }
+.icon-text-button.stop-investigation:hover:not(:disabled) { background: #fff1f0; color: #912018; }
+.state-dot.cancelled { background: #999; }
+.compact-task-list { display: grid; gap: 6px; }
+.compact-task { display: grid; grid-template-columns: 36px 1fr auto; align-items: center; gap: 6px; min-width: 0; font-size: 11px; color: #666; }
+.compact-task b { color: #444; font: 500 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.compact-task span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: capitalize; }
+.compact-task small { color: #888; font-size: 10px; }
+.compact-task small.succeeded { color: #067647; }
+.compact-task small.failed, .compact-task small.timed_out { color: #b42318; }

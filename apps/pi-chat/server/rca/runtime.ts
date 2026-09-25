@@ -15,6 +15,9 @@ import type {
 import { T039_FALLBACK_TASK } from "../datasets/rca100/fallback";
 import type { Rca100Task } from "../datasets/rca100/schema";
 import { AgentManager } from "./agent-manager";
+import { TaskExecutionError, taskError } from "./harness/errors";
+import { InvestigationHarness } from "./harness/investigation-harness";
+import type { CaseContext } from "./harness/task-types";
 import { EventChannel } from "./event-channel";
 import { EvidenceStore } from "./evidence-store";
 import {
@@ -144,6 +147,8 @@ export class RcaRuntime {
   private conclusion: InvestigationSnapshot["conclusion"];
   private runId = randomUUID();
   private runPromise?: Promise<void>;
+  private runAbortController?: AbortController;
+  private harness?: InvestigationHarness;
   private activeThinking?: ThinkingView;
   private task: Rca100Task = structuredClone(T039_FALLBACK_TASK);
   private telemetryReady = false;
@@ -169,6 +174,7 @@ export class RcaRuntime {
       error: this.error,
       phase: this.phase,
       agents: [...this.agents.values()],
+      tasks: this.harness?.taskViews() ?? [],
       hypotheses: [...this.hypotheses.values()],
       evidence: this.evidenceStore.list(),
       messages: [...this.messages],
@@ -189,6 +195,15 @@ export class RcaRuntime {
     return this.runPromise;
   }
 
+  abort() {
+    if (!this.runPromise || (this.status !== "running" && this.status !== "stopping")) return false;
+    if (this.status !== "stopping") this.setStatus("stopping");
+    this.runAbortController?.abort(
+      taskError("TASK_CANCELLED", `Investigation ${this.incidentId} was cancelled by the user.`),
+    );
+    return true;
+  }
+
   modelLabel() {
     return this.llm.modelLabel();
   }
@@ -198,6 +213,9 @@ export class RcaRuntime {
   }
 
   private resetState(publish: boolean) {
+    this.harness?.dispose();
+    this.harness = undefined;
+    this.runAbortController = undefined;
     this.runId = randomUUID();
     this.phase = 1;
     this.status = "idle";
@@ -310,34 +328,21 @@ export class RcaRuntime {
     this.activeThinking = undefined;
   }
 
-  private async delegate(manager: AgentManager, assignments: DelegationAssignment[]) {
-    const deduped = [...new Map(assignments.map((item) => [item.agent, item])).values()];
-    const hasDeepAgent = deduped.some((item) => item.agent === "trace" || item.agent === "context");
+  private async delegate(assignments: DelegationAssignment[]) {
+    if (!this.harness) throw new Error("Investigation Harness is not initialized.");
+    const hasDeepAgent = assignments.some((item) => item.agent === "trace" || item.agent === "context");
     this.setPhase(hasDeepAgent ? 3 : 2);
 
-    const names = deduped.map((item) => AGENT_NAME[item.agent]).join("、");
+    const names = assignments.map((item) => AGENT_NAME[item.agent]).join("、");
     this.addMessage(
       this.evidenceStore.list().length === 0 ? "plan" : "decision",
-      `${this.evidenceStore.list().length === 0 ? "开始调查" : "根据当前证据继续验证"}：并行派发 ${names}。`,
+      `${this.evidenceStore.list().length === 0 ? "开始调查" : "根据当前证据继续验证"}：Harness 调度 ${names}。`,
     );
 
-    const service = alertService(this.task);
-    const operation = alertOperation(this.task);
-    const results = await Promise.all(
-      deduped.map((assignment) => manager.run(assignment.agent, {
-        taskId: this.taskId,
-        service: assignment.service?.trim() || service,
-        operation: assignment.operation?.trim() || operation,
-        alertEntity: this.task.alert_entity?.entity_name ?? undefined,
-        startTime: this.task.alert_window.start,
-        endTime: this.task.alert_window.end,
-        goal: assignment.goal,
-      })),
-    );
-
+    const results = await this.harness.delegate(assignments);
     this.addMessage(
       "finding",
-      results.map((item) => `${AGENT_NAME[item.agent]}：${item.summary}`).join("\n"),
+      results.map((item) => `${AGENT_NAME[item.agent]}（${item.taskId}）：${item.summary}`).join("\n"),
     );
     return results;
   }
@@ -367,6 +372,18 @@ export class RcaRuntime {
     this.channel.publish("rca.completed", this.conclusion);
   }
 
+  private caseContext(): CaseContext {
+    return {
+      datasetTaskId: this.taskId,
+      alertTitle: this.task.alert_title,
+      alertEntity: this.task.alert_entity?.entity_name ?? undefined,
+      startTime: this.task.alert_window.start,
+      endTime: this.task.alert_window.end,
+      defaultService: alertService(this.task),
+      operation: alertOperation(this.task),
+    };
+  }
+
   private hypothesisContext() {
     return [...this.hypotheses.values()]
       .map((hypothesis) => `${hypothesis.id} ${hypothesis.title} [${hypothesis.state}]`)
@@ -386,13 +403,17 @@ export class RcaRuntime {
 
   private async execute() {
     this.resetState(true);
+    const controller = new AbortController();
+    this.runAbortController = controller;
     this.setStatus("running");
 
     try {
       // Dataset preparation is intentionally outside Agent context. Ground truth is never fetched here.
       this.addMessage("plan", `正在准备 RCA100 ${this.taskId} 的 Logs / Metrics / Traces / Events / Alerts / Topology 数据。`);
       await this.toolGateway.ensureCase(this.taskId);
+      if (controller.signal.aborted) throw controller.signal.reason;
       this.task = await this.toolGateway.getTask(this.taskId, true);
+      if (controller.signal.aborted) throw controller.signal.reason;
       this.telemetryReady = true;
       const readySnapshot = this.snapshot();
       this.channel.publish("dataset.ready", {
@@ -400,7 +421,7 @@ export class RcaRuntime {
         title: readySnapshot.title,
         window: readySnapshot.window,
       });
-      this.addMessage("decision", `RCA100 ${this.taskId} 数据已就绪。开始基于真实 Parquet/JSON 执行工具查询。`);
+      this.addMessage("decision", `RCA100 ${this.taskId} 数据已就绪。开始基于真实 Parquet/JSON 执行受控调查。`);
 
       const manager = new AgentManager(
         this.channel,
@@ -410,6 +431,16 @@ export class RcaRuntime {
         this.agents,
         this.toolRuns,
       );
+      this.harness = new InvestigationHarness({
+        investigationId: this.incidentId,
+        runId: this.runId,
+        signal: controller.signal,
+        channel: this.channel,
+        agentManager: manager,
+        getCaseContext: () => this.caseContext(),
+        getHypotheses: () => [...this.hypotheses.values()],
+        getEvidence: () => this.evidenceStore.list(),
+      });
 
       await this.llm.runCoordinator(
         this.currentPrompt,
@@ -419,14 +450,16 @@ export class RcaRuntime {
           onTextStart: () => this.startThinking(),
           onTextDelta: (delta) => this.appendThinking(delta),
           onTextEnd: () => this.completeThinking(),
-          delegate: (assignments) => this.delegate(manager, assignments),
+          delegate: (assignments) => this.delegate(assignments),
           updateHypotheses: (updates) => {
             for (const update of updates) this.updateHypothesis(update);
           },
           finalize: (input) => this.finalize(input),
         },
+        controller.signal,
       );
       this.completeThinking();
+      if (controller.signal.aborted) throw controller.signal.reason;
 
       if (!this.conclusion) {
         throw new Error(
@@ -436,10 +469,28 @@ export class RcaRuntime {
       this.setStatus("completed");
     } catch (error) {
       this.completeThinking();
-      this.status = "error";
-      this.error = error instanceof Error ? error.message : String(error);
-      this.channel.publish("runtime.error", { message: this.error });
-      this.channel.publish("investigation.status", { status: "error" });
+      const cancelled = controller.signal.aborted ||
+        (error instanceof TaskExecutionError && error.code === "TASK_CANCELLED");
+      if (cancelled) {
+        this.error = undefined;
+        this.setStatus("cancelled");
+        this.addMessage("decision", "本次调查已停止；已取消排队任务并中止正在运行的 AgentSession。");
+      } else {
+        if (!controller.signal.aborted) {
+          controller.abort(taskError("TASK_CANCELLED", "Investigation terminated after a fatal runtime error."));
+        }
+        this.status = "error";
+        this.error = error instanceof Error ? error.message : String(error);
+        this.channel.publish("runtime.error", {
+          investigationId: this.incidentId,
+          runId: this.runId,
+          message: this.error,
+        });
+        this.channel.publish("investigation.status", { status: "error" });
+      }
+    } finally {
+      this.harness?.dispose();
+      this.runAbortController = undefined;
     }
   }
 }

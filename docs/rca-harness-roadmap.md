@@ -1,6 +1,6 @@
 # RCA Harness Roadmap — v8.1 to v8.4
 
-> Status: **active roadmap**  
+> Status: **active roadmap — v8.1 implementation complete, real-environment E2E pending**
 > Baseline: v8.0 / commit `0dd18df` (`feat: drive RCA demo from RCA100 t039`)  
 > Purpose: keep the multi-agent runtime evolution explicit so later versions do not drift into ad-hoc orchestration.
 
@@ -125,12 +125,12 @@ Make one RCA100 investigation **bounded, cancellable, context-controlled and tra
 
 ### Exit criteria
 
-- The same AgentSession never receives two simultaneous prompts.
-- A runaway specialist cannot exceed configured `maxToolCalls`, `maxTurns` or timeout.
-- User cancellation stops queued tasks and aborts running AgentSessions.
-- Every specialist execution has a Task record and terminal status.
-- Specialist prompts are assembled by `ContextBuilder`, not ad-hoc string concatenation in `AgentManager`.
-- Existing `t039` demo still completes successfully.
+- [x] The same AgentSession never receives two simultaneous prompts.
+- [x] A runaway specialist cannot exceed configured `maxToolCalls`, `maxTurns` or timeout.
+- [x] User cancellation stops queued tasks and aborts running AgentSessions.
+- [x] Every specialist execution has a Task record and terminal status.
+- [x] Specialist prompts are assembled by `ContextBuilder`, not ad-hoc string concatenation in `AgentManager`.
+- [ ] Existing `t039` demo still completes successfully in a real networked Pi + DuckDB environment (current cloud workspace cannot install dependencies; tracked as H81-096/H81-D09).
 
 ## 5. v8.2 — Durable Investigation
 

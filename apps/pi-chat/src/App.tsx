@@ -16,6 +16,7 @@ import {
   Search,
   Send,
   Sparkles,
+  Square,
   TimerReset,
   Wrench,
   BarChart3,
@@ -31,6 +32,7 @@ import type {
 } from "@shared/rca-types";
 
 import {
+  abortInvestigation,
   connectInvestigationEvents,
   getInvestigation,
   listIncidents,
@@ -60,6 +62,7 @@ function statusLabel(state: AgentState) {
   if (state === "running") return "进行中";
   if (state === "done") return "已完成";
   if (state === "error") return "失败";
+  if (state === "cancelled") return "已取消";
   return "等待中";
 }
 
@@ -119,7 +122,9 @@ export default function App() {
   const hypotheses = snapshot?.hypotheses ?? [];
   const evidence = snapshot?.evidence ?? [];
   const toolRuns = snapshot?.toolRuns ?? [];
-  const running = snapshot?.status === "running";
+  const tasks = snapshot?.tasks ?? [];
+  const running = snapshot?.status === "running" || snapshot?.status === "stopping";
+  const stopping = snapshot?.status === "stopping";
   const hasInvestigationStarted = !showWelcome;
   const doneCount = agents.filter((agent) => agent.state === "done").length;
   const runningCount = agents.filter((agent) => agent.state === "running").length;
@@ -151,6 +156,14 @@ export default function App() {
   };
 
   const rerun = () => startInvestigation(activePrompt);
+
+  const stopInvestigation = () => {
+    if (!running || stopping) return;
+    setLoadError(undefined);
+    void abortInvestigation(incidentId).catch((error: unknown) => {
+      setLoadError(error instanceof Error ? error.message : String(error));
+    });
+  };
 
   const submit = () => {
     const prompt = draft.trim();
@@ -203,7 +216,13 @@ export default function App() {
           <div className="topbar-actions">
             <span className="runtime-pill">Pi Agent · RCA100 {snapshot.dataset.taskId}{snapshot.dataset.telemetryReady ? " · Ready" : " · On demand"} <i className={connected ? "connection-dot online" : "connection-dot"} /></span>
             {hasInvestigationStarted && (
-              <button className="icon-text-button" onClick={rerun} disabled={running}><TimerReset size={15} />{running ? "排查中" : "重新运行"}</button>
+              running ? (
+                <button className="icon-text-button stop-investigation" onClick={stopInvestigation} disabled={stopping}>
+                  <Square size={13} />{stopping ? "停止中" : "停止排查"}
+                </button>
+              ) : (
+                <button className="icon-text-button" onClick={rerun}><TimerReset size={15} />重新运行</button>
+              )
             )}
           </div>
         </header>
@@ -321,7 +340,7 @@ export default function App() {
             <section className="context-section">
               <div className="context-heading"><strong>调查进度</strong><span>{investigationProgress}%</span></div>
               <div className="progress-bar"><span style={{ width: `${investigationProgress}%` }} /></div>
-              <div className="phase-text">{snapshot.conclusion ? "根因已收敛" : running ? "正在收集和验证证据" : "等待开始"}</div>
+              <div className="phase-text">{snapshot.conclusion ? "根因已收敛" : snapshot.status === "cancelled" ? "调查已停止" : stopping ? "正在停止 Agent 任务" : running ? "正在收集和验证证据" : "等待开始"}</div>
             </section>
 
             <section className="context-section">
@@ -331,6 +350,18 @@ export default function App() {
                   const Icon = agentIcon[agent.id];
                   return <div className="compact-agent" key={agent.id}><Icon size={13} /><span>{agent.name}</span><i className={`state-dot ${agent.state}`} title={statusLabel(agent.state)} /></div>;
                 })}
+              </div>
+            </section>
+
+            <section className="context-section">
+              <div className="context-heading"><strong>Tasks</strong><span>{tasks.filter((task) => task.status === "succeeded").length}/{tasks.length}</span></div>
+              <div className="compact-task-list">
+                {tasks.slice(-6).map((task) => (
+                  <div className="compact-task" key={task.id}>
+                    <b>{task.id}</b><span>{task.agent}</span><small className={task.status}>{task.status}</small>
+                  </div>
+                ))}
+                {tasks.length === 0 && <span className="context-empty">等待 Coordinator 创建 AgentTask…</span>}
               </div>
             </section>
 

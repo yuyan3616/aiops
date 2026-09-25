@@ -1,8 +1,8 @@
-# Pi Chat RCA — v8.0 RCA100 t039
+# Pi Chat RCA — v8.1 Controlled Harness
 
-A chat-first multi-agent RCA demo built on Pi 0.86.1. v8.0 replaces the previous hard-coded observability results with **real queries over the public RCA100 v1.1 `t039` telemetry files**.
+A chat-first multi-agent RCA system built on Pi `0.86.1`. v8.0 replaced hard-coded observability answers with real queries over the public RCA100 v1.1 `t039` telemetry. v8.1 keeps that real-data loop and adds a **Controlled Investigation Harness** around Pi AgentSession so specialist work is bounded, cancellable, context-controlled and traceable.
 
-The current milestone deliberately focuses on one reproducible case:
+Current demo baseline:
 
 - Dataset: RCA100 v1.1
 - Case: `t039`
@@ -10,6 +10,7 @@ The current milestone deliberately focuses on one reproducible case:
 - Modalities: metrics, logs, traces, Kubernetes events, alerts, topology
 - LLM/agents: real Pi AgentSession
 - Data access: real DuckDB queries over Parquet/JSON
+- Harness: AgentTask + TaskScheduler + ContextBuilder + BudgetGuard + ToolGuard + cancellation
 - Ground truth: **not downloaded and not exposed to agents**
 
 ## Architecture
@@ -20,25 +21,37 @@ RCA100 task.json
       v
 Pi Coordinator AgentSession
       |
-      | delegate_agents
+      | delegate_agents(assignments)
+      v
+InvestigationHarness
+      |
+      +--> AgentTask / TaskPolicy
+      +--> TaskScheduler
+      |      - same Agent kind: concurrency 1
+      |      - global specialist concurrency: 3 by default
+      +--> ContextBuilder
+      |      - case metadata
+      |      - assignment
+      |      - selected hypotheses / Evidence
+      |      - no cross-Agent transcript sharing
+      v
+AgentManager
+      |
       +----------------+----------------+----------------+
       |                |                |                |
       v                v                v                v
- Log Agent        Metric Agent      Trace Agent      Context Agent
-      |                |                |                |
- query_logs       list_metrics      search_traces     query_events
- analyze_*        query_metrics     get_trace         query_alerts
-                                                    topology_neighbors
+ Log Session      Metric Session    Trace Session    Context Session
       |                |                |                |
       +----------------+--------+-------+----------------+
                                |
-                               v
-                        RCA Tool Gateway
+                        BudgetGuard
                                |
-                               v
-                         Evidence Store
+                         ToolGuard
                                |
-                               v
+                      RCA Tool Gateway
+                               |
+                        Evidence Store
+                               |
                       RCA100 Repository
                                |
                   +------------+-------------+
@@ -49,19 +62,80 @@ Pi Coordinator AgentSession
           events/alerts
 ```
 
-The Tool layer returns observations and Evidence, not a root-cause answer. The Coordinator must build the RCA from evidence IDs across at least two independent modalities.
+Pi still owns the LLM loop, model/provider integration, one AgentSession's transcript, provider retry and tool-calling protocol. The RCA Harness owns task lifecycle, scheduling, cross-Agent context assembly, hard budgets, cancellation and investigation-level correlation metadata.
+
+## v8.1 Harness behavior
+
+Each specialist invocation becomes a first-class `AgentTask` before it starts:
+
+```text
+queued -> running -> succeeded
+                \-> failed
+                \-> timed_out
+queued/running  \-> cancelled
+```
+
+Default policy:
+
+```text
+timeout       60s
+maxTurns       6
+maxToolCalls  10
+maxEvidence   12
+maxAttempts    1
+```
+
+The defaults are centralized and can be overridden through `.env`:
+
+```env
+RCA_TASK_TIMEOUT_MS=60000
+RCA_TASK_MAX_TURNS=6
+RCA_TASK_MAX_TOOL_CALLS=10
+RCA_TASK_MAX_EVIDENCE=12
+RCA_TASK_GLOBAL_CONCURRENCY=3
+```
+
+The scheduler guarantees that one persistent Specialist AgentSession never receives two simultaneous prompts. Different specialist roles may still run concurrently when the global slot limit permits.
+
+## Context boundary
+
+Specialist Agents do not receive the Coordinator transcript or other Agents' full transcripts. `ContextBuilder` constructs a bounded task context from:
+
+- RCA100 case metadata and incident window;
+- the current assignment;
+- explicitly referenced hypotheses/Evidence;
+- bounded relevant/recent Evidence;
+- current TaskPolicy constraints.
+
+Agent-to-Agent knowledge sharing therefore happens through structured Evidence/Hypothesis state rather than transcript copying.
+
+## Cancellation and guardrails
+
+`POST /api/rca/incidents/:id/abort` propagates cancellation from the investigation to queued/running tasks and then to the Pi Specialist Session via `session.abort()`.
+
+`ToolGuard` is independent of the model schema and enforces:
+
+- Agent -> tool ACL;
+- string/array/request limits;
+- incident-window time-range validation;
+- result row/string/serialized-size bounds;
+- Evidence shape checks;
+- opaque `rca100://...` raw references;
+- no answer-key or backend filesystem path leakage.
+
+Tool output remains factual. Neither ToolGuard nor ToolGateway is allowed to infer the root cause.
 
 ## Skill vs Tool
 
-v8.0 includes `skills/rca-investigation/SKILL.md` as the Coordinator's RCA methodology:
+`apps/pi-chat/skills/rca-investigation/SKILL.md` contains the Coordinator's RCA methodology:
 
 - distinguish root cause / propagation / impact;
-- treat alert entity as a starting point, not the answer;
+- treat the alert entity as a starting point, not the answer;
 - use multiple modalities;
 - explicitly support/reject hypotheses;
 - stop only when the evidence chain closes.
 
-The Skill is injected server-side into the Coordinator system context. Pi's generic filesystem/coding tools remain disabled for embedded RCA sessions. Specialist Agents receive only their scoped observability tools.
+The Skill teaches *how to investigate*. Tools perform concrete data access. Specialist Pi sessions use role-specific system prompts plus a strict custom-tool surface; generic coding tools remain disabled.
 
 ## Run locally
 
@@ -80,8 +154,6 @@ cd apps/pi-chat
 cp .env.example .env
 ```
 
-On Windows PowerShell / cmd, copy the file with your normal file command and edit `.env`.
-
 Configure at least one Pi-supported provider key, for example:
 
 ```env
@@ -97,7 +169,7 @@ RCA_MODEL_PROVIDER=openai
 RCA_MODEL_ID=<model-id-registered-in-pi>
 ```
 
-Both variables must be configured together. Leave both unset to let Pi select an authenticated model.
+Both model variables must be configured together. Leave both unset to let Pi choose an authenticated model.
 
 ### 3. Install
 
@@ -105,7 +177,7 @@ Both variables must be configured together. Leave both unset to let Pi select an
 npm install
 ```
 
-The Pi packages are pinned to exactly `0.86.1`. DuckDB Node API is pinned for the RCA100 query engine.
+The three Pi packages are pinned exactly to `0.86.1`. DuckDB Node API is pinned for the RCA100 query engine.
 
 ### 4. Prepare `t039`
 
@@ -115,46 +187,55 @@ The runtime defaults to:
 RCA100_AUTO_DOWNLOAD=true
 ```
 
-so the first demo run downloads the seven public case files into:
+so the first demo can download the seven public case files into:
 
 ```text
 apps/pi-chat/data/rca100/cases/t039/
 ```
 
-You can prefetch them explicitly:
+You can prefetch and smoke-test explicitly:
 
 ```bash
 npm run rca100:download -- --case t039
-```
-
-Then verify that DuckDB can really open the local case and inspect all five Parquet modalities:
-
-```bash
 npm run rca100:smoke -- --case t039
 ```
 
-The downloader validates JSON files and the Parquet `PAR1` header/footer before accepting a case. The smoke command additionally prints row counts and detected schemas through the same DuckDB Node runtime used by the application.
+The downloader validates JSON and Parquet `PAR1` boundaries. The smoke command uses the same DuckDB Node runtime as the application to open the five Parquet modalities and print row counts/schema.
 
-The telemetry directory is ignored by Git and is not bundled in the source archive.
+### 5. Run Harness tests
 
-### 5. Start
+```bash
+npm run harness:test
+```
+
+The deterministic suite covers same-Agent serialization, cross-Agent concurrency, global concurrency, context bounding, tool/turn/Evidence budgets, ToolGuard, timeout, cancellation and task-event correlation.
+
+### 6. Start
 
 ```bash
 npm run dev
 ```
 
-Open the web page, choose the recommended **RCA100 · t039** case, and click **一键运行**.
+Choose **RCA100 · t039** from “为你推荐” and click **一键运行**.
 
-The expected runtime path is:
+Expected runtime path:
 
 ```text
 prepare t039 telemetry
         ↓
 Pi Coordinator
         ↓
-dynamic specialist delegation
+delegate_agents
         ↓
-real DuckDB queries over RCA100
+AgentTask + TaskScheduler
+        ↓
+ContextBuilder
+        ↓
+bounded Specialist AgentSession
+        ↓
+BudgetGuard / ToolGuard
+        ↓
+real DuckDB RCA100 query
         ↓
 Evidence EVxx
         ↓
@@ -165,7 +246,7 @@ finalize_rca
 
 ## RCA100 data boundary
 
-The application downloads only the **agent-facing case files** from the public RCA100 v1.1 case endpoint:
+The application downloads only the **agent-facing** case files:
 
 ```text
 task.json
@@ -177,11 +258,9 @@ alerts.parquet
 topology.json
 ```
 
-There is intentionally no runtime code that downloads `answer_key` / ground truth. This prevents leakage into the Agent context and keeps the case suitable for later benchmark evaluation.
+There is intentionally no runtime code that downloads `answer_key` / ground truth. Dataset files are external, ignored by Git and not bundled in release archives.
 
-The dataset itself is external and is not redistributed in this repository. RCA100 is published under **CC BY-NC-SA 4.0**; attribution, non-commercial use and share-alike terms apply to the dataset material. Review the upstream `RCA100/LICENSE` before redistribution or reuse.
-
-Dataset citation used by the upstream project: *RCA-100: A Chain-Reasoning Benchmark for Root Cause Analysis on Cloud-Native Microservices* (Wen et al., 2026).
+RCA100 is published under **CC BY-NC-SA 4.0**. Review the upstream license before redistribution or commercial use.
 
 ## Tool surface
 
@@ -193,16 +272,17 @@ Dataset citation used by the upstream project: *RCA-100: A Chain-Reasoning Bench
 | Context Agent | `query_events`, `query_alerts`, `get_topology_neighbors` |
 | Coordinator | `delegate_agents`, `update_hypotheses`, `finalize_rca` |
 
-Tools accept model-generated filters such as service, operation, keyword, severity, duration and time range. The gateway inspects Parquet schemas before querying where the RCA100 source schema can vary.
+Tools accept model-generated filters such as service, operation, keyword, severity, duration and time range. The gateway inspects RCA100 Parquet schemas where source fields may vary.
 
 ## Evidence contract
 
-Each query produces structured Evidence similar to:
+Each real query produces structured Evidence similar to:
 
 ```ts
 {
   id: "EV03",
-  taskId: "t039",
+  taskId: "T002",           // Harness AgentTask that produced it
+  datasetTaskId: "t039",    // RCA100 case
   modality: "trace",
   source: "RCA100-v1.1",
   summary: "...",
@@ -214,23 +294,59 @@ Each query produces structured Evidence similar to:
 }
 ```
 
-`summary` is LLM-friendly; `observation` contains structured facts; `rawRef` identifies the underlying query result. Exact-query Evidence reuse remains supported. Coverage/subset reuse is planned for the next milestone.
+`summary` is LLM-friendly, `observation` contains structured facts, and `rawRef` is opaque. Exact-query Evidence reuse remains supported. Coverage/subset reuse is intentionally deferred to v8.3.
+
+## Task/tracing contract
+
+Task lifecycle events are part of the RCA SSE stream:
+
+```text
+task.created
+task.started
+task.completed
+task.failed
+task.cancelled
+task.timed_out
+```
+
+Relevant task/tool/evidence events carry correlation data such as:
+
+```text
+investigationId
+runId
+taskId
+agent
+toolCallId
+evidenceId
+```
+
+This provides one traceable path from Coordinator delegation to Specialist task, tool calls and resulting Evidence.
 
 ## Current validation boundary
 
-This workspace can statically validate the code but cannot access npm registry / the RCA100 OSS binary files from the execution container, so v8.0 could not perform a real model + DuckDB + t039 end-to-end run here.
+The current cloud workspace cannot reach npm registry (`EAI_AGAIN`) and runs Node `22.16.0`, while the project requires Node `>=22.19.0`. Therefore a full `npm install && npm run build` and real Pi + DuckDB + `t039` end-to-end run cannot be honestly executed here.
 
-The implementation is therefore designed against:
+What is validated in this workspace:
 
-- Pi `0.86.1` source APIs;
-- RCA100 v1.1 published schemas and public case layout;
-- DuckDB Node Neo API.
+- deterministic Harness tests: **13/13 passing**;
+- server RCA syntax checks;
+- server/frontend TypeScript semantic checks using temporary external-module stubs;
+- RCA100 download/smoke script parse checks;
+- `git diff --check`;
+- static preservation review for the real RCA100/DuckDB and ground-truth-isolation paths.
 
-Run the commands above on a networked local machine to execute the real telemetry query path.
+Run `npm install`, `npm run rca100:smoke -- --case t039`, `npm run harness:test`, `npm run build`, then the recommended case on a networked local machine for the final real-environment verification.
 
-## Next milestones
+## Engineering roadmap
 
-v8.0 intentionally stops at the single-case data-driven loop. Next milestones are:
+See:
 
-- v8.1: query normalization + evidence coverage/subset reuse + stronger hypothesis lifecycle;
-- v8.2: isolated ground-truth evaluator + batch execution across RCA100 cases + accuracy/token/tool-call/latency metrics.
+- [`docs/rca-harness-roadmap.md`](./docs/rca-harness-roadmap.md)
+- [`docs/v8.1-harness-spec.md`](./docs/v8.1-harness-spec.md)
+- [`docs/v8.1-harness-tasks.md`](./docs/v8.1-harness-tasks.md)
+
+Next milestones remain intentionally separated:
+
+- **v8.2** — SQLite InvestigationRepository, checkpoints, persisted EventLog, restart/resume;
+- **v8.3** — NormalizedQuery, Evidence coverage/subset reuse, RawRef reuse and reuse metrics;
+- **v8.4** — isolated ground-truth evaluator, multi-case/103-case benchmark and accuracy/cost/latency reporting.

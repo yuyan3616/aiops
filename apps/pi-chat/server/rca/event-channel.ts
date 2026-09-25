@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import type { RcaEventType, RcaStreamEvent } from "../../shared/rca-types";
+import type { RcaEventCorrelation, RcaEventType, RcaStreamEvent } from "../../shared/rca-types";
 
 export class EventChannel {
   readonly streamId = randomUUID();
@@ -12,12 +12,13 @@ export class EventChannel {
 
   private readonly subscribers = new Set<(event: RcaStreamEvent) => void>();
 
-  publish<T>(type: RcaEventType, payload: T) {
+  publish<T>(type: RcaEventType, payload: T, correlation?: RcaEventCorrelation) {
     const event: RcaStreamEvent<T> = {
       id: this.nextId++,
       streamId: this.streamId,
       type,
       payload,
+      ...(correlation ? { correlation } : {}),
     };
     this.history.push(event);
     if (this.history.length > 500) this.history.shift();

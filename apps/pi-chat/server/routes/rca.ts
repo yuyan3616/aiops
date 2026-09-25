@@ -20,6 +20,12 @@ export function createRcaRoutes(service: RcaService) {
     return ctx.json({ accepted: true, runId: runtime.snapshot().runId }, 202);
   });
 
+  app.post("/incidents/:id/abort", (ctx) => {
+    const runtime = service.get(ctx.req.param("id"));
+    runtime.abort();
+    return ctx.json({ accepted: true, status: runtime.snapshot().status });
+  });
+
   app.get("/incidents/:id/stream", (ctx) => {
     const runtime = service.get(ctx.req.param("id"));
     const afterQuery = ctx.req.query("after") ?? "0";

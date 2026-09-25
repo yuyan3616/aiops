@@ -5,7 +5,7 @@ import { Rca100Repository } from "../datasets/rca100/repository";
 import type { Rca100CaseDescriptor, Rca100Topology } from "../datasets/rca100/schema";
 import type { AgentKind } from "../../shared/rca-types";
 import type { PutEvidenceInput } from "./evidence-store";
-import type { AgentTask } from "./types";
+import type { AgentTask, CaseContext } from "./harness/task-types";
 
 export type RcaToolName =
   | "query_logs"
@@ -29,13 +29,6 @@ export interface ToolExecutionResult {
   display: string;
   evidence: PutEvidenceInput[];
 }
-
-const TOOLS_BY_AGENT: Record<AgentKind, ReadonlySet<RcaToolName>> = {
-  log: new Set(["query_logs", "analyze_log_patterns"]),
-  metric: new Set(["list_metrics", "query_metrics"]),
-  trace: new Set(["search_traces", "get_trace"]),
-  context: new Set(["query_events", "query_alerts", "get_topology_neighbors"]),
-};
 
 type ColumnInfo = { name: string; type: string };
 
@@ -109,12 +102,14 @@ function normalizeService(value: string) {
 
 function evidence(
   task: AgentTask,
+  caseContext: CaseContext,
   plan: ToolPlan,
-  input: Omit<PutEvidenceInput, "query" | "taskId" | "createdBy">,
+  input: Omit<PutEvidenceInput, "query" | "taskId" | "datasetTaskId" | "createdBy">,
 ): PutEvidenceInput {
   return {
     ...input,
-    taskId: task.taskId,
+    taskId: task.id,
+    datasetTaskId: caseContext.datasetTaskId,
     createdBy: plan.agent,
     query: { tool: plan.name, ...plan.args },
   };
@@ -138,30 +133,31 @@ export class Rca100ToolGateway {
     return this.repository.getTask(taskId, { ensure });
   }
 
-  async execute(plan: ToolPlan, task: AgentTask): Promise<ToolExecutionResult> {
-    if (!TOOLS_BY_AGENT[plan.agent].has(plan.name)) {
-      throw new Error(`${plan.agent} agent is not allowed to call ${plan.name}.`);
-    }
-    const descriptor = await this.repository.openCase(task.taskId);
+  async execute(
+    plan: ToolPlan,
+    task: AgentTask,
+    caseContext: CaseContext,
+  ): Promise<ToolExecutionResult> {
+    const descriptor = await this.repository.openCase(caseContext.datasetTaskId);
     switch (plan.name) {
       case "query_logs":
-        return this.queryLogs(descriptor, plan, task, false);
+        return this.queryLogs(descriptor, plan, task, caseContext, false);
       case "analyze_log_patterns":
-        return this.queryLogs(descriptor, plan, task, true);
+        return this.queryLogs(descriptor, plan, task, caseContext, true);
       case "list_metrics":
-        return this.listMetrics(descriptor, plan, task);
+        return this.listMetrics(descriptor, plan, task, caseContext);
       case "query_metrics":
-        return this.queryMetrics(descriptor, plan, task);
+        return this.queryMetrics(descriptor, plan, task, caseContext);
       case "search_traces":
-        return this.searchTraces(descriptor, plan, task);
+        return this.searchTraces(descriptor, plan, task, caseContext);
       case "get_trace":
-        return this.getTrace(descriptor, plan, task);
+        return this.getTrace(descriptor, plan, task, caseContext);
       case "query_events":
-        return this.queryEvents(descriptor, plan, task);
+        return this.queryEvents(descriptor, plan, task, caseContext);
       case "query_alerts":
-        return this.queryAlerts(descriptor, plan, task);
+        return this.queryAlerts(descriptor, plan, task, caseContext);
       case "get_topology_neighbors":
-        return this.getTopologyNeighbors(descriptor, plan, task);
+        return this.getTopologyNeighbors(descriptor, plan, task, caseContext);
     }
   }
 
@@ -173,10 +169,10 @@ export class Rca100ToolGateway {
     })).filter((column) => column.name);
   }
 
-  private timeRange(task: AgentTask, args: Record<string, unknown>) {
+  private timeRange(caseContext: CaseContext, args: Record<string, unknown>) {
     return {
-      start: safeIso(args.startTime, task.startTime),
-      end: safeIso(args.endTime, task.endTime),
+      start: safeIso(args.startTime, caseContext.startTime),
+      end: safeIso(args.endTime, caseContext.endTime),
     };
   }
 
@@ -200,6 +196,7 @@ export class Rca100ToolGateway {
     descriptor: Rca100CaseDescriptor,
     plan: ToolPlan,
     task: AgentTask,
+    caseContext: CaseContext,
     patterns: boolean,
   ): Promise<ToolExecutionResult> {
     const columns = await this.describe(descriptor.paths.logs);
@@ -208,11 +205,11 @@ export class Rca100ToolGateway {
     const timeColumn = firstColumn(columns, ["_time_", "time", "timestamp"]);
     const podColumn = firstColumn(columns, ["_pod_name_", "pod_name", "pod"]);
     const namespaceColumn = firstColumn(columns, ["_namespace_", "namespace"]);
-    const service = normalizeService(text(plan.args.service) || task.service);
+    const service = normalizeService(text(plan.args.service) || task.service || caseContext.defaultService);
     const keyword = text(plan.args.keyword);
     const level = text(plan.args.level);
     const limit = clampLimit(plan.args.limit, patterns ? 12 : 30, patterns ? 30 : 100);
-    const range = this.timeRange(task, plan.args);
+    const range = this.timeRange(caseContext, plan.args);
     const where = this.logTimeWhere(timeColumn, range.start, range.end);
     const contentSql = escapeIdentifier(contentColumn.name);
     if (service) {
@@ -243,14 +240,14 @@ export class Rca100ToolGateway {
         : "当前条件下未发现匹配日志模式。";
       return {
         display: summary,
-        evidence: [evidence(task, plan, {
+        evidence: [evidence(task, caseContext, plan, {
           type: "log",
           modality: "log",
           label: "日志模式聚合",
           source: `RCA100-${descriptor.task.task_version}`,
           summary,
           observation: { matchedPatternCount: rows.length, matchedRowsInTopPatterns: total, patterns: rows.slice(0, 12) },
-          rawRef: `rca100://${task.taskId}/logs/patterns/${plan.id}`,
+          rawRef: `rca100://${caseContext.datasetTaskId}/logs/patterns/${plan.id}`,
           entityRefs: service ? [service] : [],
           timeRange: range,
         })],
@@ -275,14 +272,14 @@ export class Rca100ToolGateway {
       : "当前过滤条件下未命中日志。";
     return {
       display: summary,
-      evidence: [evidence(task, plan, {
+      evidence: [evidence(task, caseContext, plan, {
         type: "log",
         modality: "log",
         label: "日志查询结果",
         source: `RCA100-${descriptor.task.task_version}`,
         summary,
         observation: { returned: rows.length, samples: rows.slice(0, 20) },
-        rawRef: `rca100://${task.taskId}/logs/query/${plan.id}`,
+        rawRef: `rca100://${caseContext.datasetTaskId}/logs/query/${plan.id}`,
         entityRefs: service ? [service] : [],
         timeRange: range,
       })],
@@ -293,10 +290,11 @@ export class Rca100ToolGateway {
     descriptor: Rca100CaseDescriptor,
     plan: ToolPlan,
     task: AgentTask,
+    caseContext: CaseContext,
   ): Promise<ToolExecutionResult> {
     const columns = await this.describe(descriptor.paths.metrics);
     if (!containsColumn(columns, "metric")) throw new Error("RCA100 metrics.parquet has no metric column.");
-    const entity = text(plan.args.entity) || text(plan.args.service) || task.service;
+    const entity = text(plan.args.entity) || text(plan.args.service) || task.service || caseContext.defaultService;
     const keyword = text(plan.args.keyword);
     const where: string[] = [];
     if (keyword) where.push(sqlLikeContains('"metric"', keyword));
@@ -324,16 +322,16 @@ export class Rca100ToolGateway {
       : "没有发现符合过滤条件的指标。";
     return {
       display: summary,
-      evidence: [evidence(task, plan, {
+      evidence: [evidence(task, caseContext, plan, {
         type: "metric",
         modality: "metric",
         label: "指标发现",
         source: `RCA100-${descriptor.task.task_version}`,
         summary,
         observation: { metrics: uniqueMetrics, series: rows.slice(0, 60) },
-        rawRef: `rca100://${task.taskId}/metrics/catalog/${plan.id}`,
+        rawRef: `rca100://${caseContext.datasetTaskId}/metrics/catalog/${plan.id}`,
         entityRefs: entity ? [entity] : [],
-        timeRange: this.timeRange(task, plan.args),
+        timeRange: this.timeRange(caseContext, plan.args),
       })],
     };
   }
@@ -342,6 +340,7 @@ export class Rca100ToolGateway {
     descriptor: Rca100CaseDescriptor,
     plan: ToolPlan,
     task: AgentTask,
+    caseContext: CaseContext,
   ): Promise<ToolExecutionResult> {
     const columns = await this.describe(descriptor.paths.metrics);
     for (const required of ["time", "metric", "value"]) {
@@ -349,8 +348,8 @@ export class Rca100ToolGateway {
         throw new Error(`RCA100 metrics.parquet has no ${required} column.`);
       }
     }
-    const range = this.timeRange(task, plan.args);
-    const entity = text(plan.args.entity) || text(plan.args.service) || task.service;
+    const range = this.timeRange(caseContext, plan.args);
+    const entity = text(plan.args.entity) || text(plan.args.service) || task.service || caseContext.defaultService;
     const requestedMetrics = Array.isArray(plan.args.metrics)
       ? plan.args.metrics.map(text).filter(Boolean)
       : [text(plan.args.metric)].filter(Boolean);
@@ -395,14 +394,14 @@ export class Rca100ToolGateway {
       : "当前条件下未查询到指标样本。";
     return {
       display: summary,
-      evidence: [evidence(task, plan, {
+      evidence: [evidence(task, caseContext, plan, {
         type: "metric",
         modality: "metric",
         label: "指标窗口统计",
         source: `RCA100-${descriptor.task.task_version}`,
         summary,
         observation: { series: summaryRows },
-        rawRef: `rca100://${task.taskId}/metrics/query/${plan.id}`,
+        rawRef: `rca100://${caseContext.datasetTaskId}/metrics/query/${plan.id}`,
         entityRefs: entity ? [entity] : [],
         timeRange: range,
       })],
@@ -413,6 +412,7 @@ export class Rca100ToolGateway {
     descriptor: Rca100CaseDescriptor,
     plan: ToolPlan,
     task: AgentTask,
+    caseContext: CaseContext,
   ): Promise<ToolExecutionResult> {
     const columns = await this.describe(descriptor.paths.traces);
     for (const required of ["traceId", "spanId", "spanName", "serviceName", "startTime", "duration"]) {
@@ -420,8 +420,8 @@ export class Rca100ToolGateway {
         throw new Error(`RCA100 traces.parquet has no ${required} column.`);
       }
     }
-    const range = this.timeRange(task, plan.args);
-    const service = normalizeService(text(plan.args.service) || task.service);
+    const range = this.timeRange(caseContext, plan.args);
+    const service = normalizeService(text(plan.args.service) || task.service || caseContext.defaultService);
     const operation = text(plan.args.operation);
     const minDurationMs = Math.max(0, number(plan.args.minDurationMs, 0));
     const status = text(plan.args.status);
@@ -446,14 +446,14 @@ export class Rca100ToolGateway {
       : "当前条件下未找到符合条件的 Trace Span。";
     return {
       display: summary,
-      evidence: [evidence(task, plan, {
+      evidence: [evidence(task, caseContext, plan, {
         type: "trace",
         modality: "trace",
         label: "慢/异常 Trace 搜索",
         source: `RCA100-${descriptor.task.task_version}`,
         summary,
         observation: { spans: rows.slice(0, 40) },
-        rawRef: `rca100://${task.taskId}/traces/search/${plan.id}`,
+        rawRef: `rca100://${caseContext.datasetTaskId}/traces/search/${plan.id}`,
         entityRefs: service ? [service] : [],
         timeRange: range,
       })],
@@ -464,6 +464,7 @@ export class Rca100ToolGateway {
     descriptor: Rca100CaseDescriptor,
     plan: ToolPlan,
     task: AgentTask,
+    caseContext: CaseContext,
   ): Promise<ToolExecutionResult> {
     const traceId = text(plan.args.traceId);
     if (!traceId) throw new Error("get_trace requires traceId.");
@@ -481,16 +482,16 @@ export class Rca100ToolGateway {
       : `未找到 Trace ${traceId}。`;
     return {
       display: summary,
-      evidence: [evidence(task, plan, {
+      evidence: [evidence(task, caseContext, plan, {
         type: "trace",
         modality: "trace",
         label: "Trace 详情",
         source: `RCA100-${descriptor.task.task_version}`,
         summary,
         observation: { traceId, services, spans: rows },
-        rawRef: `rca100://${task.taskId}/traces/${traceId}`,
+        rawRef: `rca100://${caseContext.datasetTaskId}/traces/${traceId}`,
         entityRefs: services,
-        timeRange: this.timeRange(task, plan.args),
+        timeRange: this.timeRange(caseContext, plan.args),
       })],
     };
   }
@@ -499,12 +500,13 @@ export class Rca100ToolGateway {
     descriptor: Rca100CaseDescriptor,
     plan: ToolPlan,
     task: AgentTask,
+    caseContext: CaseContext,
   ): Promise<ToolExecutionResult> {
     const columns = await this.describe(descriptor.paths.events);
     const eventColumn = firstColumn(columns, ["eventId", "event", "content"]);
     if (!eventColumn) throw new Error("RCA100 events.parquet has no event payload column.");
     const keyword = text(plan.args.keyword);
-    const resource = text(plan.args.resource) || text(plan.args.service) || task.service;
+    const resource = text(plan.args.resource) || text(plan.args.service) || task.service || caseContext.defaultService;
     const reason = text(plan.args.reason);
     const payloadSql = escapeIdentifier(eventColumn.name);
     const where: string[] = [];
@@ -512,7 +514,7 @@ export class Rca100ToolGateway {
     if (resource) where.push(sqlLikeContains(payloadSql, resource));
     if (reason) where.push(sqlLikeContains(payloadSql, reason));
     const requestedLimit = clampLimit(plan.args.limit, 30, 100);
-    const range = this.timeRange(task, plan.args);
+    const range = this.timeRange(caseContext, plan.args);
     // eventId contains the Kubernetes Event JSON payload; fetch a bounded candidate set, then
     // apply the incident window after parsing lastTimestamp/eventTime/creationTimestamp.
     const rows = await this.db.query(`
@@ -550,14 +552,14 @@ export class Rca100ToolGateway {
       : "当前过滤条件下没有 Kubernetes Event。";
     return {
       display: summary,
-      evidence: [evidence(task, plan, {
+      evidence: [evidence(task, caseContext, plan, {
         type: "context",
         modality: "event",
         label: "Kubernetes Events",
         source: `RCA100-${descriptor.task.task_version}`,
         summary,
         observation: { events: parsed },
-        rawRef: `rca100://${task.taskId}/events/query/${plan.id}`,
+        rawRef: `rca100://${caseContext.datasetTaskId}/events/query/${plan.id}`,
         entityRefs: resource ? [resource] : [],
         timeRange: range,
       })],
@@ -568,12 +570,13 @@ export class Rca100ToolGateway {
     descriptor: Rca100CaseDescriptor,
     plan: ToolPlan,
     task: AgentTask,
+    caseContext: CaseContext,
   ): Promise<ToolExecutionResult> {
     const columns = await this.describe(descriptor.paths.alerts);
     const subject = text(plan.args.subject) || text(plan.args.service);
     const severity = text(plan.args.severity);
     const status = text(plan.args.status);
-    const range = this.timeRange(task, plan.args);
+    const range = this.timeRange(caseContext, plan.args);
     const where: string[] = [];
     if (containsColumn(columns, "time_s")) {
       where.push(`"time_s" >= ${seconds(range.start)}`, `"time_s" <= ${seconds(range.end)}`);
@@ -596,14 +599,14 @@ export class Rca100ToolGateway {
       : "当前条件下未找到额外告警记录。";
     return {
       display: summary,
-      evidence: [evidence(task, plan, {
+      evidence: [evidence(task, caseContext, plan, {
         type: "context",
         modality: "alert",
         label: "关联告警",
         source: `RCA100-${descriptor.task.task_version}`,
         summary,
         observation: { alerts: rows },
-        rawRef: `rca100://${task.taskId}/alerts/query/${plan.id}`,
+        rawRef: `rca100://${caseContext.datasetTaskId}/alerts/query/${plan.id}`,
         entityRefs: subject ? [subject] : [],
         timeRange: range,
       })],
@@ -614,9 +617,10 @@ export class Rca100ToolGateway {
     descriptor: Rca100CaseDescriptor,
     plan: ToolPlan,
     task: AgentTask,
+    caseContext: CaseContext,
   ): Promise<ToolExecutionResult> {
-    const topology = await this.repository.loadTopology(task.taskId);
-    const entityQuery = text(plan.args.entity) || text(plan.args.service) || task.service;
+    const topology = await this.repository.loadTopology(caseContext.datasetTaskId);
+    const entityQuery = text(plan.args.entity) || text(plan.args.service) || task.service || caseContext.defaultService;
     const direction = text(plan.args.direction) || "both";
     const relation = text(plan.args.relation);
     const entities = Array.isArray(topology.entities) ? topology.entities : [];
@@ -645,16 +649,16 @@ export class Rca100ToolGateway {
       : `拓扑中未找到与 ${entityQuery} 匹配的实体。`;
     return {
       display: summary,
-      evidence: [evidence(task, plan, {
+      evidence: [evidence(task, caseContext, plan, {
         type: "context",
         modality: "topology",
         label: "拓扑邻接关系",
         source: `RCA100-${descriptor.task.task_version}`,
         summary,
         observation: { queryEntity: entityQuery, matchedEntities: matching.slice(0, 20), edges: neighbors },
-        rawRef: `rca100://${task.taskId}/topology/neighbors/${plan.id}`,
+        rawRef: `rca100://${caseContext.datasetTaskId}/topology/neighbors/${plan.id}`,
         entityRefs,
-        timeRange: this.timeRange(task, plan.args),
+        timeRange: this.timeRange(caseContext, plan.args),
       })],
     };
   }

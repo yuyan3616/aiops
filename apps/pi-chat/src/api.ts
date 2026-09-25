@@ -35,6 +35,13 @@ export function runInvestigation(id: string, prompt: string) {
   );
 }
 
+export function abortInvestigation(id: string) {
+  return readJson<{ accepted: true; status: string }>(
+    `/api/rca/incidents/${encodeURIComponent(id)}/abort`,
+    { method: "POST" },
+  );
+}
+
 export function connectInvestigationEvents(
   id: string,
   after: number,

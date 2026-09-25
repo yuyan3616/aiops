@@ -7,6 +7,7 @@ import type {
   ThinkingView,
   RcaStreamEvent,
   ToolRunView,
+  AgentTaskView,
 } from "@shared/rca-types";
 
 function replaceById<T extends { id: string }>(items: T[], next: T) {
@@ -50,6 +51,17 @@ export function applyRcaEvent(
       return {
         ...snapshot,
         agents: replaceById(snapshot.agents, event.payload as AgentView),
+        stream,
+      };
+    case "task.created":
+    case "task.started":
+    case "task.completed":
+    case "task.failed":
+    case "task.cancelled":
+    case "task.timed_out":
+      return {
+        ...snapshot,
+        tasks: replaceById(snapshot.tasks, event.payload as AgentTaskView),
         stream,
       };
     case "hypothesis.updated":

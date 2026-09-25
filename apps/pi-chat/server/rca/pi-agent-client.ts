@@ -13,8 +13,8 @@ import {
 } from "@earendil-works/pi-coding-agent";
 
 import type { AgentKind, EvidenceView, HypothesisState } from "../../shared/rca-types";
+import type { SpecialistExecutionContext } from "./harness/task-types";
 import type { RcaToolName } from "./tool-gateway";
-import type { AgentTask } from "./types";
 
 const AGENT_LABELS: Record<AgentKind, string> = {
   log: "Log Agent",
@@ -62,12 +62,17 @@ Hard rules:
 export interface SpecialistToolResult {
   display: string;
   evidence: EvidenceView[];
+  correlation?: Record<string, string>;
 }
 
 export interface AgentRunResult {
   agent: AgentKind;
+  taskId: string;
   summary: string;
   evidence: EvidenceView[];
+  toolCallCount: number;
+  turnCount: number;
+  durationMs: number;
 }
 
 export interface DelegationAssignment {
@@ -75,6 +80,8 @@ export interface DelegationAssignment {
   goal: string;
   service?: string;
   operation?: string;
+  evidenceIds?: string[];
+  hypothesisIds?: string[];
 }
 
 export interface HypothesisUpdateInput {
@@ -105,6 +112,19 @@ export type ExecuteSpecialistTool = (
   name: RcaToolName,
   args: Record<string, unknown>,
 ) => Promise<SpecialistToolResult>;
+
+
+export interface SpecialistRunHooks {
+  executeTool: ExecuteSpecialistTool;
+  onTurnStart(): void;
+}
+
+export interface SpecialistSessionHandle {
+  readonly kind: AgentKind;
+  run(context: SpecialistExecutionContext, hooks: SpecialistRunHooks): Promise<string>;
+  abort(): void;
+  dispose(): void;
+}
 
 function evidenceForModel(evidence: EvidenceView[]) {
   return evidence.map((item) => ({
@@ -197,7 +217,10 @@ export class PiRcaAgentClient {
     return session;
   }
 
-  private specialistTools(kind: AgentKind, executeTool: ExecuteSpecialistTool): ToolDefinition[] {
+  private specialistTools(
+    kind: AgentKind,
+    executeTool: ExecuteSpecialistTool,
+  ): ToolDefinition[] {
     const wrap = (
       name: RcaToolName,
       description: string,
@@ -214,7 +237,10 @@ export class PiRcaAgentClient {
             type: "text" as const,
             text: JSON.stringify({ display: result.display, evidence: evidenceForModel(result.evidence) }, null, 2),
           }],
-          details: { evidenceIds: result.evidence.map((item) => item.id) },
+          details: {
+            evidenceIds: result.evidence.map((item) => item.id),
+            ...(result.correlation ?? {}),
+          },
         };
       },
     });
@@ -298,42 +324,58 @@ export class PiRcaAgentClient {
     ];
   }
 
-  async runSpecialist(
-    kind: AgentKind,
-    task: AgentTask,
-    executeTool: ExecuteSpecialistTool,
-  ): Promise<string> {
-    let toolCallCount = 0;
-    const trackedExecute: ExecuteSpecialistTool = async (name, args) => {
-      toolCallCount += 1;
-      return executeTool(name, args);
+  async createSpecialistSession(kind: AgentKind): Promise<SpecialistSessionHandle> {
+    let activeHooks: SpecialistRunHooks | undefined;
+    let localToolCallCount = 0;
+    const dynamicExecutor: ExecuteSpecialistTool = async (name, args) => {
+      if (!activeHooks) {
+        throw new Error(`${AGENT_LABELS[kind]} received a tool call outside an active task.`);
+      }
+      localToolCallCount += 1;
+      return activeHooks.executeTool(name, args);
     };
     const session = await this.createSession(
       SPECIALIST_PROMPTS[kind],
-      this.specialistTools(kind, trackedExecute),
+      this.specialistTools(kind, dynamicExecutor),
     );
-    let output = "";
-    const unsubscribe = session.subscribe((event) => {
-      if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
-        output += event.assistantMessageEvent.delta;
-      }
-    });
 
-    try {
-      await session.prompt(
-        `RCA100 调查任务：${task.goal}\nCase：${task.taskId}\n告警实体：${task.alertEntity ?? "unknown"}\n关注服务：${task.service}\n操作：${task.operation ?? "unknown"}\n时间窗口：${task.startTime} ~ ${task.endTime}\n\n请使用你拥有的观测工具查询事实，再基于 Evidence 给出结论。`,
-      );
-      if (toolCallCount === 0) {
-        await session.prompt("你尚未调用任何观测工具。请先调用合适工具获取 RCA100 Evidence，再输出结论；不要凭已有常识猜测。 ");
-      }
-      if (toolCallCount === 0) {
-        throw new Error(`${AGENT_LABELS[kind]} did not call any observability tool after retry.`);
-      }
-      return output.trim() || `${AGENT_LABELS[kind]} 已完成查询，但未生成文本摘要。`;
-    } finally {
-      unsubscribe();
-      session.dispose();
-    }
+    const handle: SpecialistSessionHandle = {
+      kind,
+      run: async (context, hooks) => {
+        if (activeHooks) throw new Error(`${AGENT_LABELS[kind]} is already running a task.`);
+        activeHooks = hooks;
+        localToolCallCount = 0;
+        let output = "";
+        const unsubscribe = session.subscribe((event) => {
+          if (event.type === "turn_start") hooks.onTurnStart();
+          if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
+            output += event.assistantMessageEvent.delta;
+          }
+        });
+
+        try {
+          await session.prompt(
+            `<SPECIALIST_EXECUTION_CONTEXT>\n${JSON.stringify(context, null, 2)}\n</SPECIALIST_EXECUTION_CONTEXT>\n\n` +
+              "请只根据以上任务上下文和你拥有的观测工具进行调查。不要访问其他 Agent transcript。先获取事实 Evidence，再给出简洁结论。",
+          );
+          if (localToolCallCount === 0) {
+            await session.prompt(
+              "你尚未调用任何观测工具。请先调用合适工具获取 RCA100 Evidence，再输出结论；不要凭已有常识猜测。",
+            );
+          }
+          if (localToolCallCount === 0) {
+            throw new Error(`${AGENT_LABELS[kind]} did not call any observability tool after retry.`);
+          }
+          return output.trim() || `${AGENT_LABELS[kind]} 已完成查询，但未生成文本摘要。`;
+        } finally {
+          unsubscribe();
+          activeHooks = undefined;
+        }
+      },
+      abort: () => session.abort(),
+      dispose: () => session.dispose(),
+    };
+    return handle;
   }
 
   async runCoordinator(
@@ -341,13 +383,14 @@ export class PiRcaAgentClient {
     incidentContext: string,
     hypothesisContext: string,
     hooks: CoordinatorHooks,
+    signal?: AbortSignal,
   ): Promise<void> {
     const skill = await this.rcaSkill();
     const coordinatorPrompt = `${COORDINATOR_BASE_PROMPT}\n\n<RCA_INVESTIGATION_SKILL>\n${skill}\n</RCA_INVESTIGATION_SKILL>`;
     const delegateAgents = defineTool({
       name: "delegate_agents",
       label: "delegate_agents",
-      description: "Dispatch one investigation round to one or more specialist RCA agents. Assignments in the same call run concurrently.",
+      description: "Dispatch one investigation round to one or more specialist RCA agents. Assignments in the same call are scheduled concurrently when Harness limits permit.",
       parameters: Type.Object({
         assignments: Type.Array(
           Type.Object({
@@ -360,8 +403,10 @@ export class PiRcaAgentClient {
             goal: Type.String(),
             service: Type.Optional(Type.String()),
             operation: Type.Optional(Type.String()),
+            evidenceIds: Type.Optional(Type.Array(Type.String(), { maxItems: 12 })),
+            hypothesisIds: Type.Optional(Type.Array(Type.String(), { maxItems: 8 })),
           }),
-          { minItems: 1, maxItems: 4 },
+          { minItems: 1, maxItems: 8 },
         ),
       }),
       execute: async (_toolCallId, params) => {
@@ -370,12 +415,21 @@ export class PiRcaAgentClient {
           content: [{
             type: "text" as const,
             text: JSON.stringify(results.map((result) => ({
+              taskId: result.taskId,
               agent: result.agent,
               summary: result.summary,
               evidence: evidenceForModel(result.evidence),
+              metrics: {
+                toolCallCount: result.toolCallCount,
+                turnCount: result.turnCount,
+                durationMs: result.durationMs,
+              },
             })), null, 2),
           }],
-          details: { agents: results.map((item) => item.agent) },
+          details: {
+            agents: results.map((item) => item.agent),
+            taskIds: results.map((item) => item.taskId),
+          },
         };
       },
     });
@@ -427,6 +481,8 @@ export class PiRcaAgentClient {
 
     const session = await this.createSession(coordinatorPrompt, [delegateAgents, updateHypotheses, finalizeRca]);
     let textOpen = false;
+    const onAbort = () => session.abort();
+    signal?.addEventListener("abort", onAbort, { once: true });
     const unsubscribe = session.subscribe((event) => {
       if (event.type === "message_start" && event.message.role === "assistant") textOpen = false;
       if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
@@ -446,13 +502,14 @@ export class PiRcaAgentClient {
       await session.prompt(
         `用户/告警输入：\n${userPrompt}\n\nRCA100 Case Context：\n${incidentContext}\n\n当前候选假设：\n${hypothesisContext}\n\n请开始 RCA。注意：RCA100 Ground Truth 不在你的上下文中，只能通过 specialist tools 获取观测事实。`,
       );
-      if (!finalized) {
+      if (!finalized && !signal?.aborted) {
         await session.prompt(
           "你还没有调用 finalize_rca。请检查当前 Evidence；若证据仍不足或只有单一 modality，继续 delegate_agents 调查；若证据已形成完整因果链，更新假设并调用 finalize_rca。不要凭空补证据。",
         );
       }
       if (textOpen) hooks.onTextEnd();
     } finally {
+      signal?.removeEventListener("abort", onAbort);
       unsubscribe();
       session.dispose();
     }
