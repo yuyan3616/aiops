@@ -34,6 +34,7 @@ import type {
 import {
   abortInvestigation,
   connectInvestigationEvents,
+  createInvestigation,
   getInvestigation,
   listIncidents,
   runInvestigation,
@@ -42,14 +43,8 @@ import {
 import { applyRcaEvent } from "./rca-state";
 import "./App.css";
 
-const incidentId = "demo";
 const DEMO_PROMPT = "RCA100 t039：checkout::/oteldemo.CheckoutService/PlaceOrder 在 2026-04-28 09:20:55 出现响应时间突增，当前值约 3355ms，请基于可观测数据分析根因。";
 
-const fallbackConversations: IncidentSummary[] = [
-  { id: "demo", title: "RCA100 · t039 · checkout响应时间突增", time: "推荐示例", status: "数据集案例" },
-  { id: "payment-timeout", title: "payment-service 超时", time: "今天 09:12", status: "已完成" },
-  { id: "checkout-failed", title: "用户下单失败", time: "昨天 16:08", status: "已完成" },
-];
 
 const agentIcon: Record<AgentKind, typeof FileSearch> = {
   log: FileSearch,
@@ -81,26 +76,45 @@ function messageTime(iso: string) {
   });
 }
 
+function investigationStatusLabel(status: IncidentSummary["status"]) {
+  if (status === "completed") return "已完成";
+  if (status === "interrupted") return "已中断";
+  if (status === "cancelled") return "已取消";
+  if (status === "error") return "失败";
+  if (status === "running" || status === "stopping") return "进行中";
+  return "未开始";
+}
+
+function historyTime(iso: string) {
+  const date = new Date(iso);
+  const today = new Date();
+  if (date.toDateString() === today.toDateString()) {
+    return date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
+  }
+  return date.toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" });
+}
+
 export default function App() {
+  const [incidentId, setIncidentId] = useState("demo");
   const [snapshot, setSnapshot] = useState<InvestigationSnapshot>();
-  const [conversations, setConversations] = useState(fallbackConversations);
+  const [conversations, setConversations] = useState<IncidentSummary[]>([]);
   const [connected, setConnected] = useState(false);
   const [loadError, setLoadError] = useState<string>();
   const [rightTab, setRightTab] = useState<"overview" | "tools" | "evidence">("overview");
   const [draft, setDraft] = useState("");
-  const [activePrompt, setActivePrompt] = useState(DEMO_PROMPT);
   const [showWelcome, setShowWelcome] = useState(true);
 
   useEffect(() => {
     let disposed = false;
     let source: EventSource | undefined;
+    setConnected(false);
 
     void Promise.all([getInvestigation(incidentId), listIncidents()])
       .then(([initialSnapshot, incidentList]) => {
         if (disposed) return;
         setSnapshot(initialSnapshot);
         setConversations(incidentList);
-        if (initialSnapshot.status === "running") setShowWelcome(false);
+        if (incidentId !== "demo") setShowWelcome(false);
         source = connectInvestigationEvents(
           incidentId,
           initialSnapshot.stream.lastEventId,
@@ -116,7 +130,16 @@ export default function App() {
       disposed = true;
       source?.close();
     };
-  }, []);
+  }, [incidentId]);
+
+  useEffect(() => {
+    if (!snapshot || incidentId === "demo") return;
+    setConversations((current) => current.map((item) =>
+      item.id === incidentId
+        ? { ...item, title: snapshot.title, status: snapshot.status, updatedAt: new Date().toISOString() }
+        : item,
+    ));
+  }, [incidentId, snapshot?.status, snapshot?.title]);
 
   const agents = snapshot?.agents ?? [];
   const hypotheses = snapshot?.hypotheses ?? [];
@@ -144,32 +167,52 @@ export default function App() {
     return Math.max(10, doneCount * 20 + runningCount * 9);
   }, [doneCount, runningCount, snapshot?.conclusion]);
 
-  const startInvestigation = (prompt: string) => {
+  const startInvestigation = async (prompt: string) => {
     if (running) return;
     const normalizedPrompt = prompt.trim() || DEMO_PROMPT;
-    setActivePrompt(normalizedPrompt);
     setShowWelcome(false);
     setLoadError(undefined);
-    void runInvestigation(incidentId, normalizedPrompt).catch((error: unknown) => {
+    try {
+      const created = await createInvestigation("t039");
+      const id = created.investigation.id;
+      setSnapshot(created.investigation.snapshot);
+      setIncidentId(id);
+      setConversations(await listIncidents());
+      await runInvestigation(id, normalizedPrompt);
+    } catch (error) {
       setLoadError(error instanceof Error ? error.message : String(error));
-    });
+    }
   };
 
-  const rerun = () => startInvestigation(activePrompt);
+  const rerun = () => void startInvestigation(snapshot?.prompt ?? DEMO_PROMPT);
 
   const stopInvestigation = () => {
-    if (!running || stopping) return;
+    if (!running || stopping || incidentId === "demo") return;
     setLoadError(undefined);
     void abortInvestigation(incidentId).catch((error: unknown) => {
       setLoadError(error instanceof Error ? error.message : String(error));
     });
   };
 
+  const newInvestigation = () => {
+    if (running) return;
+    setLoadError(undefined);
+    setShowWelcome(true);
+    setIncidentId("demo");
+  };
+
+  const openHistory = (id: string) => {
+    if (running || id === incidentId) return;
+    setLoadError(undefined);
+    setShowWelcome(false);
+    setIncidentId(id);
+  };
+
   const submit = () => {
     const prompt = draft.trim();
     if (!prompt || running) return;
     setDraft("");
-    startInvestigation(prompt);
+    void startInvestigation(prompt);
   };
 
   if (!snapshot) {
@@ -192,15 +235,23 @@ export default function App() {
           <div><strong>RCA Assistant</strong><span>Multi-Agent</span></div>
         </div>
 
-        <button className="new-chat" onClick={() => setShowWelcome(true)} disabled={running}><Plus size={16} /> 新建排查</button>
+        <button className="new-chat" onClick={newInvestigation} disabled={running}><Plus size={16} /> 新建排查</button>
         <div className="sidebar-section-title"><span>历史会话</span><Search size={14} /></div>
         <div className="conversation-list">
           {conversations.map((item) => (
-            <button key={item.id} className={`conversation-item ${item.id === incidentId && hasInvestigationStarted ? "active" : ""}`}>
+            <button
+              key={item.id}
+              className={`conversation-item ${item.id === incidentId && hasInvestigationStarted ? "active" : ""}`}
+              onClick={() => openHistory(item.id)}
+            >
               <strong>{item.title}</strong>
-              <span><i className={item.status === "已完成" ? "finished" : "running"} />{item.id === incidentId && !hasInvestigationStarted ? "推荐示例" : item.time}</span>
+              <span>
+                <i className={item.status === "completed" ? "finished" : "running"} />
+                {investigationStatusLabel(item.status)} · {historyTime(item.updatedAt)}
+              </span>
             </button>
           ))}
+          {conversations.length === 0 && <div className="history-empty">暂无历史调查</div>}
         </div>
       </aside>
 
@@ -231,11 +282,11 @@ export default function App() {
           {(loadError || snapshot.error) && <div className="runtime-error">Runtime: {loadError ?? snapshot.error}</div>}
 
           {!hasInvestigationStarted ? (
-            <DemoWelcome onRun={() => startInvestigation(DEMO_PROMPT)} running={running} />
+            <DemoWelcome onRun={() => void startInvestigation(DEMO_PROMPT)} running={running} />
           ) : (
             <>
           <MessageRow time="09:20">
-            {activePrompt}
+            {snapshot.prompt}
           </MessageRow>
 
           {planMessages.map((message) => (
@@ -340,7 +391,7 @@ export default function App() {
             <section className="context-section">
               <div className="context-heading"><strong>调查进度</strong><span>{investigationProgress}%</span></div>
               <div className="progress-bar"><span style={{ width: `${investigationProgress}%` }} /></div>
-              <div className="phase-text">{snapshot.conclusion ? "根因已收敛" : snapshot.status === "cancelled" ? "调查已停止" : stopping ? "正在停止 Agent 任务" : running ? "正在收集和验证证据" : "等待开始"}</div>
+              <div className="phase-text">{snapshot.conclusion ? "根因已收敛" : snapshot.status === "interrupted" ? "调查在服务重启时中断" : snapshot.status === "error" ? "调查执行失败" : snapshot.status === "cancelled" ? "调查已停止" : stopping ? "正在停止 Agent 任务" : running ? "正在收集和验证证据" : "等待开始"}</div>
             </section>
 
             <section className="context-section">

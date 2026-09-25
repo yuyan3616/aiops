@@ -1,4 +1,10 @@
 export type AgentKind = "log" | "metric" | "trace" | "context";
+export type RcaAgentRole = "coordinator" | AgentKind;
+
+export interface PiSessionRef {
+  sessionId: string;
+  sessionFile: string;
+}
 export type EvidenceModality = "log" | "metric" | "trace" | "event" | "alert" | "topology";
 export type AgentState = "waiting" | "running" | "done" | "error" | "cancelled";
 export type HypothesisState = "possible" | "validating" | "supported" | "rejected";
@@ -9,6 +15,7 @@ export type InvestigationStatus =
   | "stopping"
   | "completed"
   | "cancelled"
+  | "interrupted"
   | "error";
 
 export type AgentTaskStatus =
@@ -17,7 +24,8 @@ export type AgentTaskStatus =
   | "succeeded"
   | "failed"
   | "cancelled"
-  | "timed_out";
+  | "timed_out"
+  | "interrupted";
 
 export type TaskErrorCode =
   | "TASK_TIMEOUT"
@@ -143,6 +151,7 @@ export interface CoordinatorMessage {
 
 export interface InvestigationSnapshot {
   incidentId: string;
+  prompt: string;
   title: string;
   severity: "P1" | "P2" | "P3";
   window: string;
@@ -171,6 +180,16 @@ export interface InvestigationSnapshot {
   };
   runId: string;
   stream: { id: string; lastEventId: number };
+}
+
+
+export interface InvestigationSummary {
+  id: string;
+  title: string;
+  datasetTaskId: string;
+  status: InvestigationStatus;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export type RcaEventType =

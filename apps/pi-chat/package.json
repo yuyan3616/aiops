@@ -11,7 +11,8 @@
     "preview": "vite preview",
     "rca100:download": "node scripts/download-rca100.mjs",
     "rca100:smoke": "node scripts/smoke-rca100.mjs",
-    "harness:test": "node --experimental-strip-types --test server/rca/__tests__/harness.test.ts"
+    "harness:test": "node --experimental-strip-types --test server/rca/__tests__/harness.test.ts",
+    "history:test": "node --experimental-strip-types --test server/rca/history/__tests__/*.test.ts"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.86.1",

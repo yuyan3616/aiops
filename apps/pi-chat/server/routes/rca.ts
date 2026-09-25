@@ -5,29 +5,41 @@ import { Hono } from "hono";
 export function createRcaRoutes(service: RcaService) {
   const app = new Hono();
 
-  app.get("/incidents", (ctx) => ctx.json(service.list()));
+  app.get("/incidents", async (ctx) => ctx.json(await service.list()));
 
-  app.get("/incidents/:id", (ctx) => {
-    const runtime = service.get(ctx.req.param("id"));
+  app.post("/incidents", async (ctx) => {
+    const body = (await ctx.req.json().catch(() => ({}))) as { taskId?: unknown };
+    const taskId = typeof body.taskId === "string" && body.taskId.trim() ? body.taskId.trim() : "t039";
+    const runtime = await service.create(taskId);
+    return ctx.json({
+      investigation: {
+        id: runtime.incidentId,
+        snapshot: runtime.snapshot(),
+      },
+    }, 201);
+  });
+
+  app.get("/incidents/:id", async (ctx) => {
+    const runtime = await service.get(ctx.req.param("id"));
     return ctx.json(runtime.snapshot());
   });
 
   app.post("/incidents/:id/run", async (ctx) => {
-    const runtime = service.get(ctx.req.param("id"));
+    const runtime = await service.get(ctx.req.param("id"));
     const body = (await ctx.req.json().catch(() => ({}))) as { prompt?: unknown };
     const prompt = typeof body.prompt === "string" ? body.prompt : undefined;
     void runtime.start(prompt);
     return ctx.json({ accepted: true, runId: runtime.snapshot().runId }, 202);
   });
 
-  app.post("/incidents/:id/abort", (ctx) => {
-    const runtime = service.get(ctx.req.param("id"));
+  app.post("/incidents/:id/abort", async (ctx) => {
+    const runtime = await service.get(ctx.req.param("id"));
     runtime.abort();
     return ctx.json({ accepted: true, status: runtime.snapshot().status });
   });
 
-  app.get("/incidents/:id/stream", (ctx) => {
-    const runtime = service.get(ctx.req.param("id"));
+  app.get("/incidents/:id/stream", async (ctx) => {
+    const runtime = await service.get(ctx.req.param("id"));
     const afterQuery = ctx.req.query("after") ?? "0";
     const after = Number(afterQuery);
     const safeAfter = Number.isSafeInteger(after) && after >= 0 ? after : 0;

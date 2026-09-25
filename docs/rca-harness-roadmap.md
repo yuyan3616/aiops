@@ -132,17 +132,28 @@ Make one RCA100 investigation **bounded, cancellable, context-controlled and tra
 - [x] Specialist prompts are assembled by `ContextBuilder`, not ad-hoc string concatenation in `AgentManager`.
 - [ ] Existing `t039` demo still completes successfully in a real networked Pi + DuckDB environment (current cloud workspace cannot install dependencies; tracked as H81-096/H81-D09).
 
+## 4.1 v8.1.1 — History MVP
+
+Before the full durable/audit milestone, restore Pi Chat-style local history with the smallest useful scope:
+
+- Pi JSONL persistence for Coordinator and Specialist sessions;
+- JSON `InvestigationRepository` under the Pi Chat root;
+- real Investigation history list and history opening after Node restart;
+- persisted RCA snapshot for messages/tasks/evidence/hypotheses/conclusion.
+
+No SQLite, audit timeline or automatic task resume is introduced here. Those remain v8.2.
+
 ## 5. v8.2 — Durable Investigation
 
 ### Goal
 
-Allow investigation state to survive a server restart without attempting token-level LLM replay.
+Build on v8.1.1 persistent Pi JSONL history and make RCA domain state/audit durable. Pi Agent transcripts remain owned by Pi SessionManager; SQLite owns RCA business/audit state. Exact mid-token continuation is not attempted.
 
 ### Planned components
 
-- `InvestigationRepository` abstraction.
-- SQLite implementation for local/demo use.
-- Append-only investigation event log.
+- SQLite `InvestigationRepository` for RCA domain state.
+- Explicit `agent_sessions` mapping from Investigation/role to Pi JSONL session.
+- Append-only investigation audit event log.
 - Investigation checkpoint containing:
   - task records;
   - Agent status;
@@ -150,11 +161,11 @@ Allow investigation state to survive a server restart without attempting token-l
   - hypotheses;
   - conclusion;
   - runtime version.
-- Resume semantics:
-  - completed tasks remain completed;
-  - queued tasks remain queued;
-  - tasks that were `running` become `interrupted` and are eligible for controlled rerun;
-  - existing Evidence is retained and reused.
+- History/Audit semantics:
+  - historical Investigation list remains available after restart;
+  - Pi JSONL preserves Coordinator/Specialist transcript;
+  - SQLite preserves Task/Evidence/Hypothesis/Conclusion/ToolRun state and Audit Event correlation;
+  - tasks that were `running` are represented as `interrupted`; automatic resume policy is a later explicit product decision.
 
 ### Non-goals
 

@@ -264,5 +264,39 @@ The invariant is that Tools continue to return bounded factual results and Evide
 - [`rca-harness-roadmap.md`](./rca-harness-roadmap.md)
 - [`v8.1-harness-spec.md`](./v8.1-harness-spec.md)
 - [`v8.1-harness-tasks.md`](./v8.1-harness-tasks.md)
+- [`v8.1.1-history-spec.md`](./v8.1.1-history-spec.md)
+- [`v8.1.1-history-tasks.md`](./v8.1.1-history-tasks.md)
 
 v8.2 remains persistence/resume, v8.3 remains Evidence intelligence, and v8.4 remains benchmark/evaluation. Those concerns are intentionally not folded into v8.1.
+
+
+## v8.1.1 History persistence addendum
+
+History reuses the original Pi Chat persistence model instead of storing RCA transcripts in application memory only.
+
+```text
+RCA Investigation
+   |
+   +--> InvestigationRepository JSON record
+   |      - metadata
+   |      - current RCA snapshot
+   |      - Agent -> Pi session references
+   |
+   +--> Pi SessionManager JSONL
+          - coordinator transcript
+          - log transcript
+          - metric transcript
+          - trace transcript
+          - context transcript
+```
+
+Default local state root:
+
+```text
+~/.pi/agent/pi-chat/rca/
+├── investigations/
+├── sessions/
+└── workspaces/
+```
+
+`SessionManager.inMemory()` is no longer used for RCA AgentSession transcripts. New sessions are created with Pi native persistence and existing referenced files can be reopened through `SessionManager.open(...)`. The JSON Investigation record is intentionally a History MVP store, not the final v8.2 Audit store. SQLite/domain tables and append-only Audit Timeline remain deferred.

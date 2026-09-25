@@ -7,13 +7,13 @@ import {
   defineTool,
   getAgentDir,
   ModelRuntime,
-  SessionManager,
   SettingsManager,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 
-import type { AgentKind, EvidenceView, HypothesisState } from "../../shared/rca-types";
+import type { AgentKind, EvidenceView, HypothesisState, RcaAgentRole } from "../../shared/rca-types";
 import type { SpecialistExecutionContext } from "./harness/task-types";
+import type { PersistentAgentSessionRegistry } from "./history/session-registry";
 import type { RcaToolName } from "./tool-gateway";
 
 const AGENT_LABELS: Record<AgentKind, string> = {
@@ -151,6 +151,12 @@ export class PiRcaAgentClient {
   private currentModel = "auto";
   private skillPromise?: Promise<string>;
 
+  constructor(private readonly sessionRegistry: PersistentAgentSessionRegistry) {}
+
+  sessionRefs() {
+    return this.sessionRegistry.references();
+  }
+
   modelLabel() {
     return this.currentModel;
   }
@@ -168,7 +174,11 @@ export class PiRcaAgentClient {
     return this.skillPromise;
   }
 
-  private async createSession(systemPrompt: string, customTools: ToolDefinition[]) {
+  private async createSession(
+    role: RcaAgentRole,
+    systemPrompt: string,
+    customTools: ToolDefinition[],
+  ) {
     const modelRuntime = await this.modelRuntime();
     const cwd = process.cwd();
     const agentDir = getAgentDir();
@@ -208,7 +218,7 @@ export class PiRcaAgentClient {
       modelRuntime,
       ...(model ? { model } : {}),
       resourceLoader,
-      sessionManager: SessionManager.inMemory(cwd),
+      sessionManager: await this.sessionRegistry.get(role),
       settingsManager,
       noTools: "builtin",
       customTools,
@@ -335,6 +345,7 @@ export class PiRcaAgentClient {
       return activeHooks.executeTool(name, args);
     };
     const session = await this.createSession(
+      kind,
       SPECIALIST_PROMPTS[kind],
       this.specialistTools(kind, dynamicExecutor),
     );
@@ -479,7 +490,11 @@ export class PiRcaAgentClient {
       },
     });
 
-    const session = await this.createSession(coordinatorPrompt, [delegateAgents, updateHypotheses, finalizeRca]);
+    const session = await this.createSession(
+      "coordinator",
+      coordinatorPrompt,
+      [delegateAgents, updateHypotheses, finalizeRca],
+    );
     let textOpen = false;
     const onAbort = () => session.abort();
     signal?.addEventListener("abort", onAbort, { once: true });

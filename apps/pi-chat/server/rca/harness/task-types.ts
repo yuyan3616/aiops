@@ -20,10 +20,11 @@ const ALLOWED_TRANSITIONS: Record<AgentTaskStatus, ReadonlySet<AgentTaskStatus>>
   failed: new Set(),
   cancelled: new Set(),
   timed_out: new Set(),
+  interrupted: new Set(),
 };
 
 export function isTerminalTaskStatus(status: AgentTaskStatus) {
-  return status === "succeeded" || status === "failed" || status === "cancelled" || status === "timed_out";
+  return status === "succeeded" || status === "failed" || status === "cancelled" || status === "timed_out" || status === "interrupted";
 }
 
 export function canTransitionTask(from: AgentTaskStatus, to: AgentTaskStatus) {
