@@ -350,3 +350,5 @@ Next milestones remain intentionally separated:
 - **v8.2** — SQLite InvestigationRepository, checkpoints, persisted EventLog, restart/resume;
 - **v8.3** — NormalizedQuery, Evidence coverage/subset reuse, RawRef reuse and reuse metrics;
 - **v8.4** — isolated ground-truth evaluator, multi-case/103-case benchmark and accuracy/cost/latency reporting.
+
+# aiops
