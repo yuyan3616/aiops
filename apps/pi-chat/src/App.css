@@ -984,3 +984,20 @@ button { cursor: pointer; }
   .live-dot { animation: none; }
   .conversation-sidebar { transition: none; }
 }
+
+
+.sidebar-brand-copy { min-width: 0; display: grid; gap: 1px; }
+.sidebar-brand-copy span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 760px) {
+  .topbar-actions .stop-investigation {
+    width: 32px;
+    padding: 0;
+    justify-content: center;
+    font-size: 0;
+  }
+}
