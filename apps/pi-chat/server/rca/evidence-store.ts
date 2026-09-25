@@ -1,14 +1,20 @@
 import { randomUUID } from "node:crypto";
 
-import type { AgentKind, EvidenceView } from "../../shared/rca-types";
+import type { AgentKind, EvidenceModality, EvidenceView } from "../../shared/rca-types";
 
 export interface PutEvidenceInput {
+  taskId: string;
   type: AgentKind;
+  modality: EvidenceModality;
   label: string;
   source: string;
   summary: string;
+  observation: Record<string, unknown>;
   rawRef: string;
   query: Record<string, unknown>;
+  entityRefs: string[];
+  timeRange: { start: string; end: string };
+  createdBy: AgentKind;
 }
 
 function stableStringify(input: unknown): string {
@@ -32,7 +38,7 @@ export class EvidenceStore {
   }
 
   put(input: PutEvidenceInput): { evidence: EvidenceView; reused: boolean } {
-    const queryKey = `${input.type}:${stableStringify(input.query)}`;
+    const queryKey = `${input.taskId}:${input.type}:${stableStringify(input.query)}`;
     const existingId = this.idByQueryKey.get(queryKey);
     if (existingId) {
       return { evidence: this.byId.get(existingId)!, reused: true };
@@ -41,12 +47,18 @@ export class EvidenceStore {
     const index = this.byId.size + 1;
     const evidence: EvidenceView = {
       id: `EV${String(index).padStart(2, "0")}`,
+      taskId: input.taskId,
       type: input.type,
+      modality: input.modality,
       label: input.label,
       source: input.source,
       summary: input.summary,
-      rawRef: input.rawRef || `fake://${randomUUID()}`,
+      observation: input.observation,
+      rawRef: input.rawRef || `rca100://${input.taskId}/raw/${randomUUID()}`,
       queryKey,
+      entityRefs: [...new Set(input.entityRefs.filter(Boolean))],
+      timeRange: input.timeRange,
+      createdBy: input.createdBy,
       createdAt: new Date().toISOString(),
     };
     this.byId.set(evidence.id, evidence);

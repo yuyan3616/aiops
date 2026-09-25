@@ -1,218 +1,162 @@
-# RCA Multi-Agent Architecture — v7
+# RCA Architecture — v8.0
 
-## 1. Architecture
+## Goal
 
-```text
-                         +----------------------+
-User / Incident -------->| Pi Coordinator       |
-                         | AgentSession          |
-                         +----------+-----------+
-                                    |
-                     delegate_agents(assignments)
-                                    |
-                     +--------------+--------------+
-                     |                             |
-                     v                             v
-             +---------------+             +---------------+
-             | Log Agent     |             | Metric Agent  |
-             | Pi Session    |             | Pi Session    |
-             +-------+-------+             +-------+-------+
-                     |                             |
-             get_log_overview               query_metrics
-                     |                             |
-                     +--------------+--------------+
-                                    |
-                              EvidenceStore
-                                    |
-                                    v
-                              Coordinator
-                                    |
-                        evidence-driven next round
-                                    |
-                     +--------------+--------------+
-                     |                             |
-                     v                             v
-             +---------------+             +---------------+
-             | Trace Agent   |             | Change Agent  |
-             | Pi Session    |             | Pi Session    |
-             +-------+-------+             +-------+-------+
-                     |                             |
-                query_traces               get_deployments
-                     |                             |
-                     +--------------+--------------+
-                                    |
-                              EvidenceStore
-                                    |
-                    update_hypotheses / finalize_rca
-                                    |
-                                    v
-                              RCA conclusion
-```
+v8.0 proves one complete data-driven RCA loop on RCA100 `t039`: real Pi AgentSessions select tools, tools execute real queries over public telemetry files, and the Coordinator can finalize only from recorded Evidence.
 
-## 2. Why this is genuinely multi-Agent
-
-The specialists are not plain functions pretending to be Agents. Every delegated role creates an independent Pi `AgentSession` with:
-
-- its own system prompt
-- its own model turn / tool loop
-- an isolated tool capability
-- its own result summarization
-
-The Coordinator is another independent Pi `AgentSession`. It does not query observability data directly. It decides when to call `delegate_agents`, which specialists to include in that round, how to update hypotheses, and when to call `finalize_rca`.
-
-Assignments passed in a single `delegate_agents` call are executed concurrently by `Promise.all`, preserving the fan-out / fan-in structure.
-
-## 3. Capability isolation
-
-The embedded sessions intentionally disable Pi's default coding tools:
-
-```ts
-noTools: "builtin"
-```
-
-The custom `DefaultResourceLoader` also disables discovery of external behavior:
+## Runtime layers
 
 ```text
-noExtensions
-noSkills
-noPromptTemplates
-noThemes
-noContextFiles
+User / recommended RCA100 case
+              |
+              v
+        RcaRuntime
+              |
+              v
+     Pi Coordinator Session
+        |      |      |
+        | RCA investigation Skill
+        |      |      |
+        v      v      v
+   delegate  hypotheses  finalize
+        |
+        +-------------------------------+
+        |              |                |
+        v              v                v
+     Log Agent     Metric Agent     Trace Agent      Context Agent
+        |              |                |                 |
+        +--------------+-------+--------+-----------------+
+                               |
+                               v
+                      Rca100ToolGateway
+                               |
+                     normalized query args
+                               |
+                 +-------------+-------------+
+                 |                           |
+                 v                           v
+          DuckDbParquetEngine          topology.json
+                 |
+                 v
+   metrics/logs/traces/events/alerts.parquet
+                 |
+                 v
+                         EvidenceStore
+                               |
+                               v
+                      Coordinator context
 ```
 
-Coordinator tools:
+## Responsibility boundaries
+
+### System prompt
+
+Defines identity and hard constraints. The Coordinator cannot claim a root cause without Evidence, and Specialist Agents cannot use generic coding tools.
+
+### RCA Skill
+
+`apps/pi-chat/skills/rca-investigation/SKILL.md` contains investigation methodology. It teaches *how to investigate* but performs no data access.
+
+### Tools
+
+Tools perform concrete read/query operations. They return factual observations plus Evidence. They never return a root-cause label as a shortcut.
+
+### Dataset adapter
+
+`server/datasets/rca100` owns RCA100 file locations, downloads, validation and DuckDB access. Agent code does not know OSS URLs or Parquet paths.
+
+### EvidenceStore
+
+Evidence is the contract between Tool execution and reasoning. Each record contains modality, normalized query payload, structured observation, entity references, time range and raw reference.
+
+### Ground truth
+
+Ground truth is outside the investigation runtime. v8.0 never downloads `answer_key`. A later evaluator will use a separate context/process so the Agent cannot observe labels before completing its prediction.
+
+## Agent roles
+
+### Coordinator
+
+- reads alert/task context;
+- applies RCA Skill;
+- maintains hypotheses;
+- dynamically chooses specialists;
+- requires multi-modal support before finalizing;
+- outputs root-cause entity, fault type, causal chain and evidence IDs.
+
+### Log Agent
+
+Tools:
+- `query_logs`
+- `analyze_log_patterns`
+
+Focus: application error/warning/message evidence and recurring log patterns.
+
+### Metric Agent
+
+Tools:
+- `list_metrics`
+- `query_metrics`
+
+Focus: metric discovery and incident-window statistics. Metric names should be discovered before assuming an unknown name.
+
+### Trace Agent
+
+Tools:
+- `search_traces`
+- `get_trace`
+
+Focus: latency/error spans, service propagation and concrete trace structure.
+
+### Context Agent
+
+Tools:
+- `query_events`
+- `query_alerts`
+- `get_topology_neighbors`
+
+Focus: Kubernetes/environment context, related alert lifecycle and reference topology.
+
+## Data flow
+
+1. `RcaRuntime` publishes `investigation.reset` and running status.
+2. Repository prepares the seven t039 case files.
+3. Runtime emits `dataset.ready`.
+4. Coordinator starts and emits user-visible reasoning summaries.
+5. Coordinator calls `delegate_agents`.
+6. Specialists call scoped custom tools.
+7. Tool Gateway queries RCA100 and writes Evidence.
+8. Evidence IDs are returned to Specialists and then Coordinator.
+9. Coordinator updates hypotheses and may delegate another round.
+10. `finalize_rca` validates at least two valid Evidence IDs across at least two modalities.
+11. Runtime publishes `rca.completed`.
+
+## RCA100 t039 case files
 
 ```text
-delegate_agents
-update_hypotheses
-finalize_rca
+data/rca100/cases/t039/
+├── task.json
+├── metrics.parquet
+├── logs.parquet
+├── traces.parquet
+├── events.parquet
+├── alerts.parquet
+└── topology.json
 ```
 
-Specialist tools:
+Data files are ignored by Git and not included in release archives.
+
+## Production replacement seam
+
+The Agent/Coordinator contracts should survive a future production migration. Replace the dataset-backed query layer with adapters such as:
 
 ```text
-Log Agent      -> get_log_overview
-Metric Agent   -> query_metrics
-Trace Agent    -> query_traces
-Change Agent   -> get_deployments
+query_logs       -> Loki / Elasticsearch
+query_metrics    -> Prometheus / VictoriaMetrics
+search_traces    -> Tempo / Jaeger
+query_events     -> Kubernetes API / event store
+query_alerts     -> alert platform
+get_topology_*   -> CMDB / service catalog / trace-derived graph
 ```
 
-This is an important engineering boundary: a Log Agent cannot arbitrarily run shell commands or call deployment tools.
-
-## 4. Fake vs real boundary
-
-`server/rca/pi-agent-client.ts` is now real Pi SDK integration.
-
-`server/rca/tool-gateway.ts` is still deterministic demo infrastructure:
-
-```text
-fake-loki
-fake-prometheus
-fake-tempo
-fake-change-center
-```
-
-The next production-data version only needs to replace the Tool Gateway implementations with real clients while preserving their contracts.
-
-## 5. Evidence contract
-
-```ts
-interface EvidenceView {
-  id: string;          // EV01
-  type: AgentKind;     // log / metric / trace / change
-  label: string;
-  source: string;
-  summary: string;
-  rawRef: string;
-  queryKey: string;
-  createdAt: string;
-}
-```
-
-`EvidenceStore` normalizes query objects before building `queryKey`. Equivalent logical queries reuse the same evidence instead of creating duplicate context.
-
-## 6. Coordinator tools
-
-### `delegate_agents`
-
-The Coordinator sends one or more assignments:
-
-```json
-{
-  "assignments": [
-    { "agent": "log", "goal": "检查超时错误模式" },
-    { "agent": "metric", "goal": "检查连接池与 P99" }
-  ]
-}
-```
-
-The Server executes those specialist sessions concurrently and returns structured summaries plus Evidence IDs.
-
-### `update_hypotheses`
-
-The Coordinator explicitly binds evidence to candidate hypotheses. Unknown Evidence IDs are filtered server-side so the model cannot fabricate references into application state.
-
-### `finalize_rca`
-
-Finalization requires at least one Evidence ID that actually exists in the Evidence Store. The Server rejects a conclusion containing only invented IDs.
-
-## 7. Thinking stream
-
-The browser still consumes:
-
-```text
-thinking.started
-thinking.delta
-thinking.completed
-```
-
-In v7 these deltas come from the Coordinator's **ordinary assistant text** that the system prompt explicitly requires to be a short, user-visible investigation summary before tool calls. Provider hidden reasoning / private chain-of-thought is not forwarded to the browser.
-
-This preserves the Pi Chat thinking-style UX while keeping the displayed content bounded and appropriate for users.
-
-## 8. Authentication
-
-`ModelRuntime.create()` resolves credentials through Pi. Environment variables such as `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and Gemini/Google keys can be placed in `apps/pi-chat/.env`.
-
-The app supports optional explicit model pinning with:
-
-```text
-RCA_MODEL_PROVIDER
-RCA_MODEL_ID
-```
-
-When unset, Pi chooses its configured/default authenticated model.
-
-## 9. Event protocol
-
-```text
-investigation.reset
-investigation.status
-investigation.phase
-agent.updated
-tool.started
-tool.completed
-evidence.created
-hypothesis.updated
-coordinator.message
-thinking.started
-thinking.delta
-thinking.completed
-rca.completed
-runtime.error
-```
-
-Snapshot + ordered SSE replay remains unchanged from v6, so the frontend did not need a protocol redesign for real Pi Agents.
-
-## 10. Next version
-
-Replace `FakeToolGateway` with real adapters:
-
-```text
-get_log_overview  -> Loki / Elasticsearch
-query_metrics     -> Prometheus
-query_traces      -> Tempo / Jaeger
-get_deployments   -> Kubernetes / GitLab / ArgoCD
-```
-
-After that, add production controls: deadlines, token/tool budgets, cancellation propagation, per-Agent concurrency limits, persistent Evidence state, and broader evidence-coverage reuse.
+The important invariant is that Tools continue to return the same Evidence contract.

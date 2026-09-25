@@ -41,10 +41,10 @@ import { applyRcaEvent } from "./rca-state";
 import "./App.css";
 
 const incidentId = "demo";
-const DEMO_PROMPT = "order-service 从 10:31 开始 5xx 大幅上升，帮我分析一下可能的原因。";
+const DEMO_PROMPT = "RCA100 t039：checkout::/oteldemo.CheckoutService/PlaceOrder 在 2026-04-28 09:20:55 出现响应时间突增，当前值约 3355ms，请基于可观测数据分析根因。";
 
 const fallbackConversations: IncidentSummary[] = [
-  { id: "demo", title: "order-service 5xx 激增", time: "今天 10:24", status: "进行中" },
+  { id: "demo", title: "RCA100 · t039 · checkout响应时间突增", time: "推荐示例", status: "数据集案例" },
   { id: "payment-timeout", title: "payment-service 超时", time: "今天 09:12", status: "已完成" },
   { id: "checkout-failed", title: "用户下单失败", time: "昨天 16:08", status: "已完成" },
 ];
@@ -53,7 +53,7 @@ const agentIcon: Record<AgentKind, typeof FileSearch> = {
   log: FileSearch,
   metric: BarChart3,
   trace: Network,
-  change: GitBranch,
+  context: GitBranch,
 };
 
 function statusLabel(state: AgentState) {
@@ -131,10 +131,7 @@ export default function App() {
   const planThinking = thinking.filter((item) => item.stage === "plan");
   const evidenceThinking = thinking.filter((item) => item.stage === "evidence");
   const synthesisThinking = thinking.filter((item) => item.stage === "synthesis");
-  const firstWaveAgents = agents.filter((agent) => agent.id === "log" || agent.id === "metric");
-  const secondWaveAgents = agents.filter((agent) => agent.id === "trace" || agent.id === "change");
-  const showSecondWave =
-    decisionMessages.length > 0 || secondWaveAgents.some((agent) => agent.state !== "waiting");
+  const visibleAgents = agents.filter((agent) => agent.state !== "waiting");
 
   const investigationProgress = useMemo(() => {
     if (snapshot?.conclusion) return 100;
@@ -204,7 +201,7 @@ export default function App() {
             <span className="chat-subtitle"><Clock3 size={12} /> {hasInvestigationStarted ? snapshot.window : "选择推荐示例，或直接描述故障现象"}</span>
           </div>
           <div className="topbar-actions">
-            <span className="runtime-pill">Pi Agent · Fake Tools <i className={connected ? "connection-dot online" : "connection-dot"} /></span>
+            <span className="runtime-pill">Pi Agent · RCA100 {snapshot.dataset.taskId}{snapshot.dataset.telemetryReady ? " · Ready" : " · On demand"} <i className={connected ? "connection-dot online" : "connection-dot"} /></span>
             {hasInvestigationStarted && (
               <button className="icon-text-button" onClick={rerun} disabled={running}><TimerReset size={15} />{running ? "排查中" : "重新运行"}</button>
             )}
@@ -218,7 +215,7 @@ export default function App() {
             <DemoWelcome onRun={() => startInvestigation(DEMO_PROMPT)} running={running} />
           ) : (
             <>
-          <MessageRow time="10:24">
+          <MessageRow time="09:20">
             {activePrompt}
           </MessageRow>
 
@@ -235,12 +232,14 @@ export default function App() {
 
           {planThinking.map((item) => <ThinkingItem key={item.id} item={item} />)}
 
-          <AgentGroup
-            title="第一轮并行调查"
-            agents={firstWaveAgents}
-            toolRuns={toolRuns}
-            evidence={evidence}
-          />
+          {visibleAgents.length > 0 && (
+            <AgentGroup
+              title="Agent 调查"
+              agents={visibleAgents}
+              toolRuns={toolRuns}
+              evidence={evidence}
+            />
+          )}
 
           {evidenceThinking.map((item) => <ThinkingItem key={item.id} item={item} />)}
 
@@ -249,15 +248,6 @@ export default function App() {
               <p>{message.text}</p>
             </CoordinatorMessage>
           ))}
-
-          {showSecondWave && (
-            <AgentGroup
-              title="第二轮验证"
-              agents={secondWaveAgents}
-              toolRuns={toolRuns}
-              evidence={evidence}
-            />
-          )}
 
           {findingMessages.map((message) => (
             <CoordinatorMessage key={message.id} time={messageTime(message.createdAt)}>
@@ -276,6 +266,7 @@ export default function App() {
           {snapshot.conclusion && (
             <section className="inline-conclusion">
               <div className="inline-conclusion-title"><Check size={16} /> RCA 结论</div>
+              <p><strong>根因实体：</strong>{snapshot.conclusion.rootCauseEntity ?? "-"} · <strong>故障类型：</strong>{snapshot.conclusion.faultType ?? "-"}</p>
               <p><strong>根因：</strong>{snapshot.conclusion.rootCause}</p>
               <div className="causal-chain">
                 {snapshot.conclusion.causalChain.map((item, index) => (
@@ -323,7 +314,7 @@ export default function App() {
             <div className="context-welcome">
               <Sparkles size={17} />
               <strong>等待开始排查</strong>
-              <p>运行推荐示例后，这里会实时显示 Agent、Hypothesis、Evidence 和 RCA 结论。</p>
+              <p>运行 RCA100 t039 后，这里会实时显示 Agent、Hypothesis、Evidence 和 RCA 结论。</p>
             </div>
           ) : (
           <>
@@ -383,25 +374,25 @@ function DemoWelcome({ onRun, running }: { onRun(): void; running: boolean }) {
   return (
     <section className="demo-welcome">
       <div className="demo-welcome-icon"><Activity size={28} /></div>
-      <h2>从一次真实感 RCA 演示开始</h2>
-      <p>不需要记 Prompt。点击推荐案例后，会自动发送故障描述并运行完整的多 Agent 排查流程。</p>
+      <h2>从一个真实 RCA100 Case 开始</h2>
+      <p>不需要记 Prompt。点击推荐案例后，会按需准备 RCA100 t039 的真实 Logs / Metrics / Traces / Events / Topology，再运行多 Agent 调查。</p>
 
       <div className="recommendation-section">
         <div className="recommendation-label"><Sparkles size={14} /> 为你推荐</div>
         <button className="recommendation-card" type="button" onClick={onRun} disabled={running}>
           <div className="recommendation-card-main">
-            <span className="recommendation-badge">P1 · 推荐演示</span>
-            <strong>order-service 5xx 激增</strong>
+            <span className="recommendation-badge">RCA100 · t039 · 推荐案例</span>
+            <strong>checkout 响应时间突增告警</strong>
             <p>{DEMO_PROMPT}</p>
             <div className="recommendation-flow">
-              <span>Log + Metric</span><ChevronRight size={13} /><span>Trace + Change</span><ChevronRight size={13} /><span>RCA 结论</span>
+              <span>Coordinator 动态派发</span><ChevronRight size={13} /><span>多模态 Evidence</span><ChevronRight size={13} /><span>RCA 结论</span>
             </div>
           </div>
           <span className="recommendation-action">{running ? "运行中" : "一键运行"}<ChevronRight size={15} /></span>
         </button>
       </div>
 
-      <span className="demo-welcome-hint">也可以直接输入故障描述；当前观测数据源仍使用内置 Demo 数据。</span>
+      <span className="demo-welcome-hint">首次运行会下载 t039 单案例数据；后续查询直接读取本地 Parquet/JSON，不再返回硬编码答案。</span>
     </section>
   );
 }
@@ -463,19 +454,22 @@ function AgentGroup({ title, agents, toolRuns, evidence }: {
         <span><CircleDot size={14} /> {title}</span>
         <small>{active ? "Agent 执行中" : `${completed}/${agents.length} 已完成`}</small>
       </div>
-      {agents.map((agent) => {
-        const tool = toolRuns.find((item) => item.agent === agent.id);
-        const agentEvidence = evidence.find((item) => item.type === agent.id);
-        return <AgentTaskCard key={agent.id} agent={agent} tool={tool} evidence={agentEvidence} />;
-      })}
+      {agents.map((agent) => (
+        <AgentTaskCard
+          key={agent.id}
+          agent={agent}
+          tools={toolRuns.filter((item) => item.agent === agent.id)}
+          evidence={evidence.filter((item) => item.createdBy === agent.id)}
+        />
+      ))}
     </div>
   );
 }
 
-function AgentTaskCard({ agent, tool, evidence }: {
+function AgentTaskCard({ agent, tools, evidence }: {
   agent: InvestigationSnapshot["agents"][number];
-  tool?: InvestigationSnapshot["toolRuns"][number];
-  evidence?: InvestigationSnapshot["evidence"][number];
+  tools: InvestigationSnapshot["toolRuns"];
+  evidence: InvestigationSnapshot["evidence"];
 }) {
   const Icon = agentIcon[agent.id];
   return (
@@ -489,14 +483,18 @@ function AgentTaskCard({ agent, tool, evidence }: {
         <ChevronDown size={15} className="details-chevron" />
       </summary>
       <div className="agent-task-detail">
-        {tool ? (
-          <div className="inline-tool-call">
+        {tools.length ? tools.map((tool) => (
+          <div className="inline-tool-call" key={tool.id}>
             <div><Wrench size={13} /><strong>{tool.name}</strong><span>{tool.status}</span></div>
             <code>{JSON.stringify(tool.args)}</code>
             {tool.result && <p>{tool.result}</p>}
           </div>
-        ) : <div className="inline-empty">等待 Tool Call…</div>}
-        {evidence && <div className="inline-evidence"><Database size={13} /><b>{evidence.id}</b><span>{evidence.label}</span><small>{evidence.type}</small></div>}
+        )) : <div className="inline-empty">等待 Tool Call…</div>}
+        {evidence.map((item) => (
+          <div className="inline-evidence" key={item.id}>
+            <Database size={13} /><b>{item.id}</b><span>{item.label}</span><small>{item.modality}</small>
+          </div>
+        ))}
       </div>
     </details>
   );
@@ -507,5 +505,5 @@ function CompactTools({ toolRuns }: { toolRuns: InvestigationSnapshot["toolRuns"
 }
 
 function CompactEvidence({ evidence }: { evidence: InvestigationSnapshot["evidence"] }) {
-  return <div className="context-scroll-list">{evidence.map((item) => <article className="compact-evidence-card" key={item.id}><div><b>{item.id}</b><strong>{item.label}</strong></div><p>{item.summary}</p><code>{item.rawRef}</code></article>)}{evidence.length === 0 && <span className="context-empty">Evidence 尚未生成。</span>}</div>;
+  return <div className="context-scroll-list">{evidence.map((item) => <article className="compact-evidence-card" key={item.id}><div><b>{item.id}</b><strong>{item.label}</strong><span className="tool-kind">{item.modality}</span></div><p>{item.summary}</p><code>{item.rawRef}</code></article>)}{evidence.length === 0 && <span className="context-empty">Evidence 尚未生成。</span>}</div>;
 }

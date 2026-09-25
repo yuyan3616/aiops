@@ -1,4 +1,5 @@
-export type AgentKind = "log" | "metric" | "trace" | "change";
+export type AgentKind = "log" | "metric" | "trace" | "context";
+export type EvidenceModality = "log" | "metric" | "trace" | "event" | "alert" | "topology";
 export type AgentState = "waiting" | "running" | "done" | "error";
 export type HypothesisState = "possible" | "validating" | "supported" | "rejected";
 export type InvestigationPhase = 1 | 2 | 3 | 4;
@@ -23,12 +24,18 @@ export interface HypothesisView {
 
 export interface EvidenceView {
   id: string;
+  taskId: string;
   type: AgentKind;
+  modality: EvidenceModality;
   label: string;
   source: string;
   summary: string;
+  observation: Record<string, unknown>;
   rawRef: string;
   queryKey: string;
+  entityRefs: string[];
+  timeRange: { start: string; end: string };
+  createdBy: AgentKind;
   createdAt: string;
 }
 
@@ -67,6 +74,12 @@ export interface InvestigationSnapshot {
   title: string;
   severity: "P1" | "P2" | "P3";
   window: string;
+  dataset: {
+    name: "RCA100";
+    version: string;
+    taskId: string;
+    telemetryReady: boolean;
+  };
   status: InvestigationStatus;
   error?: string;
   phase: InvestigationPhase;
@@ -78,6 +91,8 @@ export interface InvestigationSnapshot {
   toolRuns: ToolRunView[];
   conclusion?: {
     rootCause: string;
+    rootCauseEntity?: string;
+    faultType?: string;
     causalChain: string[];
     evidenceIds: string[];
   };
@@ -89,6 +104,7 @@ export type RcaEventType =
   | "investigation.reset"
   | "investigation.status"
   | "investigation.phase"
+  | "dataset.ready"
   | "agent.updated"
   | "hypothesis.updated"
   | "evidence.created"

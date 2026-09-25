@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+
 import { Type } from "@earendil-works/pi-ai";
 import {
   createAgentSession,
@@ -10,65 +12,52 @@ import {
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 
-import type {
-  AgentKind,
-  EvidenceView,
-  HypothesisState,
-} from "../../shared/rca-types";
+import type { AgentKind, EvidenceView, HypothesisState } from "../../shared/rca-types";
+import type { RcaToolName } from "./tool-gateway";
 import type { AgentTask } from "./types";
 
 const AGENT_LABELS: Record<AgentKind, string> = {
   log: "Log Agent",
   metric: "Metric Agent",
   trace: "Trace Agent",
-  change: "Change Agent",
-};
-
-const TOOL_NAMES: Record<AgentKind, string> = {
-  log: "get_log_overview",
-  metric: "query_metrics",
-  trace: "query_traces",
-  change: "get_deployments",
+  context: "Context Agent",
 };
 
 const SPECIALIST_PROMPTS: Record<AgentKind, string> = {
-  log: `You are Log Agent, a specialist in production log analysis for RCA.
-You have exactly one observability tool: get_log_overview.
-For every investigation task, you MUST call the tool before answering.
-Base conclusions only on tool output. Do not invent logs, counts, timestamps, or causes.
-Return a concise Chinese finding in 1-3 sentences. Mention the strongest signal and its time correlation.`,
-  metric: `You are Metric Agent, a specialist in service and database metrics for RCA.
-You have exactly one observability tool: query_metrics.
-For every investigation task, you MUST call the tool before answering.
-Base conclusions only on tool output. Do not invent metric values or causal claims.
-Return a concise Chinese finding in 1-3 sentences. Mention abnormal metrics and correlation with the incident window.`,
-  trace: `You are Trace Agent, a specialist in distributed tracing for RCA.
-You have exactly one observability tool: query_traces.
-For every investigation task, you MUST call the tool before answering.
-Base conclusions only on tool output. Do not invent spans or latency values.
-Return a concise Chinese finding in 1-3 sentences. State where abnormal latency concentrates.`,
-  change: `You are Change Agent, a specialist in deployment and configuration change analysis for RCA.
-You have exactly one observability tool: get_deployments.
-For every investigation task, you MUST call the tool before answering.
-Base conclusions only on tool output. Do not invent releases or configuration changes.
-Return a concise Chinese finding in 1-3 sentences. State whether a change is temporally relevant to the incident.`,
+  log: `You are Log Agent, a specialist in production log analysis for root cause analysis.
+You can use query_logs and analyze_log_patterns against an RCA100 incident case.
+You MUST call at least one tool before answering. Use more than one query when needed to validate a pattern.
+Do not invent logs, counts, timestamps, entities, or causes. Tool output is factual observation, not a root-cause answer.
+Return a concise Chinese finding in 1-3 sentences and cite Evidence IDs explicitly.`,
+  metric: `You are Metric Agent, a specialist in metrics and time-series evidence for root cause analysis.
+You can use list_metrics to discover metric names and query_metrics to retrieve incident-window statistics.
+Do not guess metric names when discovery is needed. You MUST call at least one tool before answering.
+Do not invent values or causal claims. Return a concise Chinese finding in 1-3 sentences and cite Evidence IDs explicitly.`,
+  trace: `You are Trace Agent, a specialist in distributed tracing for root cause analysis.
+You can use search_traces to locate slow/error spans and get_trace to inspect a concrete trace.
+You MUST call at least one tool before answering. Distinguish the alerted service from the span/service where latency or errors accumulate.
+Do not invent spans or latency values. Return a concise Chinese finding in 1-3 sentences and cite Evidence IDs explicitly.`,
+  context: `You are Context Agent, a specialist in Kubernetes events, alert context, and service topology for root cause analysis.
+You can use query_events, query_alerts, and get_topology_neighbors.
+You MUST call at least one tool before answering. Use topology to describe relationships; use events/alerts only as corroborating context.
+Do not infer a deployment/configuration change unless the queried data supports it. Return a concise Chinese finding in 1-3 sentences and cite Evidence IDs explicitly.`,
 };
 
-const COORDINATOR_PROMPT = `You are the RCA Coordinator for a multi-agent production incident investigation.
+const COORDINATOR_BASE_PROMPT = `You are the RCA Coordinator for an evidence-driven multi-agent production incident investigation.
 
-You do NOT query observability systems directly. You orchestrate specialist agents through tools.
-Available specialist roles: log, metric, trace, change.
+You do NOT query observability data directly. You orchestrate specialist agents through delegate_agents.
+Available specialist roles: log, metric, trace, context.
 
-Rules:
-1. Before every tool call, write 1-2 short Chinese sentences as a USER-VISIBLE investigation summary. This is not private chain-of-thought. State only current evidence and the next action.
-2. Use delegate_agents to fan out one or more specialist tasks. Choose agents based on current evidence. Do not call every agent without a reason.
-3. After specialist results return, use update_hypotheses to mark hypotheses supported/rejected/validating when evidence justifies it.
-4. For the bundled order-service demo, start with log + metric. Do NOT finalize from those two signals alone: use trace to verify the latency locus and change to verify recent deployment/config changes before final RCA.
-5. Evidence IDs must come from tool results. Never invent EV ids.
-6. When evidence is sufficient, call finalize_rca exactly once with a concise root cause, causal chain, and the evidence ids that support it.
-7. If evidence is insufficient, keep investigating rather than guessing.
-8. Reply in Chinese. Keep user-visible summaries concise and operational.
-`;
+Hard rules:
+1. Before every tool call, write 1-2 short Chinese sentences as a USER-VISIBLE investigation summary. This is a bounded investigation summary, not private chain-of-thought.
+2. Choose specialists based on the current evidence. Do not call all agents mechanically.
+3. Evidence IDs must come from specialist tool results. Never invent EV ids.
+4. update_hypotheses may only reference evidence IDs already returned by specialists.
+5. Do not equate the alerted entity with the root cause without evidence.
+6. When multiple modalities are available, collect evidence from at least two independent modalities before finalizing unless the case genuinely lacks them.
+7. finalize_rca exactly once, only when the evidence chain explains root-cause entity -> fault/mechanism -> propagation -> alert symptom.
+8. If evidence is insufficient or contradictory, continue investigating rather than guessing.
+9. Reply in Chinese. Keep user-visible summaries concise and operational.`;
 
 export interface SpecialistToolResult {
   display: string;
@@ -85,6 +74,7 @@ export interface DelegationAssignment {
   agent: AgentKind;
   goal: string;
   service?: string;
+  operation?: string;
 }
 
 export interface HypothesisUpdateInput {
@@ -95,6 +85,8 @@ export interface HypothesisUpdateInput {
 }
 
 export interface FinalRcaInput {
+  rootCauseEntity: string;
+  faultType: string;
   rootCause: string;
   causalChain: string[];
   evidenceIds: string[];
@@ -109,9 +101,35 @@ export interface CoordinatorHooks {
   finalize(input: FinalRcaInput): void;
 }
 
+export type ExecuteSpecialistTool = (
+  name: RcaToolName,
+  args: Record<string, unknown>,
+) => Promise<SpecialistToolResult>;
+
+function evidenceForModel(evidence: EvidenceView[]) {
+  return evidence.map((item) => ({
+    id: item.id,
+    modality: item.modality,
+    label: item.label,
+    summary: item.summary,
+    entityRefs: item.entityRefs,
+    timeRange: item.timeRange,
+    observation: item.observation,
+    rawRef: item.rawRef,
+  }));
+}
+
+function optionalTimeFields() {
+  return {
+    startTime: Type.Optional(Type.String({ description: "ISO8601 start time; defaults to incident start" })),
+    endTime: Type.Optional(Type.String({ description: "ISO8601 end time; defaults to incident end" })),
+  };
+}
+
 export class PiRcaAgentClient {
   private modelRuntimePromise?: Promise<ModelRuntime>;
   private currentModel = "auto";
+  private skillPromise?: Promise<string>;
 
   modelLabel() {
     return this.currentModel;
@@ -120,6 +138,14 @@ export class PiRcaAgentClient {
   private modelRuntime() {
     this.modelRuntimePromise ??= ModelRuntime.create();
     return this.modelRuntimePromise;
+  }
+
+  private rcaSkill() {
+    this.skillPromise ??= readFile(
+      new URL("../../skills/rca-investigation/SKILL.md", import.meta.url),
+      "utf8",
+    );
+    return this.skillPromise;
   }
 
   private async createSession(systemPrompt: string, customTools: ToolDefinition[]) {
@@ -171,72 +197,153 @@ export class PiRcaAgentClient {
     return session;
   }
 
-  async runSpecialist(
-    kind: AgentKind,
-    task: AgentTask,
-    executeTool: () => Promise<SpecialistToolResult>,
-  ): Promise<string> {
-    let toolCalled = false;
-    const toolName = TOOL_NAMES[kind];
-    const tool = defineTool({
-      name: toolName,
-      label: toolName,
-      description: `Query fake observability data for ${AGENT_LABELS[kind]}. This tool must be called before giving a finding.`,
-      parameters: Type.Object({}),
-      execute: async () => {
-        toolCalled = true;
-        const result = await executeTool();
+  private specialistTools(kind: AgentKind, executeTool: ExecuteSpecialistTool): ToolDefinition[] {
+    const wrap = (
+      name: RcaToolName,
+      description: string,
+      parameters: ReturnType<typeof Type.Object>,
+    ) => defineTool({
+      name,
+      label: name,
+      description,
+      parameters,
+      execute: async (_toolCallId, params) => {
+        const result = await executeTool(name, params as Record<string, unknown>);
         return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify(
-                {
-                  display: result.display,
-                  evidence: result.evidence.map((item) => ({
-                    id: item.id,
-                    type: item.type,
-                    label: item.label,
-                    summary: item.summary,
-                    rawRef: item.rawRef,
-                  })),
-                },
-                null,
-                2,
-              ),
-            },
-          ],
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({ display: result.display, evidence: evidenceForModel(result.evidence) }, null, 2),
+          }],
           details: { evidenceIds: result.evidence.map((item) => item.id) },
         };
       },
     });
 
-    const session = await this.createSession(SPECIALIST_PROMPTS[kind], [tool]);
-    let text = "";
+    if (kind === "log") {
+      return [
+        wrap("query_logs", "Query RCA100 application logs using service/time/level/keyword filters and return factual samples.", Type.Object({
+          service: Type.Optional(Type.String()),
+          keyword: Type.Optional(Type.String()),
+          level: Type.Optional(Type.String()),
+          ...optionalTimeFields(),
+          limit: Type.Optional(Type.Number()),
+        })),
+        wrap("analyze_log_patterns", "Aggregate repeated RCA100 log messages under the supplied filters. This groups observations; it does not diagnose the root cause.", Type.Object({
+          service: Type.Optional(Type.String()),
+          keyword: Type.Optional(Type.String()),
+          level: Type.Optional(Type.String()),
+          ...optionalTimeFields(),
+          limit: Type.Optional(Type.Number()),
+        })),
+      ];
+    }
+    if (kind === "metric") {
+      return [
+        wrap("list_metrics", "Discover metric names and series available for an entity/service before querying unknown metric names.", Type.Object({
+          entity: Type.Optional(Type.String()),
+          service: Type.Optional(Type.String()),
+          keyword: Type.Optional(Type.String()),
+          limit: Type.Optional(Type.Number()),
+        })),
+        wrap("query_metrics", "Query RCA100 metric samples in the incident window and return factual min/avg/max/first/last statistics per series.", Type.Object({
+          entity: Type.Optional(Type.String()),
+          service: Type.Optional(Type.String()),
+          metric: Type.Optional(Type.String()),
+          metrics: Type.Optional(Type.Array(Type.String(), { maxItems: 12 })),
+          keyword: Type.Optional(Type.String()),
+          ...optionalTimeFields(),
+          limit: Type.Optional(Type.Number()),
+        })),
+      ];
+    }
+    if (kind === "trace") {
+      return [
+        wrap("search_traces", "Search slow/error RCA100 spans by service, operation, duration and incident time range.", Type.Object({
+          service: Type.Optional(Type.String()),
+          operation: Type.Optional(Type.String()),
+          minDurationMs: Type.Optional(Type.Number()),
+          status: Type.Optional(Type.String()),
+          ...optionalTimeFields(),
+          limit: Type.Optional(Type.Number()),
+        })),
+        wrap("get_trace", "Inspect all spans belonging to one concrete traceId returned by search_traces.", Type.Object({
+          traceId: Type.String(),
+        })),
+      ];
+    }
+    return [
+      wrap("query_events", "Query Kubernetes events from RCA100. Use for infrastructure/pod/node/change context, not as a direct diagnosis.", Type.Object({
+        service: Type.Optional(Type.String()),
+        resource: Type.Optional(Type.String()),
+        keyword: Type.Optional(Type.String()),
+        reason: Type.Optional(Type.String()),
+        ...optionalTimeFields(),
+        limit: Type.Optional(Type.Number()),
+      })),
+      wrap("query_alerts", "Query related alert lifecycle records from RCA100.", Type.Object({
+        service: Type.Optional(Type.String()),
+        subject: Type.Optional(Type.String()),
+        severity: Type.Optional(Type.String()),
+        status: Type.Optional(Type.String()),
+        ...optionalTimeFields(),
+        limit: Type.Optional(Type.Number()),
+      })),
+      wrap("get_topology_neighbors", "Inspect upstream/downstream/reference topology relationships for an entity or service.", Type.Object({
+        entity: Type.Optional(Type.String()),
+        service: Type.Optional(Type.String()),
+        direction: Type.Optional(Type.Union([Type.Literal("upstream"), Type.Literal("downstream"), Type.Literal("both")])),
+        relation: Type.Optional(Type.String()),
+        limit: Type.Optional(Type.Number()),
+      })),
+    ];
+  }
+
+  async runSpecialist(
+    kind: AgentKind,
+    task: AgentTask,
+    executeTool: ExecuteSpecialistTool,
+  ): Promise<string> {
+    let toolCallCount = 0;
+    const trackedExecute: ExecuteSpecialistTool = async (name, args) => {
+      toolCallCount += 1;
+      return executeTool(name, args);
+    };
+    const session = await this.createSession(
+      SPECIALIST_PROMPTS[kind],
+      this.specialistTools(kind, trackedExecute),
+    );
+    let output = "";
     const unsubscribe = session.subscribe((event) => {
       if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
-        text += event.assistantMessageEvent.delta;
+        output += event.assistantMessageEvent.delta;
       }
     });
 
     try {
       await session.prompt(
-        `调查任务：${task.goal}\n服务：${task.service}\n时间窗口：${task.window}\n请先调用 ${toolName}，再基于 Evidence 给出简洁结论。`,
+        `RCA100 调查任务：${task.goal}\nCase：${task.taskId}\n告警实体：${task.alertEntity ?? "unknown"}\n关注服务：${task.service}\n操作：${task.operation ?? "unknown"}\n时间窗口：${task.startTime} ~ ${task.endTime}\n\n请使用你拥有的观测工具查询事实，再基于 Evidence 给出结论。`,
       );
-      if (!toolCalled) {
-        await session.prompt(`你尚未调用必需工具 ${toolName}。请立即调用该工具，并且只基于工具返回的 Evidence 输出结论。`);
+      if (toolCallCount === 0) {
+        await session.prompt("你尚未调用任何观测工具。请先调用合适工具获取 RCA100 Evidence，再输出结论；不要凭已有常识猜测。 ");
       }
-      if (!toolCalled) {
-        throw new Error(`${AGENT_LABELS[kind]} did not call required tool ${toolName} after retry.`);
+      if (toolCallCount === 0) {
+        throw new Error(`${AGENT_LABELS[kind]} did not call any observability tool after retry.`);
       }
-      return text.trim() || `${AGENT_LABELS[kind]} 已完成调查，但未生成文本摘要。`;
+      return output.trim() || `${AGENT_LABELS[kind]} 已完成查询，但未生成文本摘要。`;
     } finally {
       unsubscribe();
       session.dispose();
     }
   }
 
-  async runCoordinator(userPrompt: string, hooks: CoordinatorHooks): Promise<void> {
+  async runCoordinator(
+    userPrompt: string,
+    incidentContext: string,
+    hypothesisContext: string,
+    hooks: CoordinatorHooks,
+  ): Promise<void> {
+    const skill = await this.rcaSkill();
+    const coordinatorPrompt = `${COORDINATOR_BASE_PROMPT}\n\n<RCA_INVESTIGATION_SKILL>\n${skill}\n</RCA_INVESTIGATION_SKILL>`;
     const delegateAgents = defineTool({
       name: "delegate_agents",
       label: "delegate_agents",
@@ -248,10 +355,11 @@ export class PiRcaAgentClient {
               Type.Literal("log"),
               Type.Literal("metric"),
               Type.Literal("trace"),
-              Type.Literal("change"),
+              Type.Literal("context"),
             ]),
             goal: Type.String(),
             service: Type.Optional(Type.String()),
+            operation: Type.Optional(Type.String()),
           }),
           { minItems: 1, maxItems: 4 },
         ),
@@ -259,25 +367,14 @@ export class PiRcaAgentClient {
       execute: async (_toolCallId, params) => {
         const results = await hooks.delegate(params.assignments as DelegationAssignment[]);
         return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify(
-                results.map((result) => ({
-                  agent: result.agent,
-                  summary: result.summary,
-                  evidence: result.evidence.map((item) => ({
-                    id: item.id,
-                    type: item.type,
-                    label: item.label,
-                    summary: item.summary,
-                  })),
-                })),
-                null,
-                2,
-              ),
-            },
-          ],
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify(results.map((result) => ({
+              agent: result.agent,
+              summary: result.summary,
+              evidence: evidenceForModel(result.evidence),
+            })), null, 2),
+          }],
           details: { agents: results.map((item) => item.agent) },
         };
       },
@@ -288,26 +385,21 @@ export class PiRcaAgentClient {
       label: "update_hypotheses",
       description: "Update RCA hypotheses using only evidence ids already returned by specialist agents.",
       parameters: Type.Object({
-        updates: Type.Array(
-          Type.Object({
-            id: Type.String(),
-            state: Type.Union([
-              Type.Literal("possible"),
-              Type.Literal("validating"),
-              Type.Literal("supported"),
-              Type.Literal("rejected"),
-            ]),
-            supportingEvidenceIds: Type.Optional(Type.Array(Type.String())),
-            contradictingEvidenceIds: Type.Optional(Type.Array(Type.String())),
-          }),
-        ),
+        updates: Type.Array(Type.Object({
+          id: Type.String(),
+          state: Type.Union([
+            Type.Literal("possible"),
+            Type.Literal("validating"),
+            Type.Literal("supported"),
+            Type.Literal("rejected"),
+          ]),
+          supportingEvidenceIds: Type.Optional(Type.Array(Type.String())),
+          contradictingEvidenceIds: Type.Optional(Type.Array(Type.String())),
+        })),
       }),
       execute: async (_toolCallId, params) => {
         hooks.updateHypotheses(params.updates as HypothesisUpdateInput[]);
-        return {
-          content: [{ type: "text" as const, text: "Hypotheses updated." }],
-          details: {},
-        };
+        return { content: [{ type: "text" as const, text: "Hypotheses updated." }], details: {} };
       },
     });
 
@@ -315,11 +407,13 @@ export class PiRcaAgentClient {
     const finalizeRca = defineTool({
       name: "finalize_rca",
       label: "finalize_rca",
-      description: "Finalize the RCA only after enough evidence has been collected.",
+      description: "Finalize the RCA after enough independent evidence has been collected.",
       parameters: Type.Object({
+        rootCauseEntity: Type.String(),
+        faultType: Type.String(),
         rootCause: Type.String(),
-        causalChain: Type.Array(Type.String(), { minItems: 2, maxItems: 8 }),
-        evidenceIds: Type.Array(Type.String(), { minItems: 1 }),
+        causalChain: Type.Array(Type.String(), { minItems: 2, maxItems: 10 }),
+        evidenceIds: Type.Array(Type.String(), { minItems: 2 }),
       }),
       execute: async (_toolCallId, params) => {
         hooks.finalize(params as FinalRcaInput);
@@ -331,16 +425,10 @@ export class PiRcaAgentClient {
       },
     });
 
-    const session = await this.createSession(COORDINATOR_PROMPT, [
-      delegateAgents,
-      updateHypotheses,
-      finalizeRca,
-    ]);
+    const session = await this.createSession(coordinatorPrompt, [delegateAgents, updateHypotheses, finalizeRca]);
     let textOpen = false;
     const unsubscribe = session.subscribe((event) => {
-      if (event.type === "message_start" && event.message.role === "assistant") {
-        textOpen = false;
-      }
+      if (event.type === "message_start" && event.message.role === "assistant") textOpen = false;
       if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
         if (!textOpen) {
           hooks.onTextStart();
@@ -356,11 +444,11 @@ export class PiRcaAgentClient {
 
     try {
       await session.prompt(
-        `用户故障描述：${userPrompt}\n\n当前候选假设：\nH1 payment-service 数据库连接池耗尽\nH2 payment-service 新版本引入配置问题\nH3 第三方支付接口超时\nH4 order-service 自身资源异常\n\n请开始 RCA。`,
+        `用户/告警输入：\n${userPrompt}\n\nRCA100 Case Context：\n${incidentContext}\n\n当前候选假设：\n${hypothesisContext}\n\n请开始 RCA。注意：RCA100 Ground Truth 不在你的上下文中，只能通过 specialist tools 获取观测事实。`,
       );
       if (!finalized) {
         await session.prompt(
-          "你还没有调用 finalize_rca。请检查当前 Evidence；若证据仍不足，继续 delegate_agents 调查；若已足够，先更新假设，然后调用 finalize_rca。不要凭空补证据。",
+          "你还没有调用 finalize_rca。请检查当前 Evidence；若证据仍不足或只有单一 modality，继续 delegate_agents 调查；若证据已形成完整因果链，更新假设并调用 finalize_rca。不要凭空补证据。",
         );
       }
       if (textOpen) hooks.onTextEnd();

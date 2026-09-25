@@ -330,7 +330,7 @@ button { cursor: pointer; }
 .agent-task-icon.log,
 .agent-task-icon.metric,
 .agent-task-icon.trace,
-.agent-task-icon.change { color: #666; background: transparent; }
+.agent-task-icon.context { color: #666; background: transparent; }
 .agent-task-main { min-width: 0; }
 .agent-task-main > div { display: flex; align-items: center; gap: 6px; }
 .agent-task-main strong {

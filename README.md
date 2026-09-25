@@ -1,145 +1,236 @@
-# RCA Multi-Agent Prototype — v7 Pi AgentSession
+# Pi Chat RCA — v8.0 RCA100 t039
 
-This branch turns the `pi-lessons` chat shell into a chat-first multi-Agent RCA workspace.
+A chat-first multi-agent RCA demo built on Pi 0.86.1. v8.0 replaces the previous hard-coded observability results with **real queries over the public RCA100 v1.1 `t039` telemetry files**.
 
-## v7 status: reasoning is real, observability data is still fake
+The current milestone deliberately focuses on one reproducible case:
 
-The **LLM / Agent layer now uses real Pi AgentSession**. The observability integrations intentionally remain fake so you can validate multi-Agent orchestration before wiring production Loki / Prometheus / Tempo / deployment systems.
+- Dataset: RCA100 v1.1
+- Case: `t039`
+- Alert: `checkout响应时间突增告警`
+- Modalities: metrics, logs, traces, Kubernetes events, alerts, topology
+- LLM/agents: real Pi AgentSession
+- Data access: real DuckDB queries over Parquet/JSON
+- Ground truth: **not downloaded and not exposed to agents**
 
-### Real in v7
-
-- Pi `ModelRuntime` authentication and model selection
-- real Coordinator `AgentSession`
-- independent real specialist `AgentSession`s: Log / Metric / Trace / Change
-- Coordinator tool-driven orchestration (`delegate_agents`)
-- same-round specialist fan-out / fan-in with `Promise.all`
-- specialist tool isolation: each specialist only receives its own observability tool
-- Evidence Store (`evidenceId`, `rawRef`, normalized `queryKey`)
-- model-driven hypothesis updates (`update_hypotheses`)
-- model-driven RCA completion (`finalize_rca`)
-- user-visible streamed analysis summaries over SSE
-- one-click recommended demo entry
-- manual user prompts are forwarded to the real Coordinator
-
-### Still fake in v7
-
-- `get_log_overview` → fake Loki response
-- `query_metrics` → fake Prometheus response
-- `query_traces` → fake Tempo / Jaeger response
-- `get_deployments` → fake deployment/config response
-
-So the boundary is now:
+## Architecture
 
 ```text
-Real Pi Coordinator
-        |
-        | delegate_agents
-        v
-+-------------------------------+
-| Real specialist Pi Sessions   |
-| Log / Metric / Trace / Change |
-+-------------------------------+
-        |
-        | isolated custom tool
-        v
-FakeToolGateway
-        |
-        v
-EvidenceStore
-        |
-        +---- back to Coordinator
+RCA100 task.json
+      |
+      v
+Pi Coordinator AgentSession
+      |
+      | delegate_agents
+      +----------------+----------------+----------------+
+      |                |                |                |
+      v                v                v                v
+ Log Agent        Metric Agent      Trace Agent      Context Agent
+      |                |                |                |
+ query_logs       list_metrics      search_traces     query_events
+ analyze_*        query_metrics     get_trace         query_alerts
+                                                    topology_neighbors
+      |                |                |                |
+      +----------------+--------+-------+----------------+
+                               |
+                               v
+                        RCA Tool Gateway
+                               |
+                               v
+                         Evidence Store
+                               |
+                               v
+                      RCA100 Repository
+                               |
+                  +------------+-------------+
+                  |                          |
+                  v                          v
+              DuckDB                      JSON
+        logs/metrics/traces/         task/topology
+          events/alerts
 ```
 
-## Local run with a real model
+The Tool layer returns observations and Evidence, not a root-cause answer. The Coordinator must build the RCA from evidence IDs across at least two independent modalities.
 
-Pi `0.86.1` requires **Node.js >= 22.19.0**.
+## Skill vs Tool
+
+v8.0 includes `skills/rca-investigation/SKILL.md` as the Coordinator's RCA methodology:
+
+- distinguish root cause / propagation / impact;
+- treat alert entity as a starting point, not the answer;
+- use multiple modalities;
+- explicitly support/reject hypotheses;
+- stop only when the evidence chain closes.
+
+The Skill is injected server-side into the Coordinator system context. Pi's generic filesystem/coding tools remain disabled for embedded RCA sessions. Specialist Agents receive only their scoped observability tools.
+
+## Run locally
+
+### 1. Requirements
+
+Use Node.js **22.19.0 or newer**.
+
+```bash
+node -v
+```
+
+### 2. Configure a model
 
 ```bash
 cd apps/pi-chat
 cp .env.example .env
 ```
 
-Edit `.env` and configure at least one model provider, for example:
+On Windows PowerShell / cmd, copy the file with your normal file command and edit `.env`.
 
-```bash
-OPENAI_API_KEY=sk-...
+Configure at least one Pi-supported provider key, for example:
+
+```env
+OPENAI_API_KEY=...
+# or ANTHROPIC_API_KEY=...
+# or GEMINI_API_KEY=...
 ```
 
-or:
+Optionally pin a model:
 
-```bash
-ANTHROPIC_API_KEY=sk-ant-...
+```env
+RCA_MODEL_PROVIDER=openai
+RCA_MODEL_ID=<model-id-registered-in-pi>
 ```
 
-or:
+Both variables must be configured together. Leave both unset to let Pi select an authenticated model.
 
-```bash
-GEMINI_API_KEY=...
-```
-
-Then:
+### 3. Install
 
 ```bash
 npm install
+```
+
+The Pi packages are pinned to exactly `0.86.1`. DuckDB Node API is pinned for the RCA100 query engine.
+
+### 4. Prepare `t039`
+
+The runtime defaults to:
+
+```env
+RCA100_AUTO_DOWNLOAD=true
+```
+
+so the first demo run downloads the seven public case files into:
+
+```text
+apps/pi-chat/data/rca100/cases/t039/
+```
+
+You can prefetch them explicitly:
+
+```bash
+npm run rca100:download -- --case t039
+```
+
+Then verify that DuckDB can really open the local case and inspect all five Parquet modalities:
+
+```bash
+npm run rca100:smoke -- --case t039
+```
+
+The downloader validates JSON files and the Parquet `PAR1` header/footer before accepting a case. The smoke command additionally prints row counts and detected schemas through the same DuckDB Node runtime used by the application.
+
+The telemetry directory is ignored by Git and is not bundled in the source archive.
+
+### 5. Start
+
+```bash
 npm run dev
 ```
 
-Open the Vite address shown in the terminal. The empty page contains **“为你推荐” → order-service 5xx 激增**. Click **一键运行** and the request will go through the real Coordinator and real specialist Pi sessions.
+Open the web page, choose the recommended **RCA100 · t039** case, and click **一键运行**.
 
-### Optional: pin a specific model
-
-Normally Pi uses its configured default model and otherwise falls back to the first authenticated available model. To pin one explicitly:
-
-```bash
-RCA_MODEL_PROVIDER=openai
-RCA_MODEL_ID=<a model id registered by your Pi installation>
-```
-
-Both values must be supplied together. If you leave them unset, Pi chooses an available model automatically.
-
-## What happens after clicking the recommended demo
+The expected runtime path is:
 
 ```text
-User prompt
-   |
-   v
-Pi Coordinator AgentSession
-   |
-   | user-visible summary streamed to thinking.*
-   |
-   +--> delegate_agents([log, metric])  (model decides)
-   |          |
-   |          +--> Log Agent Pi Session --> get_log_overview --> EVxx
-   |          +--> Metric Agent Pi Session --> query_metrics  --> EVxx
-   |
-   +--> update_hypotheses(...)
-   |
-   +--> delegate_agents([trace, change]) (only if model decides it is useful)
-   |          |
-   |          +--> Trace Agent Pi Session  --> query_traces    --> EVxx
-   |          +--> Change Agent Pi Session --> get_deployments --> EVxx
-   |
-   +--> update_hypotheses(...)
-   |
-   +--> finalize_rca(...)
-   v
-RCA conclusion + causal chain
+prepare t039 telemetry
+        ↓
+Pi Coordinator
+        ↓
+dynamic specialist delegation
+        ↓
+real DuckDB queries over RCA100
+        ↓
+Evidence EVxx
+        ↓
+hypothesis updates
+        ↓
+finalize_rca
 ```
 
-The prompt strongly recommends Log + Metric as the low-cost first round for the bundled demo, but the orchestration is no longer a hard-coded two-round state machine: the Coordinator chooses which agents to dispatch through tools based on the evidence it sees.
+## RCA100 data boundary
 
-## API / SSE
+The application downloads only the **agent-facing case files** from the public RCA100 v1.1 case endpoint:
 
-- API: `http://127.0.0.1:4328`
-- Health: `/health`
-- Snapshot: `/api/rca/incidents/demo`
-- Start: `POST /api/rca/incidents/demo/run` with `{ "prompt": "..." }`
-- SSE: `/api/rca/incidents/demo/stream?after=0`
+```text
+task.json
+metrics.parquet
+logs.parquet
+traces.parquet
+events.parquet
+alerts.parquet
+topology.json
+```
 
-## Important safety / isolation detail
+There is intentionally no runtime code that downloads `answer_key` / ground truth. This prevents leakage into the Agent context and keeps the case suitable for later benchmark evaluation.
 
-RCA Pi sessions do **not** receive Pi's default coding tools (`read`, `bash`, `edit`, `write`). v7 uses `noTools: "builtin"` and disables discovered extensions, skills, prompt templates, themes, and context files for these embedded RCA sessions. The Coordinator only receives orchestration tools; each specialist only receives its corresponding fake observability tool.
+The dataset itself is external and is not redistributed in this repository. RCA100 is published under **CC BY-NC-SA 4.0**; attribution, non-commercial use and share-alike terms apply to the dataset material. Review the upstream `RCA100/LICENSE` before redistribution or reuse.
 
-This makes the eventual production replacement seam straightforward: replace `FakeToolGateway`, not the Coordinator or UI.
+Dataset citation used by the upstream project: *RCA-100: A Chain-Reasoning Benchmark for Root Cause Analysis on Cloud-Native Microservices* (Wen et al., 2026).
 
-See [`docs/rca-architecture.md`](docs/rca-architecture.md) for details.
+## Tool surface
+
+| Agent | Tools |
+| --- | --- |
+| Log Agent | `query_logs`, `analyze_log_patterns` |
+| Metric Agent | `list_metrics`, `query_metrics` |
+| Trace Agent | `search_traces`, `get_trace` |
+| Context Agent | `query_events`, `query_alerts`, `get_topology_neighbors` |
+| Coordinator | `delegate_agents`, `update_hypotheses`, `finalize_rca` |
+
+Tools accept model-generated filters such as service, operation, keyword, severity, duration and time range. The gateway inspects Parquet schemas before querying where the RCA100 source schema can vary.
+
+## Evidence contract
+
+Each query produces structured Evidence similar to:
+
+```ts
+{
+  id: "EV03",
+  taskId: "t039",
+  modality: "trace",
+  source: "RCA100-v1.1",
+  summary: "...",
+  observation: { ... },
+  rawRef: "rca100://t039/traces/search/...",
+  entityRefs: ["checkout"],
+  timeRange: { start: "...", end: "..." },
+  createdBy: "trace"
+}
+```
+
+`summary` is LLM-friendly; `observation` contains structured facts; `rawRef` identifies the underlying query result. Exact-query Evidence reuse remains supported. Coverage/subset reuse is planned for the next milestone.
+
+## Current validation boundary
+
+This workspace can statically validate the code but cannot access npm registry / the RCA100 OSS binary files from the execution container, so v8.0 could not perform a real model + DuckDB + t039 end-to-end run here.
+
+The implementation is therefore designed against:
+
+- Pi `0.86.1` source APIs;
+- RCA100 v1.1 published schemas and public case layout;
+- DuckDB Node Neo API.
+
+Run the commands above on a networked local machine to execute the real telemetry query path.
+
+## Next milestones
+
+v8.0 intentionally stops at the single-case data-driven loop. Next milestones are:
+
+- v8.1: query normalization + evidence coverage/subset reuse + stronger hypothesis lifecycle;
+- v8.2: isolated ground-truth evaluator + batch execution across RCA100 cases + accuracy/token/tool-call/latency metrics.

@@ -1,5 +1,9 @@
 export interface AgentTask {
+  taskId: string;
   service: string;
-  window: string;
+  operation?: string;
+  alertEntity?: string;
+  startTime: string;
+  endTime: string;
   goal: string;
 }

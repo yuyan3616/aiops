@@ -36,6 +36,16 @@ export function applyRcaEvent(
         phase: (event.payload as { phase: InvestigationSnapshot["phase"] }).phase,
         stream,
       };
+    case "dataset.ready": {
+      const payload = event.payload as Pick<InvestigationSnapshot, "dataset" | "title" | "window">;
+      return {
+        ...snapshot,
+        dataset: payload.dataset,
+        title: payload.title,
+        window: payload.window,
+        stream,
+      };
+    }
     case "agent.updated":
       return {
         ...snapshot,

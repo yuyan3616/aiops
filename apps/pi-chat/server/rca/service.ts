@@ -6,7 +6,7 @@ export class RcaService {
   get(id = "demo") {
     let runtime = this.runtimes.get(id);
     if (!runtime) {
-      runtime = new RcaRuntime(id);
+      runtime = new RcaRuntime(id, "t039");
       this.runtimes.set(id, runtime);
     }
     return runtime;
@@ -14,11 +14,9 @@ export class RcaService {
 
   list() {
     return [
-      { id: "demo", title: "order-service 5xx 激增", time: "今天 10:24", status: "进行中" },
-      { id: "payment-timeout", title: "payment-service 超时", time: "今天 09:12", status: "已完成" },
-      { id: "checkout-failed", title: "用户下单失败", time: "昨天 16:08", status: "已完成" },
-      { id: "db-connection", title: "数据库连接异常", time: "09-21 11:32", status: "已完成" },
-      { id: "mq-backlog", title: "消息堆积告警", time: "09-20 14:15", status: "已归档" },
+      { id: "demo", title: "RCA100 · t039 · checkout响应时间突增", time: "推荐示例", status: "数据集案例" },
+      { id: "payment-timeout", title: "payment-service 超时", time: "演示历史", status: "已完成" },
+      { id: "checkout-failed", title: "用户下单失败", time: "演示历史", status: "已完成" },
     ];
   }
 }
