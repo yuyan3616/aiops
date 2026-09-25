@@ -528,8 +528,14 @@ function CoordinatorMessage({ time, children, conclusion = false }: { time: stri
 }
 
 function ThinkingItem({ item }: { item: InvestigationSnapshot["thinking"][number] }) {
+  const [open, setOpen] = useState(true);
+
   return (
-    <details className={`thinking ${item.completed ? "completed" : "streaming"}`}>
+    <details
+      className={`thinking ${item.completed ? "completed" : "streaming"}`}
+      open={open}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
       <summary>
         <Brain size={16} />
         <span>{item.completed ? item.title : `正在${item.title}`}</span>
