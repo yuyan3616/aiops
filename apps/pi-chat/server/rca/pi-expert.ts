@@ -7,7 +7,11 @@ import {
   type ModelRuntime,
 } from "@earendil-works/pi-coding-agent";
 
-import type { ObservabilityToolName, ObservabilityToolRegistry } from "./tools";
+import {
+  compactToolResultForAgent,
+  type ObservabilityToolName,
+  type ObservabilityToolRegistry,
+} from "./tools";
 import type {
   AgentExpertFinding,
   EvidenceModality,
@@ -42,6 +46,7 @@ export interface PiExpertRunContext {
 export interface PiExpertRunResult {
   finding: AgentExpertFinding;
   sessionId: string;
+  diagnostics: import("./types").AgentRunDiagnostics;
 }
 
 const ROLE_TOOLS: Record<ExpertKind, readonly ObservabilityToolName[]> = {
@@ -79,14 +84,16 @@ Rules:
 - The case id is only a routing identifier. Never infer benchmark ground truth from it.
 - Treat tool output as evidence; never invent telemetry, counts, timestamps, services, hosts, or raw references.
 - A conclusion may cite only toolCallId values actually returned by your tool calls.
-- Distinguish facts from inference. Negative evidence rules out only what the queried data can actually test.
+- Distinguish facts from inference. Negative evidence is a valid successful result when it directly tests a hypothesis; do not keep searching merely because you found no anomaly.
 - Stop when the brief's expected outputs are answered, the path is disproven, or you are blocked.
+- For metrics investigations, prefer aggregated anomaly summaries. Do not expand into a broad metric inventory after the brief can already be answered.
 - Do not investigate outside notInScope.
 - Your evidenceClaims modality must be one of: ${modalities}.
 - Final output must be JSON only, with exactly this shape:
 {
   "status": "succeeded|failed|inconclusive|blocked",
   "strength": "strong|moderate|weak|inconclusive",
+  "verdict": "supports|contradicts|no-signal|mixed|inconclusive",
   "summary": "concise finding",
   "conclusions": ["1-5 direct answers to the brief"],
   "evidenceClaims": [
@@ -187,13 +194,35 @@ export class PiExpertRunner {
       );
     }
 
+    let metricsQueries = 0;
+    let toolCallCount = 0;
     const toolDefinitions = this.tools.createPiTools({
       names: ROLE_TOOLS[role],
       execute: async (name, _toolCallId, parameters) => {
+        if (role === "metrics" && name === "query_metrics") {
+          if (metricsQueries >= 6) {
+            throw new Error(
+              "Metrics query budget reached. Finalize the finding from the observations already collected.",
+            );
+          }
+          metricsQueries++;
+        }
+        toolCallCount++;
+        const boundedParameters =
+          name === "query_metrics"
+            ? {
+                ...parameters,
+                topN: Math.min(
+                  typeof parameters.topN === "number" ? parameters.topN : 12,
+                  12,
+                ),
+              }
+            : parameters;
         const recorded = await context.invoke(name, {
-          ...parameters,
+          ...boundedParameters,
           caseId: context.task.caseId,
         });
+        const compactResult = compactToolResultForAgent(name, recorded.execution.result);
         return {
           content: [
             {
@@ -201,7 +230,7 @@ export class PiExpertRunner {
               text: JSON.stringify(
                 {
                   toolCallId: recorded.callId,
-                  result: recorded.execution.result,
+                  result: compactResult,
                 },
                 null,
                 2,
@@ -232,11 +261,17 @@ export class PiExpertRunner {
 
     const sessionId = session.sessionManager.getSessionId();
     let output = "";
+    let thinkingChars = 0;
+    let repairAttempted = false;
+    let repairSucceeded = false;
+    let parseFailure: "json_missing" | "json_invalid" | undefined;
+    let parseFailureDetail: string | undefined;
     const unsubscribe = session.subscribe((event) => {
       if (event.type !== "message_update") return;
       if (event.assistantMessageEvent.type === "text_delta") {
         output += event.assistantMessageEvent.delta;
       } else if (event.assistantMessageEvent.type === "thinking_delta") {
+        thinkingChars += event.assistantMessageEvent.delta.length;
         void context.onThinking?.(event.assistantMessageEvent.delta);
       }
     });
@@ -274,12 +309,17 @@ export class PiExpertRunner {
       );
       try {
         parsed = extractJson(output);
-      } catch {
+      } catch (error) {
+        repairAttempted = true;
+        parseFailure =
+          error instanceof SyntaxError ? "json_invalid" : "json_missing";
+        parseFailureDetail = error instanceof Error ? error.message : String(error);
         output = "";
         await session.prompt(
-          "Your investigation work is complete, but your previous answer was not valid JSON. Return ONLY the required JSON finding now, using the evidence and toolCallId values already collected. Do not restart the investigation or repeat broad queries.",
+          "Your investigation work is complete. Do not call more tools. Return ONLY the required JSON finding now, using the evidence and toolCallId values already collected. Negative/no-anomaly results are valid findings. Do not restart the investigation or broaden the search.",
         );
         parsed = extractJson(output);
+        repairSucceeded = true;
       }
     } finally {
       context.signal?.removeEventListener("abort", abort);
@@ -310,11 +350,30 @@ export class PiExpertRunner {
           validModalities.has(claim.modality),
       );
 
+    const verdict =
+      parsed.verdict === "supports" ||
+      parsed.verdict === "contradicts" ||
+      parsed.verdict === "no-signal" ||
+      parsed.verdict === "mixed" ||
+      parsed.verdict === "inconclusive"
+        ? parsed.verdict
+        : "inconclusive";
+
     return {
       sessionId,
+      diagnostics: {
+        toolCallCount,
+        thinkingChars,
+        outputChars: output.length,
+        repairAttempted,
+        repairSucceeded,
+        ...(parseFailure ? { failureReason: parseFailure } : {}),
+        ...(parseFailureDetail ? { failureDetail: parseFailureDetail.slice(0, 1000) } : {}),
+      },
       finding: {
         status: findingStatus(parsed.status),
         strength: strength(parsed.strength),
+        verdict,
         summary:
           typeof parsed.summary === "string" && parsed.summary.trim()
             ? parsed.summary.trim().slice(0, 1500)
