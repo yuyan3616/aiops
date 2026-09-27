@@ -94,8 +94,11 @@ Rules:
 
 export class PiRcaPlanner implements RcaPlanner {
   private readonly fallback = new DeterministicRcaPlanner();
+  private readonly modelRuntime: ModelRuntime;
 
-  constructor(private readonly modelRuntime: ModelRuntime) {}
+  constructor(modelRuntime: ModelRuntime) {
+    this.modelRuntime = modelRuntime;
+  }
 
   async decide(context: RcaPlannerContext): Promise<RcaPlannerDecision> {
     try {
