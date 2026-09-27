@@ -22,6 +22,29 @@ export async function readParquetRows(path: string, columns?: string[]): Promise
   return rows as ParquetRow[];
 }
 
+export async function readParquetRowsBatched(
+  path: string,
+  columns: string[],
+  onBatch: (rows: ParquetRow[]) => void | Promise<void>,
+  batchSize = 20_000,
+): Promise<number> {
+  const file = await asyncBufferFromFile(resolve(path));
+  const metadata = await parquetMetadataAsync(file);
+  const totalRows = Number(metadata.num_rows);
+  for (let rowStart = 0; rowStart < totalRows; rowStart += batchSize) {
+    const rowEnd = Math.min(totalRows, rowStart + batchSize);
+    const rows = (await parquetReadObjects({
+      file,
+      compressors,
+      columns,
+      rowStart,
+      rowEnd,
+    })) as ParquetRow[];
+    await onBatch(rows);
+  }
+  return totalRows;
+}
+
 export async function readParquetMetadata(path: string): Promise<FileMetaData> {
   const file = await asyncBufferFromFile(resolve(path));
   return parquetMetadataAsync(file);
