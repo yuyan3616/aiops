@@ -15,6 +15,7 @@ import {
 } from "./pi-expert";
 import { InvestigationRepository } from "./repository";
 import {
+  compactToolResultForAgent,
   ObservabilityToolRegistry,
   type ObservabilityToolName,
   type ToolExecution,
@@ -28,6 +29,7 @@ import type {
   HypothesisStatus,
   Investigation,
   InvestigationBrief,
+  Observation,
   RCAResult,
   RcaTask,
   ToolCallRecord,
@@ -113,6 +115,47 @@ function toolModality(tool: ObservabilityToolName): EvidenceModality {
   if (tool === "query_events") return "event";
   if (tool === "query_alerts" || tool === "get_alert_context") return "alert";
   return "topology";
+}
+
+function observationSummary(tool: ObservabilityToolName, execution: ToolExecution): string {
+  if (tool !== "query_metrics") return execution.summary;
+  const compact = compactToolResultForAgent(tool, execution.result);
+  if (!compact || typeof compact !== "object" || Array.isArray(compact)) return execution.summary;
+  const data = (compact as { data?: unknown }).data;
+  if (!data || typeof data !== "object" || Array.isArray(data)) return execution.summary;
+  const anomalies = (data as { anomalies?: unknown }).anomalies;
+  if (!Array.isArray(anomalies) || anomalies.length === 0) {
+    return `${execution.summary}; no metric anomaly summary was returned`;
+  }
+  const top = anomalies
+    .slice(0, 3)
+    .map((item) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) return undefined;
+      const row = item as Record<string, unknown>;
+      const entity = String(row.entity ?? row.service ?? "entity");
+      const metric = String(row.metric ?? "metric");
+      const baseline = Number(row.baselineMedian);
+      const incident = Number(row.incidentMedian);
+      const ratio = Number(row.ratio);
+      const direction = String(row.direction ?? "unknown");
+      const values = Number.isFinite(baseline) && Number.isFinite(incident)
+        ? `${baseline.toPrecision(4)}→${incident.toPrecision(4)}`
+        : "n/a";
+      const ratioText = Number.isFinite(ratio) ? ` x${ratio.toFixed(2)}` : "";
+      return `${entity} ${metric} ${values}${ratioText} (${direction})`;
+    })
+    .filter((item): item is string => Boolean(item));
+  return top.length ? `metric observation: ${top.join("; ")}` : execution.summary;
+}
+
+function observationFacts(
+  tool: ObservabilityToolName,
+  execution: ToolExecution,
+): Record<string, unknown> {
+  return {
+    tool,
+    result: compactToolResultForAgent(tool, execution.result),
+  };
 }
 
 export class RcaService {
@@ -222,14 +265,29 @@ export class RcaService {
           candidateEntities: [alert.entity.name],
         },
         hypotheses: [],
+        observations: [],
         evidence: [],
         expertTasks: [],
         toolCalls: [call],
         rounds: 0,
         startedAt: now(),
       };
+      const alertObservation: Observation = {
+        id: this.nextObservationId(investigation),
+        caseId,
+        modality: "alert",
+        toolCallId: call.id,
+        summary: `alert context: ${alert.title} on ${alert.entity.name}`,
+        ...(execution.rawRef ? { rawRef: execution.rawRef } : {}),
+        facts: { alert },
+        createdAt: now(),
+      };
+      investigation.observations?.push(alertObservation);
       await this.repository.appendToolCall(id, call);
       await this.saveInvestigation(investigation);
+      await bus.publish("observation.created", alertObservation.summary, {
+        observation: alertObservation,
+      });
       await bus.publish("tool.completed", "Alert context loaded.", { toolCall: call });
       await bus.publish("investigation.started", `Investigation started for ${alert.title}.`, {
         caseId,
@@ -299,7 +357,7 @@ export class RcaService {
       toolCallId: recorded.callId,
       summary: evidence.summary,
       ...(recorded.execution.rawRef ? { rawRef: recorded.execution.rawRef } : {}),
-      result: recorded.execution.result,
+      result: compactToolResultForAgent(tool, recorded.execution.result),
     };
   }
 
@@ -760,13 +818,30 @@ export class RcaService {
       call.resultSummary = execution.summary;
       call.rawRef = execution.rawRef;
       call.completedAt = now();
+      const observation: Observation = {
+        id: this.nextObservationId(investigation),
+        caseId: investigation.caseId,
+        modality: toolModality(tool),
+        toolCallId: call.id,
+        ...(expertTask ? { expertTaskId: expertTask.id } : {}),
+        summary: observationSummary(tool, execution),
+        ...(execution.rawRef ? { rawRef: execution.rawRef } : {}),
+        facts: observationFacts(tool, execution),
+        createdAt: now(),
+      };
+      investigation.observations ??= [];
+      investigation.observations.push(observation);
       await this.repository.appendToolCall(investigation.id, call);
       await this.saveInvestigation(investigation);
       await bus.publish("tool.completed", `${tool} completed: ${execution.summary}.`, {
         toolCall: call,
       });
+      await bus.publish("observation.created", observation.summary, {
+        observation,
+      });
       return {
         callId: call.id,
+        observationId: observation.id,
         execution: {
           result: execution.result,
           summary: execution.summary,
@@ -845,6 +920,11 @@ export class RcaService {
       };
     }
     return finding;
+  }
+
+  private nextObservationId(investigation: Investigation): string {
+    const count = investigation.observations?.length ?? 0;
+    return `O${String(count + 1).padStart(2, "0")}`;
   }
 
   private nextToolId(investigation: Investigation): string {
