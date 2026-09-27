@@ -135,7 +135,7 @@ function now(): string {
   return new Date().toISOString();
 }
 
-function createInvestigationId(): string {
+export function createInvestigationId(): string {
   return `INV-${new Date()
     .toISOString()
     .replace(/[-:.TZ]/g, "")
