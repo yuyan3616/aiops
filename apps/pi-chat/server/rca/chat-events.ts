@@ -206,6 +206,7 @@ export class RcaChatEventMapper {
         }];
       }
       case "investigation.started":
+      case "observation.created":
       case "round.completed":
       case "investigation.completed":
       case "investigation.failed":
