@@ -7,6 +7,7 @@ import {
 import { RcaChatEventMapper, type ChatStreamProjection } from "./chat-events";
 import { createInvestigationId } from "./orchestrator";
 import type {
+  AgenticConclusionInput,
   HypothesisMutation,
   RcaOverviewKind,
   RcaService,
@@ -360,7 +361,7 @@ export function createRcaMainAgentTools(options: RcaMainAgentToolsOptions): Tool
     name: "conclude_investigation",
     label: "Conclude RCA investigation",
     description:
-      "Persist the Main Agent's final evidence-grounded RCA conclusion. Call only after competing hypotheses have been evaluated or the remaining uncertainty is explicitly declared.",
+      "Persist the Main Agent's final evidence-grounded RCA conclusion. Every hypothesis must be accounted for exactly once as selected, rejected, or unresolved. Update hypothesis statuses before concluding; unresolved items require an explicit reason.",
     parameters: Type.Object({
       investigationId: Type.String(),
       status: Type.Union([
@@ -372,19 +373,34 @@ export function createRcaMainAgentTools(options: RcaMainAgentToolsOptions): Tool
       mechanism: Type.Optional(Type.String()),
       summary: Type.String(),
       evidenceIds: Type.Array(Type.String(), { maxItems: 50 }),
+      selectedHypothesisIds: Type.Array(Type.String(), { maxItems: 10 }),
       rejectedHypotheses: Type.Array(Type.String(), { maxItems: 20 }),
+      unresolvedHypotheses: Type.Array(
+        Type.Object({
+          id: Type.String(),
+          reason: Type.String({ minLength: 1 }),
+          missingEvidence: Type.Optional(Type.Array(Type.String(), { maxItems: 20 })),
+        }),
+        { maxItems: 20 },
+      ),
       confidence: Type.Number({ minimum: 0, maximum: 1 }),
       missingEvidence: Type.Optional(Type.Array(Type.String(), { maxItems: 20 })),
     }),
     execute: async (_toolCallId, parameters) => {
       const { investigationId, ...input } = parameters;
-      const result: Omit<RCAResult, "investigationId"> = {
+      const result: AgenticConclusionInput = {
         status: input.status,
         rootCauseEntities: [...input.rootCauseEntities],
         ...(input.mechanism ? { mechanism: input.mechanism } : {}),
         summary: input.summary,
         evidenceIds: [...input.evidenceIds],
+        selectedHypothesisIds: [...input.selectedHypothesisIds],
         rejectedHypotheses: [...input.rejectedHypotheses],
+        unresolvedHypotheses: input.unresolvedHypotheses.map((item) => ({
+          id: item.id,
+          reason: item.reason,
+          ...(item.missingEvidence ? { missingEvidence: [...item.missingEvidence] } : {}),
+        })),
         confidence: input.confidence,
         ...(input.missingEvidence ? { missingEvidence: [...input.missingEvidence] } : {}),
       };
