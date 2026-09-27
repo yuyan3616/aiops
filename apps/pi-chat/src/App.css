@@ -2065,6 +2065,23 @@ button {
   margin: 18px 0 8px;
 }
 
+.agent-thread-thinking {
+  max-height: 260px;
+  overflow: auto;
+  padding: 10px 12px;
+  border-left: 2px solid #e5e6e8;
+  color: #70757a;
+  font-size: 11px;
+  line-height: 1.65;
+}
+
+.agent-thread-thinking .markdown > * {
+  margin: 4px 0;
+  color: inherit;
+  font-size: inherit;
+  line-height: inherit;
+}
+
 .agent-thread-section-title span {
   color: #9ba0a5;
   font-size: 10px;
