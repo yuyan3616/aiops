@@ -7,6 +7,7 @@ import {
   type ModelRuntime,
 } from "@earendil-works/pi-coding-agent";
 
+import { getParquetRuntimeDiagnostics } from "./parquet";
 import {
   compactToolResultForAgent,
   type ObservabilityToolName,
@@ -167,6 +168,11 @@ function strength(value: unknown): AgentExpertFinding["strength"] {
     : "inconclusive";
 }
 
+function mb(bytes: number): number {
+  return Math.round((bytes / 1024 / 1024) * 100) / 100;
+}
+
+
 export class PiExpertRunner {
   private readonly modelRuntime: ModelRuntime;
   private readonly tools: ObservabilityToolRegistry;
@@ -209,6 +215,50 @@ export class PiExpertRunner {
       );
     }
 
+    const parquetStart = getParquetRuntimeDiagnostics();
+    let rssPeakBytes = 0;
+    let heapUsedPeakBytes = 0;
+    let heapTotalPeakBytes = 0;
+    let externalPeakBytes = 0;
+    let arrayBuffersPeakBytes = 0;
+    const sampleProcessMemory = () => {
+      const memory = process.memoryUsage();
+      rssPeakBytes = Math.max(rssPeakBytes, memory.rss);
+      heapUsedPeakBytes = Math.max(heapUsedPeakBytes, memory.heapUsed);
+      heapTotalPeakBytes = Math.max(heapTotalPeakBytes, memory.heapTotal);
+      externalPeakBytes = Math.max(externalPeakBytes, memory.external);
+      arrayBuffersPeakBytes = Math.max(arrayBuffersPeakBytes, memory.arrayBuffers);
+    };
+    const runtimeDiagnostics = (
+      toolCallCount: number,
+      thinkingChars: number,
+      outputChars: number,
+      repairAttempted: boolean,
+      repairSucceeded: boolean,
+      failure?: Pick<AgentRunDiagnostics, "failureReason" | "failureDetail">,
+    ): AgentRunDiagnostics => {
+      sampleProcessMemory();
+      const parquetEnd = getParquetRuntimeDiagnostics();
+      return {
+        toolCallCount,
+        thinkingChars,
+        outputChars,
+        repairAttempted,
+        repairSucceeded,
+        rssPeakMb: mb(rssPeakBytes),
+        heapUsedPeakMb: mb(heapUsedPeakBytes),
+        heapTotalPeakMb: mb(heapTotalPeakBytes),
+        externalPeakMb: mb(externalPeakBytes),
+        arrayBuffersPeakMb: mb(arrayBuffersPeakBytes),
+        parquetBatchesRead: Math.max(0, parquetEnd.batchesRead - parquetStart.batchesRead),
+        parquetRowsScanned: Math.max(0, parquetEnd.rowsScanned - parquetStart.rowsScanned),
+        maxConcurrentParquetScansObserved: parquetEnd.maxConcurrentScans,
+        activeParquetScansAtEnd: parquetEnd.activeScans,
+        ...(failure ?? {}),
+      };
+    };
+    sampleProcessMemory();
+
     let metricsQueries = 0;
     let toolCallCount = 0;
     const toolDefinitions = this.tools.createPiTools({
@@ -223,6 +273,7 @@ export class PiExpertRunner {
           metricsQueries++;
         }
         toolCallCount++;
+        sampleProcessMemory();
         const boundedParameters =
           name === "query_metrics"
             ? {
@@ -237,6 +288,7 @@ export class PiExpertRunner {
           ...boundedParameters,
           caseId: context.task.caseId,
         });
+        sampleProcessMemory();
         const compactResult = compactToolResultForAgent(name, recorded.execution.result);
         return {
           content: [
@@ -318,6 +370,7 @@ export class PiExpertRunner {
     let parsed: Record<string, unknown>;
     try {
       try {
+        sampleProcessMemory();
         await session.prompt(
           `Investigate this brief. Use tools only as needed, then return the required JSON finding.\n\n${JSON.stringify(
             prompt,
@@ -325,6 +378,7 @@ export class PiExpertRunner {
             2,
           )}`,
         );
+        sampleProcessMemory();
         try {
           parsed = extractJson(output);
         } catch (error) {
@@ -336,6 +390,7 @@ export class PiExpertRunner {
           await session.prompt(
             "Your investigation work is complete. Do not call more tools. Return ONLY the required JSON finding now, using the evidence and toolCallId values already collected. Negative/no-anomaly results are valid findings. Do not restart the investigation or broaden the search.",
           );
+          sampleProcessMemory();
           parsed = extractJson(output);
           repairSucceeded = true;
         }
@@ -348,15 +403,17 @@ export class PiExpertRunner {
         const detail = error instanceof Error ? error.message : String(error);
         throw new PiExpertRunError(
           detail,
-          {
+          runtimeDiagnostics(
             toolCallCount,
             thinkingChars,
-            outputChars: totalOutputChars,
+            totalOutputChars,
             repairAttempted,
-            repairSucceeded: false,
-            failureReason,
-            failureDetail: detail.slice(0, 1000),
-          },
+            false,
+            {
+              failureReason,
+              failureDetail: detail.slice(0, 1000),
+            },
+          ),
           sessionId,
         );
       }
@@ -400,16 +457,16 @@ export class PiExpertRunner {
 
     return {
       sessionId,
-      diagnostics: {
+      diagnostics: runtimeDiagnostics(
         toolCallCount,
         thinkingChars,
-        outputChars: totalOutputChars,
+        totalOutputChars,
         repairAttempted,
         repairSucceeded,
-        ...(repairAttempted && repairSucceeded && parseFailureDetail
+        repairAttempted && repairSucceeded && parseFailureDetail
           ? { failureDetail: `initial parse repaired: ${parseFailureDetail.slice(0, 900)}` }
-          : {}),
-      },
+          : undefined,
+      ),
       finding: {
         status: findingStatus(parsed.status),
         strength: strength(parsed.strength),
