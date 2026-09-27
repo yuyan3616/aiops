@@ -356,7 +356,14 @@ export class RcaService {
       }
 
       const previous = existing.status;
-      if (mutation.statement?.trim()) existing.statement = mutation.statement.trim().slice(0, 1000);
+      if (
+        mutation.statement?.trim() &&
+        mutation.statement.trim().slice(0, 1000) !== existing.statement
+      ) {
+        throw new Error(
+          `Hypothesis ${existing.id} statement is immutable; create a new hypothesis id for a revised meaning`,
+        );
+      }
       if (mutation.status) existing.status = mutation.status;
       if (typeof mutation.confidence === "number") {
         existing.confidence = clampConfidence(mutation.confidence, existing.confidence);
@@ -397,8 +404,21 @@ export class RcaService {
 
     if (briefs.length === 0) throw new Error("At least one investigation brief is required");
     if (briefs.length > 3) throw new Error("At most three independent briefs may be dispatched in one batch");
-    if (investigation.expertTasks.length + briefs.length > 4) {
-      throw new Error("Sub-investigation budget exceeded (maximum 4 tasks)");
+    const failedNoEvidenceRoles = new Set(
+      investigation.expertTasks
+        .filter((task) => task.status === "failed" && task.evidenceIds.length === 0)
+        .map((task) => task.expert),
+    );
+    const effectiveExistingTasks = investigation.expertTasks.filter(
+      (task) => !(task.status === "failed" && task.evidenceIds.length === 0),
+    ).length;
+    const recoveryBriefs = briefs.filter((brief) => failedNoEvidenceRoles.has(brief.role)).length;
+    const effectiveNewTasks = briefs.length - recoveryBriefs;
+    const totalAfterDispatch = investigation.expertTasks.length + briefs.length;
+    if (effectiveExistingTasks + effectiveNewTasks > 4 || totalAfterDispatch > 6) {
+      throw new Error(
+        "Sub-investigation budget exceeded (4 evidence-producing tasks plus up to 2 recovery tasks for failed/no-evidence roles)",
+      );
     }
 
     const knownHypotheses = new Set(investigation.hypotheses.map((item) => item.id));
