@@ -81,6 +81,11 @@ export interface AgenticBeginOptions {
   onEvent?: InvestigationEventListener;
 }
 
+export interface AgenticResumeOptions {
+  conversationId?: string;
+  onEvent?: InvestigationEventListener;
+}
+
 export interface AgenticDispatchOptions {
   model?: { provider: string; id: string };
 }
@@ -310,6 +315,39 @@ export class RcaService {
     }
   }
 
+  async resumeAgentic(
+    investigationId: string,
+    options: AgenticResumeOptions = {},
+  ): Promise<Investigation> {
+    const investigation = await this.repository.get(investigationId);
+    if (investigation.status !== "interrupted" && investigation.status !== "running") {
+      throw new Error(
+        `Investigation ${investigation.id} is ${investigation.status} and cannot be resumed`,
+      );
+    }
+
+    const bus = await this.busFor(investigationId);
+    this.agenticRunning.get(investigationId)?.unsubscribe?.();
+    const controller = new AbortController();
+    const unsubscribe = options.onEvent ? bus.subscribe(options.onEvent) : undefined;
+    this.agenticRunning.set(investigationId, {
+      conversationId: options.conversationId,
+      controller,
+      unsubscribe,
+    });
+
+    if (investigation.status === "interrupted") {
+      investigation.status = "running";
+      investigation.error = undefined;
+      await this.saveInvestigation(investigation);
+      await bus.publish("investigation.resumed", "Investigation resumed after interruption.", {
+        interruptionCount: investigation.interruptions?.length ?? 0,
+        source: "main-agent",
+      });
+    }
+    return investigation;
+  }
+
   async queryOverview(
     investigationId: string,
     kind: RcaOverviewKind,
@@ -370,7 +408,7 @@ export class RcaService {
     mutations: HypothesisMutation[],
   ): Promise<Hypothesis[]> {
     const investigation = await this.repository.get(investigationId);
-    this.assertRunning(investigation);
+    this.assertConcludable(investigation);
     const bus = await this.busFor(investigationId);
     const evidenceIds = new Set(investigation.evidence.map((item) => item.id));
 
@@ -734,6 +772,14 @@ export class RcaService {
     if (investigation.status !== "running") {
       throw new Error(
         `Investigation ${investigation.id} is ${investigation.status}, not running`,
+      );
+    }
+  }
+
+  private assertConcludable(investigation: Investigation): void {
+    if (investigation.status !== "running" && investigation.status !== "interrupted") {
+      throw new Error(
+        `Investigation ${investigation.id} is ${investigation.status} and cannot be concluded`,
       );
     }
   }
