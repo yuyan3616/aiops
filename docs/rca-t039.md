@@ -1,18 +1,20 @@
 # RCA100 t039 investigation
 
-Pi Chat now contains an evidence-driven RCA path that preserves its existing session, SSE architecture, and chat UI. Enter `/rca t039`, or send a natural incident-investigation request such as `帮我排查 checkout 响应时间突然升高的问题`. The default case is configured with `RCA_DEFAULT_CASE_ID`.
+Pi Chat contains an evidence-driven RCA path inside the normal Pi conversation runtime. Ask naturally, for example `帮我排查 t039 的根因` or `checkout 为什么突然变慢`. The Pi Main Agent decides when to start an investigation and drives the investigation through RCA tools; there is no separate deterministic RCA command path.
 
-RCA business events are projected onto the original Pi Chat stream protocol:
+RCA business events are projected onto the existing Pi Chat stream protocol:
 
-- investigation decisions, hypotheses, evidence, and expert hand-offs → existing Thinking blocks;
-- real observability queries → existing Tool cards with bounded result summaries;
-- completed investigation → existing Assistant Markdown message.
+- real Pi model reasoning remains the native Thinking stream;
+- hypotheses and specialist hand-offs are projected as structured RCA state / sub-agent events;
+- observability queries appear as Tool cards with bounded result summaries;
+- specialist Pi sessions expose their own thinking/tool/evidence lifecycle;
+- completed investigations are persisted as immutable investigation artifacts and summarized by the Main Agent.
 
-There is no RCA dashboard or RCA-specific frontend component. Raw references and full evidence remain in the investigation artifacts rather than being dumped into the chat.
+Raw references and full evidence remain in investigation artifacts instead of being dumped into the chat context.
 
 ## Fetching the real t039 telemetry
 
-The repository does not vendor the 32 MB RCA100 t039 Parquet payload directly. Instead it provides a reproducible downloader that fetches only the agent-facing case files and keeps Ground Truth outside the Agent runtime:
+The repository does not vendor the RCA100 t039 Parquet payload directly. Instead it provides a reproducible downloader that fetches only the agent-facing case files and keeps Ground Truth outside the Agent runtime:
 
 ```bash
 cd apps/pi-chat
@@ -35,37 +37,66 @@ RCA100_CASES_DIR=$PWD/.rca-data/cases
 
 The downloader intentionally does not fetch `RCA100/answer_key`; Ground Truth remains evaluator-only.
 
-## Agentic coordinator and chat-history persistence
+## Agentic investigation runtime
 
-The production Pi Chat server now uses a Pi-backed RCA coordinator planner by default. The planner chooses the next specialist from the current hypotheses and Evidence; guarded server-side rules still validate Evidence and the final conclusion. Set `RCA_AGENTIC_PLANNER=false` to use the deterministic fallback planner for offline or reproducible runs.
+The production RCA path has one coordinator: the Pi Main Agent in the conversation session.
 
-If the planner model is unavailable, returns malformed output, or is not authenticated, the runtime automatically falls back to the deterministic planner rather than failing the investigation.
+The Main Agent:
 
-RCA chat projections are persisted in the conversation record. User messages, investigation summaries, Tool cards, Evidence/Hypothesis reasoning summaries, follow-up explanations, and the final RCA answer are merged with the native Pi Session transcript by chronological sequence. Refreshing the browser or restarting the server therefore restores the same chat-first RCA history instead of relying only on the in-memory SSE channel.
+1. starts an investigation with `start_rca_investigation`;
+2. queries bounded overview data when useful;
+3. creates and updates falsifiable hypotheses;
+4. dispatches Trace, Metrics, Log, and Event/Topology Pi specialist sessions with explicit briefs;
+5. consumes specialist findings plus persisted Observations/Evidence;
+6. accounts for every hypothesis as selected, rejected, or unresolved;
+7. persists the final conclusion with `conclude_investigation`.
 
-When traces cannot localize a downstream candidate, the investigation no longer aborts or dead-ends. Metrics, logs, and event/topology experts can continue against the alerted service itself. A local-service conclusion still requires at least two independent supporting modalities; otherwise the result remains `inconclusive`.
+Specialists are real Pi sessions. They choose tools and parameters within server-side tool and resource limits. There is no `RcaOrchestrator`, deterministic specialist fallback, or separate RCA planner runtime.
 
-## Investigation follow-up
+A process restart marks an active investigation `interrupted` rather than permanently failed. The Main Agent can resume it or conclude from already persisted evidence when that evidence is sufficient.
 
-The conversation record persists the most recent `activeInvestigationId` and all investigation IDs started in that session. After RCA completes, natural follow-up questions stay in the same Pi Chat conversation and read the complete immutable investigation artifact:
+## Investigation persistence and follow-up
 
-- root cause and confidence;
-- current hypotheses plus status history from `events.jsonl`;
-- evidence, source queries, time ranges, entities, and raw references;
-- expert tasks and their actual tool calls.
+The conversation record persists the active investigation id and the investigation ids associated with that conversation. Investigation artifacts persist:
 
-Explanatory follow-ups do not query telemetry again. Evidence drill-down and counterfactual answers are read-only; they never rewrite the original hypothesis state or result. A request that explicitly asks to re-run or re-check starts a new investigation and makes it the active investigation for subsequent questions.
+- hypotheses and lifecycle state;
+- tool-backed Observations;
+- Evidence and raw references;
+- specialist tasks, findings, and diagnostics;
+- tool calls and resource snapshots;
+- the final report.
+
+Follow-up questions stay in the same Pi Main Agent conversation. The Main Agent reads the persisted investigation state with RCA tools instead of routing through a regex/template follow-up service. Existing investigation artifacts remain immutable unless the Main Agent explicitly resumes or starts a new investigation.
 
 ## Runtime boundaries
 
-The runtime is constructed with only `RCA100_CASES_DIR` and can access only `cases/<caseId>`. `RCA100Adapter` loads task and telemetry files and exposes bounded query methods. Neither the adapter, the orchestrator, the expert agents, nor their tool registry imports the evaluator or accepts an answer-key directory.
+The agent runtime receives only the RCA case directory. `RCA100Adapter` loads task and telemetry files and exposes bounded query methods. The runtime RCA code does not import the evaluator and does not accept an answer-key directory.
 
-Evaluation is a separate command and process. Only that command receives `RCA100_ANSWER_KEY_DIR`, and `RcaScorer` refuses to open the answer key until a completed prediction is present in `investigation.json`.
+Observability Parquet queries use bounded batch scans. Heavy scans are concurrency-limited, and large Metrics/Trace responses are compacted before entering model context while complete data remains traceable through `rawRef`.
+
+Evaluation is a separate command and process. Only that command receives `RCA100_ANSWER_KEY_DIR`, and `RcaScorer` reads the answer key only after a completed prediction is present.
 
 ```text
-task alert -> orchestrator -> expert task -> observability tool -> RCA100Adapter
-                ^                                      |
-                |--------- evidence + hypothesis ------|
+Pi Main Agent
+    |
+    +-- RCA Main Agent tools
+    |      |
+    |      +-- bounded overview queries
+    |      +-- hypothesis lifecycle
+    |      +-- conclusion
+    |
+    +-- Pi specialist sessions
+           |
+           +-- Trace
+           +-- Metrics
+           +-- Log
+           +-- Event / Topology
+                  |
+                  +-- observability tools
+                          |
+                          +-- RCA100Adapter
+                                  |
+                                  +-- Observation / Evidence / rawRef
 
 completed prediction -> independent scorer <- answer key
 ```
@@ -88,22 +119,28 @@ The initial alert is loaded from `task.json`. It is not duplicated in a prompt o
 
 ## Components
 
-- `RCA100Adapter`: discovers schemas and performs time/entity filtering, aggregation, anomaly summaries, top-N selection and sampling.
-- `ObservabilityToolRegistry`: registers alert, metric, log, trace, event, alert and topology tools for both the orchestrator and Pi runtime.
-- Expert agents: Trace, Metrics, Log and Event/Topology experts return evidence rather than free-form inter-agent chat.
-- `RcaOrchestrator`: maintains investigation state, hypotheses and the dynamic next-check loop.
+- `RCA100Adapter`: schema discovery, bounded batch scans, filtering, aggregation and anomaly summaries.
+- `ObservabilityToolRegistry`: the allow-listed alert, metric, log, trace, event and topology tools.
+- `main-agent-tools.ts`: the Main Agent investigation controls for overview, hypotheses, specialist dispatch, state retrieval and conclusion.
+- `PiExpertRunner`: creates Trace, Metrics, Log and Event/Topology Pi specialist sessions and validates their structured findings.
+- `RcaService`: owns agentic investigation state, persistence, cancellation/resume, Observations, Evidence and conclusion validation.
 - `InvestigationRepository`: persists `investigation.json`, `tool-calls.jsonl`, `events.jsonl`, `final-report.json` and, after scoring, `evaluation.json`.
-- `RcaScorer`: reads the answer key only after completion and scores entity, mechanism, evidence quality and reasoning trace.
+- `RcaScorer`: evaluator-only code that reads Ground Truth after investigation completion.
 
 ## Run
 
+Run Pi Chat normally and start RCA through the conversation:
+
 ```bash
 cd apps/pi-chat
+pnpm dev
+```
 
-RCA100_CASES_DIR=/absolute/path/to/RCA100/cases \
-RCA_INVESTIGATIONS_DIR=./data/rca/investigations \
-pnpm rca:run t039
+Then ask the Main Agent to investigate `t039`. There is intentionally no standalone `rca:run` deterministic execution path.
 
+Evaluation remains separate:
+
+```bash
 RCA100_ANSWER_KEY_DIR=/absolute/path/to/RCA100/answer_key \
 RCA_INVESTIGATIONS_DIR=./data/rca/investigations \
 pnpm rca:evaluate INV-...
