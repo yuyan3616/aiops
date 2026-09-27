@@ -124,6 +124,15 @@ export interface AgentRunDiagnostics {
   outputChars: number;
   repairAttempted: boolean;
   repairSucceeded: boolean;
+  rssPeakMb?: number;
+  heapUsedPeakMb?: number;
+  heapTotalPeakMb?: number;
+  externalPeakMb?: number;
+  arrayBuffersPeakMb?: number;
+  parquetBatchesRead?: number;
+  parquetRowsScanned?: number;
+  maxConcurrentParquetScansObserved?: number;
+  activeParquetScansAtEnd?: number;
   failureReason?: "json_missing" | "json_invalid" | "aborted" | "model_error" | "unknown";
   failureDetail?: string;
 }
