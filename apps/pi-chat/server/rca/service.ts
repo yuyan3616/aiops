@@ -1287,14 +1287,6 @@ export class RcaService {
     return `T${String(investigation.expertTasks.length + 1).padStart(2, "0")}`;
   }
 
-  private nextHypothesisId(investigation: Investigation): string {
-    let index = investigation.hypotheses.length + 1;
-    while (investigation.hypotheses.some((item) => item.id === `H${String(index).padStart(2, "0")}`)) {
-      index++;
-    }
-    return `H${String(index).padStart(2, "0")}`;
-  }
-
   private renderReport(investigation: Investigation): string {
     const result = investigation.rootCause!;
     const evidence = investigation.evidence.filter((item) => result.evidenceIds.includes(item.id));
@@ -1323,7 +1315,19 @@ export class RcaService {
         ? ruledOut.map((item) => `- ${item.id}: ${item.statement}`)
         : ["- None recorded."]),
       "",
-      "## Unresolved",
+      "## Unresolved Hypotheses",
+      ...(result.unresolvedHypotheses?.length
+        ? result.unresolvedHypotheses.map(
+            (item) =>
+              `- ${item.id}: ${item.reason}${
+                item.missingEvidence?.length
+                  ? ` (missing: ${item.missingEvidence.join("; ")})`
+                  : ""
+              }`,
+          )
+        : ["- None recorded."]),
+      "",
+      "## Missing Evidence",
       ...(result.missingEvidence?.length
         ? result.missingEvidence.map((item) => `- ${item}`)
         : ["- None recorded."]),
