@@ -18,9 +18,6 @@ export function ThinkingItem({ thinking }: { thinking: ThinkingBlock }) {
       <div className="agent-identity">
         <span className="agent-identity-avatar">P</span>
         <strong>Main Agent</strong>
-        <span className="agent-identity-context">
-          {source === "rca-projection" ? "RCA 编排" : "Pi Agent"}
-        </span>
       </div>
       <div className="thinking">
       <Button variant="ghost" aria-expanded={open} onClick={() => setOpen(!open)}>
