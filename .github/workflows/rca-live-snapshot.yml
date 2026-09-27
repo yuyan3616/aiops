@@ -31,26 +31,13 @@ jobs:
 
       - name: Download RCA100 t039 agent-facing telemetry only
         run: |
-          rm -rf /tmp/agenticopseval .rca-data
-          GIT_LFS_SKIP_SMUDGE=1 git clone --depth=1 --filter=blob:none             https://www.aiops.cn/gitlab/aiops-live-benchmark/agenticopseval.git             /tmp/agenticopseval
-          cd /tmp/agenticopseval
-          git sparse-checkout init --cone
-          git sparse-checkout set RCA100/cases/t039 RCA100/LICENSE
-          git checkout
-          git lfs install --local
-          git lfs pull --include="RCA100/cases/t039/*"
-          cd "$GITHUB_WORKSPACE"
-          mkdir -p .rca-data/cases
-          cp -a /tmp/agenticopseval/RCA100/cases/t039 .rca-data/cases/
-          echo "=== t039 files ==="
-          find .rca-data/cases/t039 -maxdepth 1 -type f -printf '%f %s bytes\n' | sort
-          echo "=== total ==="
-          du -sh .rca-data/cases/t039
+          cd apps/pi-chat
+          pnpm rca:fetch:t039
 
       - name: Run current Pi Chat, execute t039, and capture real RCA UI
         env:
           PI_CHAT_ROOT_DIR: /tmp/pi-chat-state
-          RCA100_CASES_DIR: ${{ github.workspace }}/.rca-data/cases
+          RCA100_CASES_DIR: ${{ github.workspace }}/apps/pi-chat/.rca-data/cases
           RCA_INVESTIGATIONS_DIR: /tmp/pi-chat-state/data/rca/investigations
           RCA_DEFAULT_CASE_ID: t039
           RCA_AGENTIC_PLANNER: "false"
