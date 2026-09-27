@@ -59,6 +59,11 @@ export type EventType =
   | "thinking.started"
   | "thinking.delta"
   | "thinking.completed"
+  | "agent.started"
+  | "agent.tool.started"
+  | "agent.tool.completed"
+  | "agent.evidence.added"
+  | "agent.completed"
   | "tool.started"
   | "tool.updated"
   | "tool.completed";
@@ -101,6 +106,27 @@ export interface ThinkingBlock {
   id: string;
   text: string;
   completed?: boolean;
+  source?: "model" | "rca-projection";
+  label?: string;
+}
+
+export interface AgentThreadEvidence {
+  id: string;
+  modality: string;
+  summary: string;
+}
+
+export interface AgentThreadRun {
+  id: string;
+  taskId: string;
+  expert: "trace" | "metrics" | "log" | "event-topology";
+  label: string;
+  objective: string;
+  status: "running" | "completed" | "failed" | "cancelled";
+  tools: ToolRun[];
+  evidence: AgentThreadEvidence[];
+  summary?: string;
+  implementation: "deterministic" | "pi-session";
 }
 
 export type MessageListToolItem = {
@@ -113,6 +139,7 @@ export type MessageListToolItem = {
 export type MessageListItem =
   | { kind: "message"; id: string; message: ChatMessage; seqId?: number }
   | { kind: "thinking"; id: string; thinking: ThinkingBlock; seqId?: number }
+  | { kind: "agent"; id: string; agent: AgentThreadRun; seqId?: number }
   | MessageListToolItem;
 
 export interface ConversationSummary {
