@@ -1,0 +1,42 @@
+name: ui-snapshot
+
+on:
+  push:
+    branches:
+      - feat/pi-chat-rca
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.19.0"
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.22.0 --activate
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Start Pi Chat
+        run: |
+          nohup pnpm --filter pi-chat server:dev > /tmp/pi-chat-api.log 2>&1 &
+          nohup pnpm --filter pi-chat web:dev -- --host 127.0.0.1 > /tmp/pi-chat-web.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:5173 >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          echo "=== API LOG ==="
+          cat /tmp/pi-chat-api.log || true
+          echo "=== WEB LOG ==="
+          cat /tmp/pi-chat-web.log || true
+      - name: Install browser
+        run: pnpm dlx playwright@1.55.0 install chromium
+      - name: Capture current page
+        run: |
+          pnpm dlx playwright@1.55.0 screenshot             --viewport-size="1440,1000"             --wait-for-timeout=4000             http://127.0.0.1:5173             current-pi-chat.png
+      - uses: actions/upload-artifact@v4
+        with:
+          name: current-pi-chat-screenshot
+          path: current-pi-chat.png
