@@ -521,6 +521,31 @@ export class RcaService {
       );
     }
 
+    for (const brief of briefs) {
+      const baseline = brief.context.baselineWindow;
+      if (!baseline) continue;
+      const baselineFrom = Date.parse(baseline.from);
+      const baselineTo = Date.parse(baseline.to);
+      const mainFrom = Date.parse(brief.context.mainWindow.from);
+      const mainTo = Date.parse(brief.context.mainWindow.to);
+      if (
+        !Number.isFinite(baselineFrom) ||
+        !Number.isFinite(baselineTo) ||
+        !Number.isFinite(mainFrom) ||
+        !Number.isFinite(mainTo)
+      ) {
+        throw new Error("Brief contains an invalid baseline or main time window");
+      }
+      if (baselineFrom > baselineTo || mainFrom > mainTo) {
+        throw new Error("Brief time window start must not be after its end");
+      }
+      if (baselineTo > mainFrom && baselineFrom < mainTo) {
+        throw new Error(
+          "Brief baselineWindow overlaps mainWindow; choose a non-overlapping comparison window",
+        );
+      }
+    }
+
     const knownHypotheses = new Set(investigation.hypotheses.map((item) => item.id));
     const taskPairs = briefs.map((brief) => {
       if (!brief.question.trim()) throw new Error("Brief question is required");
