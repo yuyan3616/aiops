@@ -16,6 +16,7 @@ import type {
   ConversationSummary,
   ModelOption,
   ThinkingLevel,
+  MessageListItem,
 } from "@shared/types";
 import { Menu, Monitor, PanelLeftOpen } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -242,8 +243,13 @@ export default function App() {
             <EmptyConversation onPrompt={submit} />
           ) : (
             <div className="messages">
-              {messageItems.map((item) => (
-                <MessageItem key={item.id} item={item} showActions={item.kind === "message"} />
+              {messageItems.map((item, index) => (
+                <MessageItem
+                  key={item.id}
+                  item={item}
+                  showActions={item.kind === "message"}
+                  showMainAgentIdentity={shouldShowMainAgentIdentity(messageItems, index)}
+                />
               ))}
               {browserHandoff && (
                 <BrowserHandoffCard browserHandoff={browserHandoff} onOpen={openBrowser} />
@@ -289,6 +295,21 @@ export default function App() {
       )}
     </div>
   );
+}
+
+function isMainAgentItem(item: MessageListItem): boolean {
+  if (item.kind === "agent") return false;
+  if (item.kind === "message") return item.message.role === "assistant";
+  return true;
+}
+
+function shouldShowMainAgentIdentity(items: MessageListItem[], index: number): boolean {
+  const item = items[index];
+  if (!item || !isMainAgentItem(item)) return false;
+  const previous = items[index - 1];
+  if (!previous) return true;
+  if (previous.kind === "agent") return true;
+  return previous.kind === "message" && previous.message.role === "user";
 }
 
 function BrowserHandoffCard({
