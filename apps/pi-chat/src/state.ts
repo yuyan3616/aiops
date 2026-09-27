@@ -334,6 +334,22 @@ export function conversationReducer(
         item.kind === "agent" ? { ...item, agent: { ...item.agent, ...agent } } : item,
       );
     }
+    case "agent.thinking.delta": {
+      const agentId = String(payload.agentId ?? "");
+      const delta = String(payload.delta ?? "");
+      if (!agentId || !delta) return items;
+      return updateItem(items, agentId, (item) =>
+        item.kind === "agent"
+          ? {
+              ...item,
+              agent: {
+                ...item.agent,
+                thinking: (item.agent.thinking ?? "") + delta,
+              },
+            }
+          : item,
+      );
+    }
     case "agent.tool.started":
     case "agent.tool.completed": {
       const agentId = String(payload.agentId ?? "");
