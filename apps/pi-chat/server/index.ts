@@ -5,8 +5,6 @@ import { serve } from "@hono/node-server";
 import { createApp } from "@server/app";
 import { ConversationService } from "@server/conversation/service";
 import { RCA100Adapter } from "@server/rca/adapter";
-import { RcaOrchestrator } from "@server/rca/orchestrator";
-import { PiRcaPlanner } from "@server/rca/planner";
 import { InvestigationRepository } from "@server/rca/repository";
 import { RcaService } from "@server/rca/service";
 import { ObservabilityToolRegistry } from "@server/rca/tools";
@@ -23,8 +21,6 @@ await writeFile(globalConfig.mcpConfigPath, JSON.stringify({ mcpServers: {} }, n
 });
 const packyProvider = await ensurePackyModelsConfig(getAgentDir());
 if (packyProvider) {
-  process.env.RCA_MODEL_PROVIDER ??= packyProvider.providerId;
-  process.env.RCA_MODEL_ID ??= packyProvider.modelId;
   process.stdout.write(
     `PackyAPI provider enabled: ${packyProvider.providerId}/${packyProvider.modelId} via ${packyProvider.baseUrl}\n`,
   );
@@ -38,10 +34,7 @@ if (recoveredInvestigations.length > 0) {
     `Recovered interrupted RCA investigations: ${recoveredInvestigations.join(", ")}\n`,
   );
 }
-const rcaPlanner =
-  process.env.RCA_AGENTIC_PLANNER === "false" ? undefined : new PiRcaPlanner(modelRuntime);
 const rcaService = new RcaService(
-  new RcaOrchestrator(rcaTools, investigationRepository, rcaPlanner),
   investigationRepository,
   modelRuntime,
   rcaTools,
