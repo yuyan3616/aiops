@@ -22,7 +22,6 @@ import type {
   AgentExpertFinding,
   AgentRunDiagnostics,
   EvidenceModality,
-  ExpertKind,
   Investigation,
   InvestigationBrief,
   RcaTask,
