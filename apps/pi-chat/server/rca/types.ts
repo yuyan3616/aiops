@@ -190,6 +190,12 @@ export interface RCAResult {
   summary: string;
   evidenceIds: string[];
   rejectedHypotheses: string[];
+  selectedHypothesisIds?: string[];
+  unresolvedHypotheses?: Array<{
+    id: string;
+    reason: string;
+    missingEvidence?: string[];
+  }>;
   confidence: number;
   missingEvidence?: string[];
 }
