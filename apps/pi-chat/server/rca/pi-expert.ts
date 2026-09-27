@@ -283,7 +283,15 @@ export class PiExpertRunner {
                   12,
                 ),
               }
-            : parameters;
+            : name === "query_traces"
+              ? {
+                  ...parameters,
+                  topN: Math.min(
+                    typeof parameters.topN === "number" ? parameters.topN : 20,
+                    20,
+                  ),
+                }
+              : parameters;
         const recorded = await context.invoke(name, {
           ...boundedParameters,
           caseId: context.task.caseId,
