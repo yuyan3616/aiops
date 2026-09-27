@@ -249,7 +249,11 @@ export function useConversationStream(conversationId?: string) {
     await send(conversationId, text, skills);
   }
   const status = runtime.conversationId === conversationId ? runtime.status : "cold";
-  const error = errorState.conversationId === conversationId ? errorState.message : "";
+  const connectionError =
+    errorState.conversationId === conversationId ? errorState.message : "";
+  const runtimeError =
+    runtime.conversationId === conversationId ? runtime.error ?? "" : "";
+  const error = connectionError || runtimeError;
   const historyLoading = Boolean(conversationId && historyState.conversationId !== conversationId);
   const connected = Boolean(
     conversationId && runtime.conversationId === conversationId && runtime.connected,

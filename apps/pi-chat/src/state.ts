@@ -27,6 +27,7 @@ export interface BrowserPanelState {
   status: RuntimeStatus;
   browserHandoff?: BrowserHandoffRequest;
   browser?: BrowserState;
+  error?: string;
   connected: boolean;
 }
 
@@ -68,6 +69,7 @@ export function browserPanelReducer(
         status,
         browserHandoff,
         browser: action.snapshot.browser,
+        error: action.snapshot.error,
         connected: true,
       };
       break;
@@ -85,14 +87,24 @@ export function browserPanelReducer(
         case "browser.state":
           next = { ...state, browser: event.payload as BrowserState };
           break;
-        case "runtime.status":
+        case "runtime.status": {
+          const status = payload.status as RuntimeStatus;
           next = {
             ...state,
-            status: payload.status as RuntimeStatus,
+            status,
+            error: status === "error" ? state.error : undefined,
           };
           break;
+        }
         case "runtime.error":
-          next = { ...state, status: "error" };
+          next = {
+            ...state,
+            status: "error",
+            error:
+              typeof payload.error === "string" && payload.error.trim()
+                ? payload.error
+                : "运行时发生错误，请稍后重试。",
+          };
           break;
         default:
           return state;
