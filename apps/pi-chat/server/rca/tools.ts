@@ -180,7 +180,7 @@ export class ObservabilityToolRegistry {
         result = await this.adapter.getAlertContext(id);
         break;
       case "get_metric_catalog":
-        result = await this.adapter.getMetricCatalog(id);
+        result = await this.adapter.getMetricCatalog(id, signal);
         break;
       case "get_log_fields":
         result = await this.adapter.inspectSchema(id, "log");
@@ -189,19 +189,19 @@ export class ObservabilityToolRegistry {
         result = await this.adapter.inspectSchema(id, "trace");
         break;
       case "query_metrics":
-        result = await this.adapter.queryMetrics(id, arguments_ as unknown as MetricQuery);
+        result = await this.adapter.queryMetrics(id, arguments_ as unknown as MetricQuery, signal);
         break;
       case "query_logs":
-        result = await this.adapter.queryLogs(id, arguments_ as unknown as LogQuery);
+        result = await this.adapter.queryLogs(id, arguments_ as unknown as LogQuery, signal);
         break;
       case "query_traces":
         result = await this.adapter.queryTraces(id, arguments_ as unknown as TraceQuery, signal);
         break;
       case "query_events":
-        result = await this.adapter.queryEvents(id, arguments_ as unknown as EventQuery);
+        result = await this.adapter.queryEvents(id, arguments_ as unknown as EventQuery, signal);
         break;
       case "query_alerts":
-        result = await this.adapter.queryAlerts(id, arguments_ as unknown as AlertQuery);
+        result = await this.adapter.queryAlerts(id, arguments_ as unknown as AlertQuery, signal);
         break;
       case "get_topology":
         result = await this.adapter.getTopology(
