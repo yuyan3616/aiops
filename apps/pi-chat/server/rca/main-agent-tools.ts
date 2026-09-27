@@ -205,41 +205,62 @@ export function createRcaMainAgentTools(options: RcaMainAgentToolsOptions): Tool
     },
   });
 
+  const hypothesisStatusSchema = Type.Optional(
+    Type.Union([
+      Type.Literal("possible"),
+      Type.Literal("investigating"),
+      Type.Literal("supported"),
+      Type.Literal("rejected"),
+      Type.Literal("confirmed"),
+    ]),
+  );
+  const hypothesisEvidenceSchema = Type.Optional(Type.Array(Type.String(), { maxItems: 30 }));
+  const hypothesisChecksSchema = Type.Optional(Type.Array(Type.String(), { maxItems: 10 }));
+
   const updateHypothesesTool = defineTool({
     name: "update_hypotheses",
     label: "Update RCA hypotheses",
     description:
-      "Create or update competing RCA hypotheses based on evidence. Hypothesis statements are immutable once created; if the meaning changes, create a new hypothesis id instead of rewriting an old one. The model owns hypothesis decisions; the server validates evidence references and persists the state.",
+      "Create or update competing RCA hypotheses with partial acceptance. Use op=create to define a new immutable statement; use op=update to change only status/confidence/evidence/checks on an existing id. A semantic revision must be a new create operation, optionally with supersedes. The result reports accepted and rejected mutations independently.",
     parameters: Type.Object({
       investigationId: Type.String(),
-      hypotheses: Type.Array(
-        Type.Object({
-          id: Type.Optional(Type.String()),
-          statement: Type.Optional(Type.String()),
-          status: Type.Optional(
-            Type.Union([
-              Type.Literal("possible"),
-              Type.Literal("investigating"),
-              Type.Literal("supported"),
-              Type.Literal("rejected"),
-              Type.Literal("confirmed"),
-            ]),
-          ),
-          confidence: Type.Optional(Type.Number({ minimum: 0, maximum: 1 })),
-          supportingEvidenceIds: Type.Optional(Type.Array(Type.String(), { maxItems: 30 })),
-          contradictingEvidenceIds: Type.Optional(Type.Array(Type.String(), { maxItems: 30 })),
-          nextChecks: Type.Optional(Type.Array(Type.String(), { maxItems: 10 })),
-          entity: Type.Optional(Type.String()),
-          mechanism: Type.Optional(Type.String()),
-        }),
+      mutations: Type.Array(
+        Type.Union([
+          Type.Object({
+            op: Type.Literal("create"),
+            requestId: Type.Optional(Type.String()),
+            id: Type.Optional(Type.String()),
+            statement: Type.String({ minLength: 1 }),
+            supersedes: Type.Optional(Type.String()),
+            status: hypothesisStatusSchema,
+            confidence: Type.Optional(Type.Number({ minimum: 0, maximum: 1 })),
+            supportingEvidenceIds: hypothesisEvidenceSchema,
+            contradictingEvidenceIds: hypothesisEvidenceSchema,
+            nextChecks: hypothesisChecksSchema,
+            entity: Type.Optional(Type.String()),
+            mechanism: Type.Optional(Type.String()),
+          }),
+          Type.Object({
+            op: Type.Literal("update"),
+            requestId: Type.Optional(Type.String()),
+            id: Type.String({ minLength: 1 }),
+            status: hypothesisStatusSchema,
+            confidence: Type.Optional(Type.Number({ minimum: 0, maximum: 1 })),
+            supportingEvidenceIds: hypothesisEvidenceSchema,
+            contradictingEvidenceIds: hypothesisEvidenceSchema,
+            nextChecks: hypothesisChecksSchema,
+            entity: Type.Optional(Type.String()),
+            mechanism: Type.Optional(Type.String()),
+          }),
+        ]),
         { minItems: 1, maxItems: 8 },
       ),
     }),
     execute: async (_toolCallId, parameters) => {
-      const hypotheses = parameters.hypotheses.map((item) => cleanRecord(item)) as HypothesisMutation[];
+      const mutations = parameters.mutations as HypothesisMutation[];
       return serializeMutation(async () => {
-        const result = await rcaService.updateHypotheses(parameters.investigationId, hypotheses);
-        return toolResult({ hypotheses: result });
+        const result = await rcaService.updateHypotheses(parameters.investigationId, mutations);
+        return toolResult(result);
       });
     },
   });
