@@ -1,6 +1,7 @@
 import type {
   ChatMessage,
   ConversationConfigUpdate,
+  ConversationSummary,
   MessageListItem,
   StreamEvent,
 } from "@shared/types";
@@ -47,6 +48,10 @@ export function useConversationStream(conversationId?: string) {
     message: string;
   }>({ message: "" });
   const [loading, setLoading] = useState(false);
+  const [conversationMeta, setConversationMeta] = useState<{
+    conversationId?: string;
+    conversation?: ConversationSummary;
+  }>({});
   const [runtime, dispatch] = useReducer(
     browserPanelReducer,
     conversationId,
@@ -91,6 +96,12 @@ export function useConversationStream(conversationId?: string) {
       cursor = { id: event.streamId, lastEventId: event.id };
       // Replayed messages must not roll browser state back behind its latest snapshot.
       if (event.id > runtimeEventId) dispatch({ type: "event", conversationId, event });
+      if (event.type === "conversation.updated") {
+        const conversation = (event.payload as { conversation?: ConversationSummary }).conversation;
+        if (conversation?.id === conversationId) {
+          setConversationMeta({ conversationId, conversation });
+        }
+      }
       setMessageState((current) => ({
         conversationId,
         items: conversationReducer(current.conversationId === conversationId ? current.items : [], {
@@ -123,6 +134,10 @@ export function useConversationStream(conversationId?: string) {
         }
         runtimeEventId = conversation.stream.lastEventId;
         dispatch({ type: "snapshot", conversationId, snapshot: conversation });
+        setConversationMeta({
+          conversationId,
+          conversation: conversation.conversation,
+        });
         setSelectedSkills(conversation.activeSkillNames ?? []);
         setErrorState({ conversationId, message: "" });
         syncing = false;
@@ -332,5 +347,9 @@ export function useConversationStream(conversationId?: string) {
     },
     selectedSkills,
     setSelectedSkills,
+    conversationTitle:
+      conversationMeta.conversationId === conversationId
+        ? conversationMeta.conversation?.title
+        : undefined,
   };
 }
