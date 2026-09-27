@@ -268,3 +268,141 @@ test("Main Agent overview mutations are serialized so parallel calls cannot allo
   assert.equal(maxActive, 1);
   assert.equal(sequence, 2);
 });
+
+
+test("compact metric results omit raw samples while preserving aggregate signals", async () => {
+  const { compactToolResultForAgent } = await import("./tools");
+  const compact = compactToolResultForAgent("query_metrics", {
+    caseId: "t999",
+    modality: "metric",
+    query: { metric: "cpu_usage_total" },
+    matchedRows: 100,
+    returnedRows: 20,
+    truncated: false,
+    rawRef: "rca100://t999/metrics.parquet?q=x",
+    data: {
+      anomalies: Array.from({ length: 20 }, (_, index) => ({
+        entitySet: "service",
+        entity: `svc-${index}`,
+        metric: "cpu_usage_total",
+        baselineCount: 10,
+        incidentCount: 5,
+        baselineMedian: 1,
+        incidentMedian: 0.5,
+        baselineP95: 1.2,
+        incidentP95: 0.7,
+        ratio: 0.5,
+        robustZ: -3,
+        direction: "decrease",
+        score: 3,
+        rawRef: "raw",
+      })),
+      peerOutliers: Array.from({ length: 20 }, (_, index) => ({
+        entitySet: "service",
+        entity: `svc-${index}`,
+        metric: "cpu_usage_total",
+        incidentMedian: 0.5,
+        peerMedian: 1,
+        ratio: 0.5,
+        rawRef: "raw",
+      })),
+      sample: Array.from({ length: 20 }, (_, index) => ({
+        time: `2026-01-01T00:00:${String(index).padStart(2, "0")}Z`,
+        value: index,
+      })),
+    },
+  }) as {
+    data: {
+      anomalies: unknown[];
+      peerOutliers: unknown[];
+      sampleOmitted: number;
+      directionCounts: { increase: number; decrease: number; flat: number };
+      sample?: unknown[];
+    };
+  };
+
+  assert.equal(compact.data.anomalies.length, 12);
+  assert.equal(compact.data.peerOutliers.length, 8);
+  assert.equal(compact.data.sampleOmitted, 20);
+  assert.equal("sample" in compact.data, false);
+  assert.equal(compact.data.directionCounts.decrease, 12);
+});
+
+test("agentic tool success persists an observation independently from evidence", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-chat-observation-"));
+  try {
+    const repository = new InvestigationRepository(directory);
+    const current = investigation("INV-agentic-observation");
+    current.observations = [];
+    await repository.save(current);
+
+    const fakeTools = {
+      execute: async () => ({
+        tool: "query_metrics",
+        arguments: {},
+        result: {
+          caseId: "t999",
+          modality: "metric",
+          query: {},
+          matchedRows: 10,
+          returnedRows: 1,
+          truncated: false,
+          rawRef: "rca100://t999/metrics.parquet?q=x",
+          data: {
+            anomalies: [{
+              entitySet: "service",
+              entity: "email",
+              metric: "cpu_usage_total",
+              baselineCount: 10,
+              incidentCount: 5,
+              baselineMedian: 1,
+              incidentMedian: 0.5,
+              baselineP95: 1.2,
+              incidentP95: 0.7,
+              ratio: 0.5,
+              robustZ: -3,
+              direction: "decrease",
+              score: 3,
+              rawRef: "raw",
+            }],
+            peerOutliers: [],
+            sample: [{ time: "2026-01-01T00:00:00Z", value: 0.5 }],
+          },
+        },
+        rawRef: "rca100://t999/metrics.parquet?q=x",
+        summary: "query_metrics: matched 10, returned 1",
+      }),
+    };
+
+    const service = new RcaService(
+      {} as RcaOrchestrator,
+      repository,
+      undefined,
+      fakeTools as never,
+    );
+    const bus = await (service as unknown as {
+      busFor(id: string): Promise<unknown>;
+    }).busFor(current.id);
+    const recorded = await (service as unknown as {
+      invokeRecordedTool(
+        investigation: Investigation,
+        bus: unknown,
+        tool: "query_metrics",
+        arguments_: Record<string, unknown>,
+      ): Promise<{ observationId?: string }>;
+    }).invokeRecordedTool(current, bus, "query_metrics", {
+      caseId: "t999",
+      from: current.alertContext.window.from,
+      to: current.alertContext.window.to,
+    });
+
+    assert.equal(recorded.observationId, "O01");
+    const saved = await repository.get(current.id);
+    assert.equal(saved.observations?.length, 1);
+    assert.equal(saved.evidence.length, 1);
+    assert.equal(saved.observations?.[0]?.toolCallId, "C01");
+    assert.match(saved.observations?.[0]?.summary ?? "", /email cpu_usage_total/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
