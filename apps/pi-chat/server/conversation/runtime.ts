@@ -117,10 +117,13 @@ export async function createRuntime(options: RuntimeOptions) {
         },
       },
     });
+    const rcaToolDefinitions = rcaTools?.createPiTools() ?? [];
     const agentSession = await createAgentSessionFromServices({
       services,
       sessionManager,
-      customTools: [utcTimeTool, ...(rcaTools?.createPiTools() ?? [])],
+      noTools: "builtin",
+      tools: [utcTimeTool.name, ...rcaToolDefinitions.map((tool) => tool.name)],
+      customTools: [utcTimeTool, ...rcaToolDefinitions],
     });
 
     await agentSession.session.bindExtensions({});
