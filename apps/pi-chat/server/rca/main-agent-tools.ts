@@ -44,6 +44,14 @@ function compactInvestigation(investigation: Investigation) {
     scope: investigation.scope,
     rounds: investigation.rounds,
     hypotheses: investigation.hypotheses,
+    observations: (investigation.observations ?? []).map((item) => ({
+      id: item.id,
+      modality: item.modality,
+      toolCallId: item.toolCallId,
+      expertTaskId: item.expertTaskId,
+      summary: item.summary,
+      rawRef: item.rawRef,
+    })),
     evidence: investigation.evidence.map((item) => ({
       id: item.id,
       modality: item.modality,
@@ -63,6 +71,7 @@ function compactInvestigation(investigation: Investigation) {
       hypothesisIds: item.hypothesisIds,
       evidenceIds: item.evidenceIds,
       finding: item.finding,
+      diagnostics: item.diagnostics,
     })),
     rootCause: investigation.rootCause,
   };
