@@ -34,6 +34,15 @@ export interface ToolExecution {
   summary: string;
 }
 
+export interface PiToolFactoryOptions {
+  names?: readonly ObservabilityToolName[];
+  execute?: (
+    name: ObservabilityToolName,
+    toolCallId: string,
+    parameters: Record<string, unknown>,
+  ) => Promise<unknown>;
+}
+
 function throwIfCancelled(signal?: AbortSignal): void {
   if (signal?.aborted) {
     throw new DOMException("Investigation cancelled", "AbortError");
@@ -155,7 +164,7 @@ export class ObservabilityToolRegistry {
     };
   }
 
-  createPiTools(): ToolDefinition[] {
+  createPiTools(options: PiToolFactoryOptions = {}): ToolDefinition[] {
     const caseParameter = {
       caseId: Type.String({ description: "RCA100 case id, for example t039" }),
     };
@@ -166,10 +175,12 @@ export class ObservabilityToolRegistry {
     };
     const execute =
       (name: ObservabilityToolName) =>
-      async (_toolCallId: string, parameters: Record<string, unknown>) =>
-        toolResult((await this.execute(name, parameters)).result);
+      async (toolCallId: string, parameters: Record<string, unknown>) =>
+        options.execute
+          ? options.execute(name, toolCallId, parameters)
+          : toolResult((await this.execute(name, parameters)).result);
 
-    return [
+    const definitions = [
       defineTool({
         name: "get_alert_context",
         label: "Get alert context",
@@ -296,5 +307,9 @@ export class ObservabilityToolRegistry {
         execute: execute("get_service_dependencies"),
       }),
     ];
+    const allowed = options.names ? new Set(options.names) : undefined;
+    return allowed
+      ? definitions.filter((definition) => allowed.has(definition.name as ObservabilityToolName))
+      : definitions;
   }
 }
