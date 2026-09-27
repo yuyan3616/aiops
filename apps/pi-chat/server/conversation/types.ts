@@ -3,9 +3,17 @@ import type { MessageListItem, RuntimeStatus } from "@shared/types";
 
 import type { EventChannel } from "./channel";
 
+export interface ConversationTitleMeta {
+  source: "default" | "fallback" | "llm" | "user";
+  locked: boolean;
+  generation: number;
+  generatedAt?: string;
+}
+
 export interface ConversationRecord {
   id: string;
   title: string;
+  titleMeta?: ConversationTitleMeta;
   workspaceDir: string;
   sessionId: string;
   sessionFile: string;
