@@ -37,7 +37,7 @@ The repository includes a single-service Railway deployment for the Pi Chat RCA 
 - The Docker image installs dependencies, downloads only the agent-facing RCA100 `t039` telemetry, and builds Pi Chat.
 - Railway exposes the Vite preview server on `$PORT`.
 - `/api` is proxied inside the container to the Hono backend on port `4328`.
-- The public demo defaults to `RCA_AGENTIC_PLANNER=false`, so it works without a model API key while still showing the full investigation/tool/evidence stream.
-- To enable the Pi coordinator planner later, set `RCA_AGENTIC_PLANNER=true` and configure `RCA_MODEL_PROVIDER` / `RCA_MODEL_ID` plus the provider credentials in Railway variables.
+- RCA runs through the same Pi Main Agent used by the chat session. The Main Agent owns hypotheses and dispatches Pi specialist sessions for Trace, Metrics, Log, and Event/Topology checks.
+- Configure the model provider credentials used by Pi Chat (for the Railway demo this is the Packy-compatible provider); there is no separate RCA planner flag or deterministic fallback runtime.
 
 The deployment source should use branch `feat/pi-chat-rca` and the repository root, where `Dockerfile` and `railway.json` are located.
