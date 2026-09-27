@@ -27,6 +27,7 @@ import type {
 import { EventChannel } from "./channel";
 import { applyExternalStreamEvent, mergeMessageLists } from "./external-stream";
 import { ConversationViewBuilder, extractImages, extractText, resultText } from "./helper";
+import { normalizePromptError, runDetached } from "./async-task";
 import { ConversationRepository } from "./repository";
 import { createRuntime } from "./runtime";
 import type { ConversationRecord, ManagedSession } from "./types";
@@ -96,7 +97,18 @@ export class ConversationService {
 
     const managedSession = await this.ensureManagedSession(conversationId, validSelectedSkills);
     const session = managedSession.runtime.session;
-    session.prompt(cleanedUserInput);
+    runDetached(
+      () => session.prompt(cleanedUserInput),
+      (cause) => {
+        const message = normalizePromptError(cause);
+        managedSession.error = message;
+        managedSession.streamMessageId = undefined;
+        managedSession.streamThinkingId = undefined;
+        managedSession.channel.publish("runtime.error", { error: message });
+        this.setStatus(managedSession, "error");
+        managedSession.channel.publish("runtime.settled", {});
+      },
+    );
   }
 
   public async snapshot(id: string): Promise<ConversationSnapshot> {
