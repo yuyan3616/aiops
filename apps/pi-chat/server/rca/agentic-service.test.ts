@@ -437,6 +437,8 @@ test("agentic tool success persists an observation independently from evidence",
     assert.equal(saved.evidence.length, 1);
     assert.equal(saved.observations?.[0]?.toolCallId, "C01");
     assert.match(saved.observations?.[0]?.summary ?? "", /email cpu_usage_total/);
+    assert.ok(saved.toolCalls[0]?.runtime?.before.rssMb);
+    assert.ok(saved.toolCalls[0]?.runtime?.after?.rssMb);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -556,6 +558,139 @@ test("dispatch rejects a baseline window that overlaps the main incident window"
       ]),
       /baselineWindow overlaps mainWindow/,
     );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+
+test("compact trace results bound critical-path context while preserving raw refs", async () => {
+  const { compactToolResultForAgent } = await import("./tools");
+  const node = (index: number) => ({
+    service: `svc-${index}`,
+    operation: `op-${index}`,
+    host: `host-${index}`,
+    startTime: "2026-01-01T00:00:00.000Z",
+    endTime: "2026-01-01T00:00:01.000Z",
+    durationMs: 1000 - index,
+    spanId: `s-${index}`,
+    parentSpanId: index ? `s-${index - 1}` : undefined,
+    statusCode: "OK",
+  });
+  const compact = compactToolResultForAgent("query_traces", {
+    caseId: "t999",
+    modality: "trace",
+    query: { service: "checkout" },
+    matchedRows: 100,
+    returnedRows: 50,
+    truncated: true,
+    rawRef: "rca100://t999/traces.parquet?q=x",
+    data: {
+      anomalies: Array.from({ length: 15 }, (_, index) => ({
+        service: `svc-${index}`,
+        operation: `op-${index}`,
+        host: `host-${index}`,
+        baselineCount: 10,
+        incidentCount: 5,
+        baselineP95Ms: 10,
+        incidentP95Ms: 100,
+        ratio: 10,
+        maxIncidentMs: 200,
+        rawRef: `raw-${index}`,
+      })),
+      topSpans: Array.from({ length: 20 }, (_, index) => node(index)),
+      criticalPaths: Array.from({ length: 6 }, (_, index) => ({
+        traceId: `trace-${index}`,
+        totalDurationMs: 1000,
+        path: Array.from({ length: 15 }, (_, nodeIndex) => node(nodeIndex)),
+        rawRef: `trace-raw-${index}`,
+      })),
+      propagationCandidates: Array.from({ length: 15 }, (_, index) => ({
+        service: `svc-${index}`,
+        operation: `op-${index}`,
+        observations: 5,
+        medianDurationMs: 100,
+      })),
+    },
+  }) as {
+    data: {
+      anomalies: unknown[];
+      topSpans: unknown[];
+      criticalPaths: Array<{ path: unknown[]; pathNodesOmitted: number; rawRef: string }>;
+      propagationCandidates: unknown[];
+      omitted: Record<string, number>;
+    };
+  };
+
+  assert.equal(compact.data.anomalies.length, 8);
+  assert.equal(compact.data.topSpans.length, 10);
+  assert.equal(compact.data.criticalPaths.length, 3);
+  assert.equal(compact.data.criticalPaths[0]?.path.length, 8);
+  assert.equal(compact.data.criticalPaths[0]?.pathNodesOmitted, 7);
+  assert.equal(compact.data.criticalPaths[0]?.rawRef, "trace-raw-0");
+  assert.equal(compact.data.propagationCandidates.length, 8);
+  assert.equal(compact.data.omitted.anomalies, 7);
+});
+
+test("conclusion rejects any hypothesis left outside selected rejected or unresolved buckets", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-chat-hypothesis-closure-"));
+  try {
+    const repository = new InvestigationRepository(directory);
+    const service = new RcaService({} as RcaOrchestrator, repository);
+    const current = investigation("INV-hypothesis-closure");
+    current.hypotheses.push(
+      {
+        id: "H01",
+        statement: "shipping is the likely root cause",
+        status: "supported",
+        confidence: 0.75,
+        supportingEvidenceIds: ["E01"],
+        contradictingEvidenceIds: [],
+        nextChecks: [],
+      },
+      {
+        id: "H02",
+        statement: "another downstream may explain the latency",
+        status: "investigating",
+        confidence: 0.1,
+        supportingEvidenceIds: [],
+        contradictingEvidenceIds: ["E01"],
+        nextChecks: [],
+      },
+    );
+    await repository.save(current);
+
+    await assert.rejects(
+      service.concludeAgentic(current.id, {
+        status: "probable",
+        rootCauseEntities: ["shipping"],
+        summary: "shipping is the best-supported explanation",
+        evidenceIds: ["E01"],
+        selectedHypothesisIds: ["H01"],
+        rejectedHypotheses: [],
+        unresolvedHypotheses: [],
+        confidence: 0.75,
+      }),
+      /leaves hypotheses unaccounted for: H02/,
+    );
+
+    const concluded = await service.concludeAgentic(current.id, {
+      status: "probable",
+      rootCauseEntities: ["shipping"],
+      summary: "shipping is the best-supported explanation",
+      evidenceIds: ["E01"],
+      selectedHypothesisIds: ["H01"],
+      rejectedHypotheses: [],
+      unresolvedHypotheses: [
+        {
+          id: "H02",
+          reason: "The trace contradicts this branch but no dedicated downstream check was run.",
+          missingEvidence: ["direct verification of the alternate downstream"],
+        },
+      ],
+      confidence: 0.75,
+    });
+    assert.equal(concluded.investigation.rootCause?.unresolvedHypotheses?.[0]?.id, "H02");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
