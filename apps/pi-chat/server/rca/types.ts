@@ -192,7 +192,7 @@ export interface Investigation {
   alertContext: AlertContext;
   scope: InvestigationScope;
   hypotheses: Hypothesis[];
-  observations: Observation[];
+  observations?: Observation[];
   evidence: Evidence[];
   expertTasks: ExpertTask[];
   toolCalls: ToolCallRecord[];
