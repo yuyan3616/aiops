@@ -1,14 +1,11 @@
+import { randomUUID } from "node:crypto";
+
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
 import {
   InvestigationEventBus,
   type InvestigationEventListener,
 } from "./events";
-import {
-  createInvestigationId,
-  RcaOrchestrator,
-  type InvestigationRunResult,
-} from "./orchestrator";
 import { getParquetRuntimeDiagnostics } from "./parquet";
 import {
   PiExpertRunError,
@@ -38,24 +35,6 @@ import type {
   RuntimeResourceSnapshot,
   ToolCallRecord,
 } from "./types";
-
-export interface StartInvestigationOptions {
-  conversationId?: string;
-  onEvent?: InvestigationEventListener;
-  onCompleted?: (investigation: Investigation, report: string) => void | Promise<void>;
-  onFailed?: (error: Error) => void | Promise<void>;
-}
-
-export interface InvestigationRunHandle {
-  investigationId: string;
-  promise: Promise<InvestigationRunResult>;
-}
-
-interface RunningInvestigation {
-  conversationId?: string;
-  controller: AbortController;
-  promise: Promise<InvestigationRunResult>;
-}
 
 interface RunningAgenticInvestigation {
   conversationId?: string;
@@ -156,6 +135,13 @@ function now(): string {
   return new Date().toISOString();
 }
 
+function createInvestigationId(): string {
+  return `INV-${new Date()
+    .toISOString()
+    .replace(/[-:.TZ]/g, "")
+    .slice(0, 14)}-${randomUUID().slice(0, 8)}`;
+}
+
 function checkCancelled(signal?: AbortSignal): void {
   if (signal?.aborted) throw new DOMException("Investigation cancelled", "AbortError");
 }
@@ -242,65 +228,21 @@ function observationFacts(
 }
 
 export class RcaService {
-  private readonly orchestrator: RcaOrchestrator;
   private readonly repository: InvestigationRepository;
   private readonly tools?: ObservabilityToolRegistry;
   private readonly expertRunner?: PiExpertRunner;
-  private readonly running = new Map<string, RunningInvestigation>();
   private readonly agenticRunning = new Map<string, RunningAgenticInvestigation>();
   private readonly eventBuses = new Map<string, InvestigationEventBus>();
   private readonly saveQueues = new Map<string, Promise<void>>();
 
   constructor(
-    orchestrator: RcaOrchestrator,
     repository: InvestigationRepository,
     modelRuntime?: ModelRuntime,
     tools?: ObservabilityToolRegistry,
   ) {
-    this.orchestrator = orchestrator;
     this.repository = repository;
     this.tools = tools;
     this.expertRunner = modelRuntime && tools ? new PiExpertRunner(modelRuntime, tools) : undefined;
-  }
-
-  // Legacy deterministic/Planner-backed path kept temporarily for rollback and regression tests.
-  start(caseId: string, options: StartInvestigationOptions = {}): string {
-    const handle = this.run(caseId, options);
-    void handle.promise.catch(() => undefined);
-    return handle.investigationId;
-  }
-
-  run(caseId: string, options: StartInvestigationOptions = {}): InvestigationRunHandle {
-    const id = createInvestigationId();
-    const controller = new AbortController();
-    const promise = Promise.resolve()
-      .then(() =>
-        this.orchestrator.investigate({
-          caseId,
-          investigationId: id,
-          signal: controller.signal,
-          onEvent: options.onEvent,
-        }),
-      )
-      .then(async (result) => {
-        await options.onCompleted?.(result.investigation, result.report);
-        return result;
-      })
-      .catch(async (cause: unknown) => {
-        const error = cause instanceof Error ? cause : new Error(String(cause));
-        await options.onFailed?.(error);
-        throw error;
-      })
-      .finally(() => {
-        this.running.delete(id);
-      });
-
-    this.running.set(id, {
-      conversationId: options.conversationId,
-      controller,
-      promise,
-    });
-    return { investigationId: id, promise };
   }
 
   async beginAgentic(
@@ -1045,11 +987,6 @@ export class RcaService {
 
   cancel(investigationId: string): boolean {
     let cancelled = false;
-    const legacy = this.running.get(investigationId);
-    if (legacy) {
-      legacy.controller.abort();
-      cancelled = true;
-    }
     const agentic = this.agenticRunning.get(investigationId);
     if (agentic) {
       agentic.controller.abort();
@@ -1061,11 +998,6 @@ export class RcaService {
 
   cancelConversation(conversationId: string): number {
     const ids = new Set<string>();
-    for (const [id, running] of this.running) {
-      if (running.conversationId !== conversationId) continue;
-      running.controller.abort();
-      ids.add(id);
-    }
     for (const [id, running] of this.agenticRunning) {
       if (running.conversationId !== conversationId) continue;
       running.controller.abort();
