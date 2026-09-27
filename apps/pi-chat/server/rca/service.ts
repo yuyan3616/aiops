@@ -23,6 +23,7 @@ import {
 } from "./tools";
 import type {
   AgentExpertFinding,
+  AgentRunDiagnostics,
   Evidence,
   EvidenceModality,
   ExpertTask,
@@ -90,6 +91,8 @@ export interface DispatchedFinding {
   status: ExpertTask["status"];
   finding: AgentExpertFinding;
   evidenceIds: string[];
+  observationIds: string[];
+  diagnostics?: AgentRunDiagnostics;
 }
 
 function now(): string {
@@ -559,12 +562,17 @@ export class RcaService {
             expertTask: task,
             finding,
           });
+          const observationIds = (investigation.observations ?? [])
+            .filter((item) => item.expertTaskId === task.id)
+            .map((item) => item.id);
           return {
             taskRef: task.id,
             role: task.expert,
             status: task.status,
             finding,
             evidenceIds: [...task.evidenceIds],
+            observationIds,
+            ...(task.diagnostics ? { diagnostics: task.diagnostics } : {}),
           };
         } catch (error) {
           const cancelled = running.controller.signal.aborted || isAbortError(error);
@@ -592,12 +600,23 @@ export class RcaService {
             { expertTask: task, finding },
           );
           if (cancelled) throw error;
+          const observationIds = (investigation.observations ?? [])
+            .filter((item) => item.expertTaskId === task.id)
+            .map((item) => item.id);
+          if (observationIds.length > 0) {
+            finding.summary = `${finding.summary} ${observationIds.length} tool-backed observations were retained for recovery.`;
+            finding.suggestedFollowUps = [
+              "Use get_investigation_state to inspect retained observations before deciding whether a narrower recovery brief is needed.",
+            ];
+          }
           return {
             taskRef: task.id,
             role: task.expert,
             status: task.status,
             finding,
             evidenceIds: [],
+            observationIds,
+            ...(task.diagnostics ? { diagnostics: task.diagnostics } : {}),
           };
         }
       }),
