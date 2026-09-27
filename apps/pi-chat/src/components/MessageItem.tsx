@@ -28,7 +28,6 @@ export function MessageItem({
         <div className="agent-identity assistant-agent-identity">
           <span className="agent-identity-avatar">P</span>
           <strong>Main Agent</strong>
-          <span className="agent-identity-context">回答</span>
         </div>
       )}
       <article className={"message-row " + (user ? "user-row" : "")}>
