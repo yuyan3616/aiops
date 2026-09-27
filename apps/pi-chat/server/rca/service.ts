@@ -63,9 +63,8 @@ interface RunningAgenticInvestigation {
 
 export type RcaOverviewKind = "alerts" | "dependencies" | "metrics" | "traces" | "topology";
 
-export interface HypothesisMutation {
-  id?: string;
-  statement?: string;
+interface HypothesisMutationBase {
+  requestId?: string;
   status?: HypothesisStatus;
   confidence?: number;
   supportingEvidenceIds?: string[];
@@ -73,6 +72,48 @@ export interface HypothesisMutation {
   nextChecks?: string[];
   entity?: string;
   mechanism?: string;
+}
+
+export interface CreateHypothesisMutation extends HypothesisMutationBase {
+  op: "create";
+  id?: string;
+  statement: string;
+  supersedes?: string;
+}
+
+export interface UpdateHypothesisMutation extends HypothesisMutationBase {
+  op: "update";
+  id: string;
+}
+
+export type HypothesisMutation = CreateHypothesisMutation | UpdateHypothesisMutation;
+
+export type HypothesisMutationRejectionCode =
+  | "MISSING_STATEMENT"
+  | "INVALID_ID"
+  | "DUPLICATE_ID"
+  | "HYPOTHESIS_NOT_FOUND"
+  | "UNKNOWN_EVIDENCE"
+  | "INVALID_SUPERSEDES";
+
+export interface HypothesisMutationAccepted {
+  requestId?: string;
+  op: HypothesisMutation["op"];
+  hypothesisId: string;
+}
+
+export interface HypothesisMutationRejected {
+  requestId?: string;
+  op: HypothesisMutation["op"];
+  hypothesisId?: string;
+  code: HypothesisMutationRejectionCode;
+  message: string;
+}
+
+export interface HypothesisMutationBatchResult {
+  accepted: HypothesisMutationAccepted[];
+  rejected: HypothesisMutationRejected[];
+  hypotheses: Hypothesis[];
 }
 
 export interface AgenticBeginOptions {
@@ -406,87 +447,221 @@ export class RcaService {
   async updateHypotheses(
     investigationId: string,
     mutations: HypothesisMutation[],
-  ): Promise<Hypothesis[]> {
+  ): Promise<HypothesisMutationBatchResult> {
     const investigation = await this.repository.get(investigationId);
     this.assertConcludable(investigation);
     const bus = await this.busFor(investigationId);
     const evidenceIds = new Set(investigation.evidence.map((item) => item.id));
+    const working = investigation.hypotheses.map((item) => ({
+      ...item,
+      supportingEvidenceIds: [...item.supportingEvidenceIds],
+      contradictingEvidenceIds: [...item.contradictingEvidenceIds],
+      nextChecks: [...item.nextChecks],
+    }));
+    const accepted: HypothesisMutationAccepted[] = [];
+    const rejected: HypothesisMutationRejected[] = [];
+    const pendingEvents: Array<{
+      type: "hypothesis.created" | "hypothesis.updated";
+      summary: string;
+      payload: Record<string, unknown>;
+    }> = [];
+
+    const reject = (
+      mutation: HypothesisMutation,
+      code: HypothesisMutationRejectionCode,
+      message: string,
+      hypothesisId?: string,
+    ) => {
+      rejected.push({
+        ...(mutation.requestId ? { requestId: mutation.requestId } : {}),
+        op: mutation.op,
+        ...(hypothesisId ? { hypothesisId } : {}),
+        code,
+        message,
+      });
+    };
+
+    const validateEvidence = (
+      mutation: HypothesisMutation,
+      ids: string[],
+      hypothesisId?: string,
+    ): boolean => {
+      for (const evidenceId of ids) {
+        if (evidenceIds.has(evidenceId)) continue;
+        reject(
+          mutation,
+          "UNKNOWN_EVIDENCE",
+          `Hypothesis references unknown evidence ${evidenceId}`,
+          hypothesisId,
+        );
+        return false;
+      }
+      return true;
+    };
+
+    const nextWorkingId = (): string => {
+      let index = working.length + 1;
+      while (working.some((item) => item.id === `H${String(index).padStart(2, "0")}`)) {
+        index++;
+      }
+      return `H${String(index).padStart(2, "0")}`;
+    };
 
     for (const mutation of mutations.slice(0, 8)) {
-      const requestedId = mutation.id?.trim();
-      const existing = requestedId
-        ? investigation.hypotheses.find((item) => item.id === requestedId)
-        : undefined;
-      const supportingEvidenceIds = mutation.supportingEvidenceIds ?? existing?.supportingEvidenceIds ?? [];
-      const contradictingEvidenceIds =
-        mutation.contradictingEvidenceIds ?? existing?.contradictingEvidenceIds ?? [];
-      for (const evidenceId of [...supportingEvidenceIds, ...contradictingEvidenceIds]) {
-        if (!evidenceIds.has(evidenceId)) {
-          throw new Error(`Hypothesis references unknown evidence ${evidenceId}`);
+      if (mutation.op === "create") {
+        const statement = mutation.statement?.trim();
+        if (!statement) {
+          reject(mutation, "MISSING_STATEMENT", "New hypotheses require a statement");
+          continue;
         }
-      }
 
-      if (!existing) {
-        if (!mutation.statement?.trim()) {
-          throw new Error("New hypotheses require a statement");
+        const requestedId = mutation.id?.trim();
+        if (requestedId && !/^H\d+$/.test(requestedId)) {
+          reject(
+            mutation,
+            "INVALID_ID",
+            `Hypothesis id ${requestedId} must match H<number>`,
+            requestedId,
+          );
+          continue;
         }
-        const id =
-          requestedId && /^H\d+$/.test(requestedId) && !investigation.hypotheses.some((h) => h.id === requestedId)
-            ? requestedId
-            : this.nextHypothesisId(investigation);
+        if (requestedId && working.some((item) => item.id === requestedId)) {
+          reject(
+            mutation,
+            "DUPLICATE_ID",
+            `Hypothesis ${requestedId} already exists`,
+            requestedId,
+          );
+          continue;
+        }
+
+        const supportingEvidenceIds = [...new Set(mutation.supportingEvidenceIds ?? [])];
+        const contradictingEvidenceIds = [...new Set(mutation.contradictingEvidenceIds ?? [])];
+        if (
+          !validateEvidence(
+            mutation,
+            [...supportingEvidenceIds, ...contradictingEvidenceIds],
+            requestedId,
+          )
+        ) {
+          continue;
+        }
+
+        const supersedes = mutation.supersedes?.trim();
+        if (supersedes && !working.some((item) => item.id === supersedes)) {
+          reject(
+            mutation,
+            "INVALID_SUPERSEDES",
+            `Superseded hypothesis ${supersedes} does not exist`,
+            requestedId,
+          );
+          continue;
+        }
+
+        const id = requestedId ?? nextWorkingId();
         const hypothesis: Hypothesis = {
           id,
-          statement: mutation.statement.trim().slice(0, 1000),
+          statement: statement.slice(0, 1000),
           status: mutation.status ?? "possible",
           confidence: clampConfidence(mutation.confidence),
-          supportingEvidenceIds: [...new Set(supportingEvidenceIds)],
-          contradictingEvidenceIds: [...new Set(contradictingEvidenceIds)],
+          supportingEvidenceIds,
+          contradictingEvidenceIds,
           nextChecks: (mutation.nextChecks ?? []).filter(Boolean).slice(0, 10),
           ...(mutation.entity?.trim() ? { entity: mutation.entity.trim().slice(0, 200) } : {}),
           ...(mutation.mechanism?.trim()
             ? { mechanism: mutation.mechanism.trim().slice(0, 1000) }
             : {}),
+          ...(supersedes ? { supersedes } : {}),
         };
-        investigation.hypotheses.push(hypothesis);
-        await bus.publish("hypothesis.created", `${hypothesis.id}: ${hypothesis.statement}`, {
-          hypothesis,
-          source: "main-agent",
+        working.push(hypothesis);
+        accepted.push({
+          ...(mutation.requestId ? { requestId: mutation.requestId } : {}),
+          op: mutation.op,
+          hypothesisId: id,
+        });
+        pendingEvents.push({
+          type: "hypothesis.created",
+          summary: `${hypothesis.id}: ${hypothesis.statement}`,
+          payload: {
+            hypothesis,
+            source: "main-agent",
+          },
         });
         continue;
       }
 
-      const previous = existing.status;
-      if (
-        mutation.statement?.trim() &&
-        mutation.statement.trim().slice(0, 1000) !== existing.statement
-      ) {
-        throw new Error(
-          `Hypothesis ${existing.id} statement is immutable; create a new hypothesis id for a revised meaning`,
+      const requestedId = mutation.id.trim();
+      const existing = working.find((item) => item.id === requestedId);
+      if (!existing) {
+        reject(
+          mutation,
+          "HYPOTHESIS_NOT_FOUND",
+          `Hypothesis ${requestedId} does not exist`,
+          requestedId,
         );
+        continue;
       }
+
+      const supportingEvidenceIds = [
+        ...new Set(mutation.supportingEvidenceIds ?? existing.supportingEvidenceIds),
+      ];
+      const contradictingEvidenceIds = [
+        ...new Set(mutation.contradictingEvidenceIds ?? existing.contradictingEvidenceIds),
+      ];
+      if (
+        !validateEvidence(
+          mutation,
+          [...supportingEvidenceIds, ...contradictingEvidenceIds],
+          requestedId,
+        )
+      ) {
+        continue;
+      }
+
+      const previous = existing.status;
       if (mutation.status) existing.status = mutation.status;
       if (typeof mutation.confidence === "number") {
         existing.confidence = clampConfidence(mutation.confidence, existing.confidence);
       }
-      existing.supportingEvidenceIds = [...new Set(supportingEvidenceIds)];
-      existing.contradictingEvidenceIds = [...new Set(contradictingEvidenceIds)];
+      existing.supportingEvidenceIds = supportingEvidenceIds;
+      existing.contradictingEvidenceIds = contradictingEvidenceIds;
       if (mutation.nextChecks) existing.nextChecks = mutation.nextChecks.filter(Boolean).slice(0, 10);
       if (mutation.entity?.trim()) existing.entity = mutation.entity.trim().slice(0, 200);
       if (mutation.mechanism?.trim()) existing.mechanism = mutation.mechanism.trim().slice(0, 1000);
 
-      await bus.publish("hypothesis.updated", `${existing.id}: ${previous} → ${existing.status}`, {
-        hypothesisId: existing.id,
-        previous,
-        current: existing.status,
-        hypothesis: existing,
-        supportingEvidenceIds: existing.supportingEvidenceIds,
-        contradictingEvidenceIds: existing.contradictingEvidenceIds,
-        source: "main-agent",
+      accepted.push({
+        ...(mutation.requestId ? { requestId: mutation.requestId } : {}),
+        op: mutation.op,
+        hypothesisId: requestedId,
+      });
+      pendingEvents.push({
+        type: "hypothesis.updated",
+        summary: `${existing.id}: ${previous} → ${existing.status}`,
+        payload: {
+          hypothesisId: existing.id,
+          previous,
+          current: existing.status,
+          hypothesis: { ...existing },
+          supportingEvidenceIds: [...existing.supportingEvidenceIds],
+          contradictingEvidenceIds: [...existing.contradictingEvidenceIds],
+          source: "main-agent",
+        },
       });
     }
 
-    await this.saveInvestigation(investigation);
-    return investigation.hypotheses;
+    if (accepted.length > 0) {
+      investigation.hypotheses = working;
+      await this.saveInvestigation(investigation);
+      for (const event of pendingEvents) {
+        await bus.publish(event.type, event.summary, event.payload);
+      }
+    }
+
+    return {
+      accepted,
+      rejected,
+      hypotheses: investigation.hypotheses,
+    };
   }
 
   async dispatchAgentic(
