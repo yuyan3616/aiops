@@ -5,12 +5,12 @@ import {
 } from "@earendil-works/pi-coding-agent";
 
 import { RcaChatEventMapper, type ChatStreamProjection } from "./chat-events";
-import { createInvestigationId } from "./orchestrator";
-import type {
-  AgenticConclusionInput,
-  HypothesisMutation,
-  RcaOverviewKind,
-  RcaService,
+import {
+  createInvestigationId,
+  type AgenticConclusionInput,
+  type HypothesisMutation,
+  type RcaOverviewKind,
+  type RcaService,
 } from "./service";
 import type {
   Investigation,
