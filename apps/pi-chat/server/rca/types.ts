@@ -57,6 +57,7 @@ export interface Hypothesis {
   nextChecks: string[];
   entity?: string;
   mechanism?: string;
+  supersedes?: string;
 }
 
 export interface Observation {
