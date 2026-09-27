@@ -14,6 +14,7 @@ import {
 } from "./tools";
 import type {
   AgentExpertFinding,
+  AgentRunDiagnostics,
   EvidenceModality,
   ExpertKind,
   Investigation,
@@ -23,6 +24,7 @@ import type {
 
 export interface RecordedAgentToolExecution {
   callId: string;
+  observationId?: string;
   execution: {
     result: unknown;
     summary: string;
@@ -46,7 +48,7 @@ export interface PiExpertRunContext {
 export interface PiExpertRunResult {
   finding: AgentExpertFinding;
   sessionId: string;
-  diagnostics: import("./types").AgentRunDiagnostics;
+  diagnostics: AgentRunDiagnostics;
 }
 
 const ROLE_TOOLS: Record<ExpertKind, readonly ObservabilityToolName[]> = {
