@@ -503,7 +503,9 @@ test("interrupted investigation may still conclude from persisted evidence", asy
       rootCauseEntities: ["shipping"],
       summary: "shipping remains the best-supported cause from persisted evidence",
       evidenceIds: ["E01"],
+      selectedHypothesisIds: ["H01"],
       rejectedHypotheses: [],
+      unresolvedHypotheses: [],
       confidence: 0.65,
       missingEvidence: ["additional metric confirmation after restart"],
     });
