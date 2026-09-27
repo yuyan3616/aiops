@@ -1,4 +1,6 @@
 import type {
+  AgentThreadEvidence,
+  AgentThreadRun,
   BrowserHandoffRequest,
   BrowserState,
   ChatImage,
@@ -240,7 +242,12 @@ export function conversationReducer(
     }
     case "thinking.started": {
       if (!id || items.some((item) => item.kind === "thinking" && item.id === id)) return items;
-      const thinking: ThinkingBlock = { id, text: "" };
+      const thinking: ThinkingBlock = {
+        id,
+        text: "",
+        ...(payload.source === "rca-projection" ? { source: "rca-projection" as const } : {}),
+        ...(typeof payload.label === "string" ? { label: payload.label } : {}),
+      };
       return [...items, { kind: "thinking", id, thinking }];
     }
     case "thinking.delta":
@@ -264,6 +271,64 @@ export function conversationReducer(
             }
           : item,
       );
+    case "agent.started": {
+      const agent = payload.agent as AgentThreadRun | undefined;
+      if (!agent?.id) return items;
+      const exists = items.some((item) => item.kind === "agent" && item.id === agent.id);
+      if (!exists) return [...items, { kind: "agent", id: agent.id, agent }];
+      return updateItem(items, agent.id, (item) =>
+        item.kind === "agent" ? { ...item, agent: { ...item.agent, ...agent } } : item,
+      );
+    }
+    case "agent.tool.started":
+    case "agent.tool.completed": {
+      const agentId = String(payload.agentId ?? "");
+      const tool = payload.tool as ToolRun | undefined;
+      if (!agentId || !tool?.id) return items;
+      return updateItem(items, agentId, (item) => {
+        if (item.kind !== "agent") return item;
+        const index = item.agent.tools.findIndex((entry) => entry.id === tool.id);
+        const tools =
+          index < 0
+            ? [...item.agent.tools, tool]
+            : item.agent.tools.map((entry, toolIndex) =>
+                toolIndex === index ? { ...entry, ...tool } : entry,
+              );
+        return { ...item, agent: { ...item.agent, tools } };
+      });
+    }
+    case "agent.evidence.added": {
+      const agentId = String(payload.agentId ?? "");
+      const evidence = payload.evidence as AgentThreadEvidence | undefined;
+      if (!agentId || !evidence?.id) return items;
+      return updateItem(items, agentId, (item) => {
+        if (item.kind !== "agent") return item;
+        if (item.agent.evidence.some((entry) => entry.id === evidence.id)) return item;
+        return {
+          ...item,
+          agent: { ...item.agent, evidence: [...item.agent.evidence, evidence] },
+        };
+      });
+    }
+    case "agent.completed": {
+      const agentId = String(payload.agentId ?? "");
+      if (!agentId) return items;
+      return updateItem(items, agentId, (item) =>
+        item.kind === "agent"
+          ? {
+              ...item,
+              agent: {
+                ...item.agent,
+                status:
+                  payload.status === "failed" || payload.status === "cancelled"
+                    ? payload.status
+                    : "completed",
+                ...(typeof payload.summary === "string" ? { summary: payload.summary } : {}),
+              },
+            }
+          : item,
+      );
+    }
     case "tool.started":
       return addOrUpdateTool(items, {
         id,
