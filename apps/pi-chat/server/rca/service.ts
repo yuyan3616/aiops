@@ -1,5 +1,9 @@
 import type { InvestigationEventListener } from "./events";
-import { createInvestigationId, RcaOrchestrator } from "./orchestrator";
+import {
+  createInvestigationId,
+  RcaOrchestrator,
+  type InvestigationRunResult,
+} from "./orchestrator";
 import { InvestigationRepository } from "./repository";
 import type { Investigation } from "./types";
 
@@ -10,10 +14,15 @@ export interface StartInvestigationOptions {
   onFailed?: (error: Error) => void | Promise<void>;
 }
 
+export interface InvestigationRunHandle {
+  investigationId: string;
+  promise: Promise<InvestigationRunResult>;
+}
+
 interface RunningInvestigation {
   conversationId?: string;
   controller: AbortController;
-  promise: Promise<void>;
+  promise: Promise<InvestigationRunResult>;
 }
 
 export class RcaService {
@@ -27,10 +36,14 @@ export class RcaService {
   }
 
   start(caseId: string, options: StartInvestigationOptions = {}): string {
+    const handle = this.run(caseId, options);
+    void handle.promise.catch(() => undefined);
+    return handle.investigationId;
+  }
+
+  run(caseId: string, options: StartInvestigationOptions = {}): InvestigationRunHandle {
     const id = createInvestigationId();
     const controller = new AbortController();
-    // Defer execution by one microtask so callers can attach their UI mapper
-    // and publish an immediate progress state before the first RCA event.
     const promise = Promise.resolve()
       .then(() =>
         this.orchestrator.investigate({
@@ -40,18 +53,25 @@ export class RcaService {
           onEvent: options.onEvent,
         }),
       )
-      .then(async ({ investigation, report }) => {
-        await options.onCompleted?.(investigation, report);
+      .then(async (result) => {
+        await options.onCompleted?.(result.investigation, result.report);
+        return result;
       })
       .catch(async (cause: unknown) => {
         const error = cause instanceof Error ? cause : new Error(String(cause));
         await options.onFailed?.(error);
+        throw error;
       })
       .finally(() => {
         this.running.delete(id);
       });
-    this.running.set(id, { conversationId: options.conversationId, controller, promise });
-    return id;
+
+    this.running.set(id, {
+      conversationId: options.conversationId,
+      controller,
+      promise,
+    });
+    return { investigationId: id, promise };
   }
 
   get(investigationId: string): Promise<Investigation> {
