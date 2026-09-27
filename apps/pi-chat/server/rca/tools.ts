@@ -85,10 +85,116 @@ export function compactToolResultForAgent(
   tool: ObservabilityToolName,
   result: unknown,
 ): unknown {
-  if (tool !== "query_metrics") return result;
   const envelope = objectValue(result);
   const data = objectValue(envelope?.data);
   if (!envelope || !data) return result;
+
+  if (tool === "query_traces") {
+    const anomalies = Array.isArray(data.anomalies)
+      ? data.anomalies
+          .filter((item): item is Record<string, unknown> => Boolean(objectValue(item)))
+          .slice(0, 8)
+          .map((item) => ({
+            service: item.service,
+            operation: item.operation,
+            host: item.host,
+            baselineCount: item.baselineCount,
+            incidentCount: item.incidentCount,
+            baselineP95Ms: item.baselineP95Ms,
+            incidentP95Ms: item.incidentP95Ms,
+            ratio: item.ratio,
+            maxIncidentMs: item.maxIncidentMs,
+            rawRef: item.rawRef,
+          }))
+      : [];
+
+    const topSpans = Array.isArray(data.topSpans)
+      ? data.topSpans
+          .filter((item): item is Record<string, unknown> => Boolean(objectValue(item)))
+          .slice(0, 10)
+          .map((item) => ({
+            service: item.service,
+            operation: item.operation,
+            host: item.host,
+            startTime: item.startTime,
+            endTime: item.endTime,
+            durationMs: item.durationMs,
+            spanId: item.spanId,
+            parentSpanId: item.parentSpanId,
+            statusCode: item.statusCode,
+          }))
+      : [];
+
+    const criticalPaths = Array.isArray(data.criticalPaths)
+      ? data.criticalPaths
+          .filter((item): item is Record<string, unknown> => Boolean(objectValue(item)))
+          .slice(0, 3)
+          .map((item) => ({
+            traceId: item.traceId,
+            totalDurationMs: item.totalDurationMs,
+            rawRef: item.rawRef,
+            path: Array.isArray(item.path)
+              ? item.path
+                  .filter((node): node is Record<string, unknown> => Boolean(objectValue(node)))
+                  .slice(0, 8)
+                  .map((node) => ({
+                    service: node.service,
+                    operation: node.operation,
+                    host: node.host,
+                    startTime: node.startTime,
+                    endTime: node.endTime,
+                    durationMs: node.durationMs,
+                    spanId: node.spanId,
+                    parentSpanId: node.parentSpanId,
+                    statusCode: node.statusCode,
+                  }))
+              : [],
+            pathNodesOmitted:
+              Array.isArray(item.path) && item.path.length > 8 ? item.path.length - 8 : 0,
+          }))
+      : [];
+
+    const propagationCandidates = Array.isArray(data.propagationCandidates)
+      ? data.propagationCandidates
+          .filter((item): item is Record<string, unknown> => Boolean(objectValue(item)))
+          .slice(0, 8)
+          .map((item) => ({
+            service: item.service,
+            operation: item.operation,
+            host: item.host,
+            observations: item.observations,
+            medianDurationMs: item.medianDurationMs,
+          }))
+      : [];
+
+    return {
+      caseId: envelope.caseId,
+      modality: envelope.modality,
+      query: envelope.query,
+      matchedRows: envelope.matchedRows,
+      returnedRows: envelope.returnedRows,
+      truncated: envelope.truncated,
+      rawRef: envelope.rawRef,
+      data: {
+        anomalies,
+        topSpans,
+        criticalPaths,
+        propagationCandidates,
+        omitted: {
+          anomalies: Math.max(0, (Array.isArray(data.anomalies) ? data.anomalies.length : 0) - anomalies.length),
+          topSpans: Math.max(0, (Array.isArray(data.topSpans) ? data.topSpans.length : 0) - topSpans.length),
+          criticalPaths: Math.max(0, (Array.isArray(data.criticalPaths) ? data.criticalPaths.length : 0) - criticalPaths.length),
+          propagationCandidates: Math.max(
+            0,
+            (Array.isArray(data.propagationCandidates) ? data.propagationCandidates.length : 0) -
+              propagationCandidates.length,
+          ),
+        },
+      },
+    };
+  }
+
+  if (tool !== "query_metrics") return result;
 
   const anomalies = Array.isArray(data.anomalies)
     ? data.anomalies
