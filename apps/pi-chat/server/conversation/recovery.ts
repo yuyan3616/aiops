@@ -22,6 +22,17 @@ function investigationIdForAgent(agentId: string): string | undefined {
   return index > 0 ? agentId.slice(0, index) : undefined;
 }
 
+function wasInterruptedByRestart(
+  investigation: Investigation,
+  explicitFlag?: boolean,
+): boolean {
+  if (explicitFlag) return true;
+  return (
+    investigation.status === "interrupted" &&
+    /process restart/i.test(investigation.error ?? "")
+  );
+}
+
 function reconcileAgentTools(
   investigation: Investigation,
   taskId: string,
@@ -44,7 +55,9 @@ function reconcileAgentTools(
       ...detailsRecord(existing?.details),
       ...(call.expertTaskId ? { expertTaskId: call.expertTaskId } : {}),
       ...(call.rawRef ? { rawRef: call.rawRef } : {}),
-      ...(call.interruptedByRestart ? { interruptedByRestart: true } : {}),
+      ...(wasInterruptedByRestart(investigation, call.interruptedByRestart)
+        ? { interruptedByRestart: true }
+        : {}),
     };
     return [{
       id: `${prefix}${call.id}`,
@@ -89,6 +102,10 @@ export function reconcileRcaExecutionItems(
     ];
 
     const status = task.status === "pending" ? "running" : task.status;
+    const interruptedByRestart = wasInterruptedByRestart(
+      investigation,
+      task.interruptedByRestart,
+    );
     return {
       ...item,
       agent: {
@@ -96,7 +113,7 @@ export function reconcileRcaExecutionItems(
         status,
         tools: reconcileAgentTools(investigation, task.id, item.agent.tools),
         evidence: mergedEvidence,
-        ...(task.interruptedByRestart
+        ...(interruptedByRestart
           ? {
               interruptedByRestart: true,
               summary: item.agent.summary ?? investigation.error ?? restartMessage,
