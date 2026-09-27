@@ -1,0 +1,69 @@
+import { mkdir, writeFile, readFile, rm, readdir } from "node:fs/promises";
+import { join } from "node:path";
+
+import type { GlobalConfig } from "@server/config";
+
+import type { ConversationRecord } from "./types";
+
+export class ConversationRepository {
+  private readonly globalConfig: GlobalConfig;
+
+  constructor(globalConfig: GlobalConfig) {
+    this.globalConfig = globalConfig;
+  }
+
+  recordPath(conversationId: string) {
+    return join(this.globalConfig.recordsDir, `${conversationId}.json`);
+  }
+
+  async save(conversationRecord: ConversationRecord) {
+    const conversationRecordPath = this.recordPath(conversationRecord.id);
+    await mkdir(this.globalConfig.recordsDir, { recursive: true });
+    await writeFile(conversationRecordPath, JSON.stringify(conversationRecord, null, 2));
+  }
+
+  async get(conversationId: string): Promise<ConversationRecord | null> {
+    const conversationRecordPath = this.recordPath(conversationId);
+    try {
+      const data = await readFile(conversationRecordPath, "utf-8");
+      return JSON.parse(data) as ConversationRecord;
+    } catch {
+      return null;
+    }
+  }
+
+  async update(conversationId: string, updatedConversationRecord: Partial<ConversationRecord>) {
+    const existingConversationRecord = await this.get(conversationId);
+    if (!existingConversationRecord) {
+      throw new Error(`Conversation with ID ${conversationId} not found`);
+    }
+    const mergedConversationRecord: ConversationRecord = {
+      ...existingConversationRecord,
+      ...updatedConversationRecord,
+      updatedAt: new Date(),
+    };
+    await this.save(mergedConversationRecord);
+    return mergedConversationRecord;
+  }
+
+  async delete(conversationId: string) {
+    const conversationRecordPath = this.recordPath(conversationId);
+    await rm(conversationRecordPath, { force: true });
+  }
+
+  async list(): Promise<ConversationRecord[]> {
+    const originFiles = await readdir(this.globalConfig.recordsDir);
+    const files = originFiles.filter((file) => file.endsWith(".json"));
+    const conversationRecords = await Promise.all(
+      files.map(async (file) => {
+        try {
+          const rawData = await readFile(join(this.globalConfig.recordsDir, file), "utf8");
+          return JSON.parse(rawData) as ConversationRecord;
+        } catch {
+          return undefined;
+        }
+      }),
+    );
+    return conversationRecords.filter((record) => record !== undefined);
+  }
+}

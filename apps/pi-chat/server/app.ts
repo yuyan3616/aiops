@@ -1,14 +1,59 @@
+import type { ConversationService } from "@server/conversation/service";
+import { errorResponse } from "@server/error";
+import type { InvestigationFollowUpService } from "@server/rca/follow-up";
+import type { RcaService } from "@server/rca/service";
+import { createConversationRoutes, createRcaRoutes, createSystemRoutes } from "@server/routes";
 import { Hono } from "hono";
-import { cors } from "hono/cors";
+import { pinoLogger, type Env as HonoPinoEnv } from "hono-pino";
+import pino from "pino";
 
-import { RcaService } from "./rca/service";
-import { createRcaRoutes } from "./routes/rca";
+export function createApp(
+  conversationService: ConversationService,
+  rcaService: RcaService,
+  followUpService: InvestigationFollowUpService,
+  rcaDefaultCaseId: string,
+): Hono<HonoPinoEnv> {
+  const app = new Hono<HonoPinoEnv>();
+  const log = pino({
+    level: process.env.LOG_LEVEL ?? "info",
+    transport:
+      process.env.NODE_ENV === "production"
+        ? undefined
+        : {
+            target: "pino-pretty",
+            options: {
+              colorize: true,
+              translateTime: "SYS:standard",
+              singleLine: true,
+            },
+          },
+  });
+  app.use(
+    "*",
+    pinoLogger({
+      pino: log,
+    }),
+  );
 
-export function createApp(rcaService = new RcaService()) {
-  const app = new Hono();
+  app.onError((err, ctx) => {
+    ctx.var.logger.error(
+      {
+        err,
+        method: ctx.req.method,
+        path: ctx.req.path,
+      },
+      "Request failed",
+    );
+    return ctx.json(errorResponse(err), 500);
+  });
 
-  app.use("/api/*", cors());
-  app.get("/health", (c) => c.json({ ok: true }));
+  app.get("/", (c) => c.text("Hello, Hono!"));
+  app.route(
+    "/api/conversation",
+    createConversationRoutes(conversationService, rcaService, followUpService, rcaDefaultCaseId),
+  );
   app.route("/api/rca", createRcaRoutes(rcaService));
+  app.route("/api/system", createSystemRoutes(conversationService));
+
   return app;
 }
