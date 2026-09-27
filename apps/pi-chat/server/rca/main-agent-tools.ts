@@ -147,6 +147,24 @@ export function createRcaMainAgentTools(options: RcaMainAgentToolsOptions): Tool
     },
   });
 
+  const resumeTool = defineTool({
+    name: "resume_rca_investigation",
+    label: "Resume RCA investigation",
+    description:
+      "Resume an investigation that was interrupted by a process restart. Preserves prior hypotheses, observations, evidence, and completed task history.",
+    parameters: Type.Object({
+      investigationId: Type.String(),
+    }),
+    execute: async (_toolCallId, parameters) =>
+      serializeMutation(async () => {
+        const investigation = await rcaService.resumeAgentic(parameters.investigationId, {
+          conversationId,
+          onEvent: project,
+        });
+        return toolResult(compactInvestigation(investigation));
+      }),
+  });
+
   const overviewTool = defineTool({
     name: "query_rca_overview",
     label: "Query RCA overview",
@@ -362,6 +380,7 @@ export function createRcaMainAgentTools(options: RcaMainAgentToolsOptions): Tool
 
   return [
     startTool,
+    resumeTool,
     overviewTool,
     updateHypothesesTool,
     dispatchTool,
