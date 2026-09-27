@@ -263,6 +263,7 @@ export class PiExpertRunner {
         })),
     };
 
+    let parsed: Record<string, unknown>;
     try {
       await session.prompt(
         `Investigate this brief. Use tools only as needed, then return the required JSON finding.\n\n${JSON.stringify(
@@ -271,13 +272,20 @@ export class PiExpertRunner {
           2,
         )}`,
       );
+      try {
+        parsed = extractJson(output);
+      } catch {
+        output = "";
+        await session.prompt(
+          "Your investigation work is complete, but your previous answer was not valid JSON. Return ONLY the required JSON finding now, using the evidence and toolCallId values already collected. Do not restart the investigation or repeat broad queries.",
+        );
+        parsed = extractJson(output);
+      }
     } finally {
       context.signal?.removeEventListener("abort", abort);
       unsubscribe();
       session.dispose();
     }
-
-    const parsed = extractJson(output);
     const validHypotheses = new Set(context.brief.hypothesisIds);
     const validModalities = new Set(ROLE_MODALITIES[role]);
     const claims = Array.isArray(parsed.evidenceClaims) ? parsed.evidenceClaims : [];
