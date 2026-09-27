@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 
 import type { Investigation, InvestigationEvent, RCAResult, ToolCallRecord } from "./types";
@@ -81,5 +81,61 @@ export class InvestigationRepository {
       JSON.stringify(evaluation, null, 2),
       "utf8",
     );
+  }
+
+
+  async recoverInterrupted(): Promise<string[]> {
+    const recovered: string[] = [];
+    let entries;
+    try {
+      entries = await readdir(this.investigationsDir, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return recovered;
+      throw error;
+    }
+
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !/^INV-[A-Za-z0-9-]+$/.test(entry.name)) continue;
+      let investigation: Investigation;
+      try {
+        investigation = await this.get(entry.name);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+        throw error;
+      }
+      if (investigation.status !== "running") continue;
+
+      const completedAt = new Date().toISOString();
+      const errorMessage = "Investigation interrupted by process restart before completion.";
+      investigation.status = "failed";
+      investigation.completedAt = completedAt;
+      investigation.error = errorMessage;
+
+      for (const toolCall of investigation.toolCalls) {
+        if (toolCall.status !== "running") continue;
+        toolCall.status = "failed";
+        toolCall.completedAt = completedAt;
+        toolCall.error = errorMessage;
+        await this.appendToolCall(investigation.id, toolCall);
+      }
+      for (const task of investigation.expertTasks) {
+        if (task.status !== "running" && task.status !== "pending") continue;
+        task.status = "failed";
+        task.completedAt = completedAt;
+      }
+
+      await this.save(investigation);
+      const events = await this.listEvents(investigation.id);
+      await this.appendEvent({
+        id: (events.at(-1)?.id ?? 0) + 1,
+        investigationId: investigation.id,
+        type: "investigation.failed",
+        at: completedAt,
+        summary: errorMessage,
+        payload: { recoveredAfterRestart: true },
+      });
+      recovered.push(investigation.id);
+    }
+    return recovered;
   }
 }
