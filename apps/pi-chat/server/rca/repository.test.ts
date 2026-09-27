@@ -1,0 +1,104 @@
+import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+
+import { InvestigationRepository } from "./repository";
+import type { Investigation } from "./types";
+
+test("restart recovery closes running RCA work and is idempotent", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-chat-rca-recovery-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const repository = new InvestigationRepository(directory);
+  const investigation: Investigation = {
+    id: "INV-test",
+    caseId: "t039",
+    status: "running",
+    symptom: "checkout latency",
+    alertContext: {
+      eventId: "a1",
+      title: "checkout latency",
+      triggerTime: "2026-09-28T00:00:00.000Z",
+      window: {
+        from: "2026-09-28T00:00:00.000Z",
+        to: "2026-09-28T00:05:00.000Z",
+      },
+      entity: { id: "checkout", name: "checkout", type: "service", domain: "app" },
+    },
+    scope: {
+      timeRange: {
+        from: "2026-09-28T00:00:00.000Z",
+        to: "2026-09-28T00:05:00.000Z",
+      },
+      candidateEntities: ["checkout"],
+    },
+    hypotheses: [],
+    observations: [],
+    evidence: [],
+    expertTasks: [{
+      id: "T01",
+      expert: "trace",
+      objective: "locate latency",
+      status: "running",
+      hypothesisIds: [],
+      toolCallIds: ["C01"],
+      evidenceIds: [],
+      implementation: "pi-session",
+      createdAt: "2026-09-28T00:00:00.000Z",
+    }],
+    toolCalls: [{
+      id: "C01",
+      expertTaskId: "T01",
+      tool: "query_traces",
+      query: { service: "checkout" },
+      status: "running",
+      startedAt: "2026-09-28T00:00:00.000Z",
+    }],
+    rounds: 1,
+    startedAt: "2026-09-28T00:00:00.000Z",
+  };
+
+  await repository.save(investigation);
+  await repository.appendEvent({
+    id: 1,
+    investigationId: investigation.id,
+    type: "expert.started",
+    at: investigation.startedAt,
+    summary: "trace started",
+    payload: { expertTask: investigation.expertTasks[0] },
+  });
+  await repository.appendEvent({
+    id: 2,
+    investigationId: investigation.id,
+    type: "tool.started",
+    at: investigation.startedAt,
+    summary: "trace tool started",
+    payload: { toolCall: investigation.toolCalls[0] },
+  });
+
+  assert.deepEqual(await repository.recoverInterrupted(), ["INV-test"]);
+
+  const recovered = await repository.get("INV-test");
+  assert.equal(recovered.status, "interrupted");
+  assert.equal(recovered.expertTasks[0]?.status, "failed");
+  assert.equal(recovered.expertTasks[0]?.interruptedByRestart, true);
+  assert.equal(recovered.toolCalls[0]?.status, "failed");
+  assert.equal(recovered.toolCalls[0]?.interruptedByRestart, true);
+
+  const events = await repository.listEvents("INV-test");
+  assert.deepEqual(
+    events.map((event) => event.type),
+    [
+      "expert.started",
+      "tool.started",
+      "tool.completed",
+      "expert.completed",
+      "investigation.interrupted",
+    ],
+  );
+  assert.deepEqual(events.map((event) => event.id), [1, 2, 3, 4, 5]);
+
+  assert.deepEqual(await repository.recoverInterrupted(), []);
+  assert.equal((await repository.listEvents("INV-test")).length, 5);
+});

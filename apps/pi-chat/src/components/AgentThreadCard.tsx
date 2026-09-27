@@ -19,13 +19,14 @@ const labels: Record<AgentThreadRun["expert"], string> = {
   "event-topology": "Event / Topology 调查员",
 };
 
-function stateLabel(status: AgentThreadRun["status"]): string {
+function stateLabel(agent: AgentThreadRun): string {
+  if (agent.interruptedByRestart) return "已中断";
   return {
     running: "运行中",
     completed: "已完成",
     failed: "失败",
     cancelled: "已取消",
-  }[status];
+  }[agent.status];
 }
 
 export function AgentThreadCard({ agent }: { agent: AgentThreadRun }) {
@@ -56,7 +57,7 @@ export function AgentThreadCard({ agent }: { agent: AgentThreadRun }) {
         <span className="agent-thread-copy">
           <span className="agent-thread-title">
             {agent.label || labels[agent.expert]}
-            <small className={"agent-thread-status " + agent.status}>{stateLabel(agent.status)}</small>
+            <small className={"agent-thread-status " + agent.status}>{stateLabel(agent)}</small>
           </span>
           <span className="agent-thread-objective">{agent.objective}</span>
         </span>

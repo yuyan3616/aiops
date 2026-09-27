@@ -17,6 +17,7 @@ import {
 import type { GlobalConfig } from "@server/config";
 import { createRcaMainAgentTools } from "@server/rca/main-agent-tools";
 import type { RcaService } from "@server/rca/service";
+import type { Investigation } from "@server/rca/types";
 import { hasSameStringItems } from "@server/utils";
 import type {
   ConversationConfig,
@@ -31,6 +32,10 @@ import type {
 
 import { EventChannel } from "./channel";
 import { applyExternalStreamEvent, mergeMessageLists } from "./external-stream";
+import {
+  reconcileRcaExecutionItems,
+  settleInterruptedRcaSessionTools,
+} from "./recovery";
 import { ConversationViewBuilder, extractImages, extractText, resultText } from "./helper";
 import { normalizePromptError, runDetached } from "./async-task";
 import { ConversationRepository } from "./repository";
@@ -146,9 +151,13 @@ export class ConversationService {
     const channel = managedSession.channel;
 
     const builder = new ConversationViewBuilder(session.sessionManager.getBranch());
+    const investigations = await this.loadLinkedInvestigations(conversationRecord);
     const messageList = mergeMessageLists(
-      builder.build(),
-      conversationRecord.externalMessageList ?? [],
+      settleInterruptedRcaSessionTools(builder.build(), investigations, session.isStreaming),
+      reconcileRcaExecutionItems(
+        conversationRecord.externalMessageList ?? [],
+        investigations,
+      ),
     );
 
     return {
@@ -358,6 +367,29 @@ export class ConversationService {
       imageInput: model.input.includes("image"),
       thinkingLevels: getSupportedThinkingLevels(model),
     }));
+  }
+
+  private async loadLinkedInvestigations(
+    record: ConversationRecord,
+  ): Promise<Map<string, Investigation>> {
+    const investigationIds = new Set(record.investigationIds ?? []);
+    if (record.activeInvestigationId) investigationIds.add(record.activeInvestigationId);
+
+    const entries = await Promise.all(
+      [...investigationIds].map(async (investigationId) => {
+        try {
+          return [investigationId, await this.rcaService.get(investigationId)] as const;
+        } catch {
+          return undefined;
+        }
+      }),
+    );
+
+    return new Map(
+      entries.filter(
+        (entry): entry is readonly [string, Investigation] => entry !== undefined,
+      ),
+    );
   }
 
   private availableModels(managedSession: ManagedSession) {

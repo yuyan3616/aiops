@@ -114,23 +114,53 @@ export class InvestigationRepository {
       ];
       investigation.error = errorMessage;
 
+      const interruptedToolCalls: ToolCallRecord[] = [];
       for (const toolCall of investigation.toolCalls) {
         if (toolCall.status !== "running") continue;
         toolCall.status = "failed";
         toolCall.completedAt = interruptedAt;
+        toolCall.interruptedByRestart = true;
         toolCall.error = errorMessage;
+        interruptedToolCalls.push(toolCall);
         await this.appendToolCall(investigation.id, toolCall);
       }
+
+      const interruptedExpertTasks = [];
       for (const task of investigation.expertTasks) {
         if (task.status !== "running" && task.status !== "pending") continue;
+        const wasRunning = task.status === "running";
         task.status = "failed";
         task.completedAt = interruptedAt;
+        task.interruptedByRestart = true;
+        if (wasRunning) interruptedExpertTasks.push(task);
       }
 
       await this.save(investigation);
+
       const events = await this.listEvents(investigation.id);
+      let nextEventId = (events.at(-1)?.id ?? 0) + 1;
+      for (const toolCall of interruptedToolCalls) {
+        await this.appendEvent({
+          id: nextEventId++,
+          investigationId: investigation.id,
+          type: "tool.completed",
+          at: interruptedAt,
+          summary: errorMessage,
+          payload: { toolCall },
+        });
+      }
+      for (const expertTask of interruptedExpertTasks) {
+        await this.appendEvent({
+          id: nextEventId++,
+          investigationId: investigation.id,
+          type: "expert.completed",
+          at: interruptedAt,
+          summary: errorMessage,
+          payload: { expertTask },
+        });
+      }
       await this.appendEvent({
-        id: (events.at(-1)?.id ?? 0) + 1,
+        id: nextEventId,
         investigationId: investigation.id,
         type: "investigation.interrupted",
         at: interruptedAt,
@@ -141,4 +171,5 @@ export class InvestigationRepository {
     }
     return recovered;
   }
+
 }

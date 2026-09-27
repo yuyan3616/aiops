@@ -145,6 +145,7 @@ export interface AgentThreadRun {
   evidence: AgentThreadEvidence[];
   thinking?: string;
   summary?: string;
+  interruptedByRestart?: boolean;
   implementation: "deterministic" | "pi-session";
 }
 

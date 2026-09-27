@@ -166,6 +166,7 @@ export interface ExpertTask {
   sessionId?: string;
   finding?: AgentExpertFinding;
   diagnostics?: AgentRunDiagnostics;
+  interruptedByRestart?: boolean;
   createdAt: string;
   completedAt?: string;
 }
@@ -198,6 +199,7 @@ export interface ToolCallRecord {
     before: RuntimeResourceSnapshot;
     after?: RuntimeResourceSnapshot;
   };
+  interruptedByRestart?: boolean;
   error?: string;
 }
 
