@@ -85,6 +85,7 @@ export class RcaChatEventMapper {
               status: "running",
               tools: [],
               evidence: [],
+              // Missing implementation occurs only in older persisted investigation events.
               implementation: task.implementation ?? "deterministic",
             },
           },
