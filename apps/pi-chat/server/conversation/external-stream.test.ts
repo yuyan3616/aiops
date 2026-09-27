@@ -66,6 +66,62 @@ test("persists RCA thinking, tools, and messages in chronological order", () => 
   ({ items, sequence } = applyExternalStreamEvent(
     items,
     sequence,
+    "agent.started",
+    {
+      agent: {
+        id: "agent-1",
+        taskId: "T01",
+        expert: "trace",
+        label: "Trace Expert",
+        objective: "Locate latency propagation.",
+        status: "running",
+        tools: [],
+        evidence: [],
+        implementation: "deterministic",
+      },
+    },
+    1004,
+  ));
+  ({ items, sequence } = applyExternalStreamEvent(
+    items,
+    sequence,
+    "agent.tool.completed",
+    {
+      agentId: "agent-1",
+      tool: {
+        id: "agent-tool-1",
+        name: "query_traces",
+        args: { service: "checkout" },
+        status: "success",
+        result: "shipping degraded",
+      },
+    },
+    1004,
+  ));
+  ({ items, sequence } = applyExternalStreamEvent(
+    items,
+    sequence,
+    "agent.evidence.added",
+    {
+      agentId: "agent-1",
+      evidence: {
+        id: "E01",
+        modality: "trace",
+        summary: "shipping is slow",
+      },
+    },
+    1004,
+  ));
+  ({ items, sequence } = applyExternalStreamEvent(
+    items,
+    sequence,
+    "agent.completed",
+    { agentId: "agent-1", status: "completed", summary: "shipping localized" },
+    1004,
+  ));
+  ({ items, sequence } = applyExternalStreamEvent(
+    items,
+    sequence,
     "message.completed",
     {
       message: {
@@ -81,7 +137,7 @@ test("persists RCA thinking, tools, and messages in chronological order", () => 
 
   assert.deepEqual(
     items.map((item) => item.kind),
-    ["message", "thinking", "tool", "message"],
+    ["message", "thinking", "tool", "agent", "message"],
   );
   const thinking = items.find((item) => item.kind === "thinking");
   assert.equal(thinking?.kind === "thinking" ? thinking.thinking.text : "", "先检查 trace");
@@ -89,6 +145,11 @@ test("persists RCA thinking, tools, and messages in chronological order", () => 
   const tool = items.find((item) => item.kind === "tool");
   assert.equal(tool?.kind === "tool" ? tool.tool.status : "", "success");
   assert.equal(tool?.kind === "tool" ? tool.tool.result : "", "20 traces");
+
+  const agent = items.find((item) => item.kind === "agent");
+  assert.equal(agent?.kind === "agent" ? agent.agent.status : "", "completed");
+  assert.equal(agent?.kind === "agent" ? agent.agent.tools[0]?.status : "", "success");
+  assert.equal(agent?.kind === "agent" ? agent.agent.evidence[0]?.id : "", "E01");
 
   const merged = mergeMessageLists(
     [
@@ -109,6 +170,6 @@ test("persists RCA thinking, tools, and messages in chronological order", () => 
   );
   assert.deepEqual(
     merged.map((item) => item.id),
-    ["native-before", "u1", "think-1", "tool-1", "a1", "native-after"],
+    ["native-before", "u1", "think-1", "tool-1", "agent-1", "a1", "native-after"],
   );
 });
