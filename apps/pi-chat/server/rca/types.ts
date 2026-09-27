@@ -196,7 +196,6 @@ export interface ToolCallRecord {
     before: RuntimeResourceSnapshot;
     after?: RuntimeResourceSnapshot;
   };
-  interruptions?: Array<{ at: string; reason: string }>;
   error?: string;
 }
 
@@ -270,14 +269,6 @@ export interface InvestigationEvent {
   at: string;
   summary: string;
   payload: Record<string, unknown>;
-}
-
-export interface ExpertFinding {
-  summary: string;
-  evidence: Array<Omit<Evidence, "id" | "createdAt" | "toolCallId"> & { toolCallId?: string }>;
-  candidateEntities: string[];
-  candidateMechanism?: string;
-  nextChecks: string[];
 }
 
 export interface SchemaField {
