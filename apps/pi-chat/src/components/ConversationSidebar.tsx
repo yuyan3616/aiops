@@ -111,6 +111,7 @@ export function ConversationSidebar({
   const [editingId, setEditingId] = useState<string>();
   const [editingTitle, setEditingTitle] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState<ConversationSummary>();
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
 
@@ -228,48 +229,13 @@ export function ConversationSidebar({
                     <Copy size={14} />
                     复制标题
                   </DropdownMenuPrimitive.Item>
-                  <AlertDialogPrimitive.Root>
-                    <AlertDialogPrimitive.Trigger asChild>
-                      <DropdownMenuPrimitive.Item
-                        className="conversation-menu-item conversation-menu-danger"
-                        onSelect={(event) => event.preventDefault()}
-                      >
-                        <Trash2 size={14} />
-                        删除
-                      </DropdownMenuPrimitive.Item>
-                    </AlertDialogPrimitive.Trigger>
-                    <AlertDialogPrimitive.Portal>
-                      <AlertDialogPrimitive.Overlay className="alert-dialog-overlay" />
-                      <AlertDialogPrimitive.Content className="alert-dialog-content">
-                        <AlertDialogPrimitive.Title className="alert-dialog-title">
-                          删除会话？
-                        </AlertDialogPrimitive.Title>
-                        <AlertDialogPrimitive.Description className="alert-dialog-description">
-                          “{item.title}”及其消息记录将被永久删除。
-                        </AlertDialogPrimitive.Description>
-                        <div className="alert-dialog-actions">
-                          <AlertDialogPrimitive.Cancel asChild>
-                            <Button variant="outline">取消</Button>
-                          </AlertDialogPrimitive.Cancel>
-                          <AlertDialogPrimitive.Action asChild>
-                            <Button
-                              className="alert-dialog-delete"
-                              onClick={() => {
-                                setErrorMessage("");
-                                void onDelete(item.id).catch((error) => {
-                                  setErrorMessage(
-                                    error instanceof Error ? error.message : "删除会话失败",
-                                  );
-                                });
-                              }}
-                            >
-                              删除
-                            </Button>
-                          </AlertDialogPrimitive.Action>
-                        </div>
-                      </AlertDialogPrimitive.Content>
-                    </AlertDialogPrimitive.Portal>
-                  </AlertDialogPrimitive.Root>
+                  <DropdownMenuPrimitive.Item
+                    className="conversation-menu-item conversation-menu-danger"
+                    onSelect={() => setDeleteTarget(item)}
+                  >
+                    <Trash2 size={14} />
+                    删除
+                  </DropdownMenuPrimitive.Item>
                 </DropdownMenuPrimitive.Content>
               </DropdownMenuPrimitive.Portal>
             </DropdownMenuPrimitive.Root>
@@ -404,6 +370,48 @@ export function ConversationSidebar({
           </div>
         </div>
       </aside>
+
+      <AlertDialogPrimitive.Root
+        open={Boolean(deleteTarget)}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen) setDeleteTarget(undefined);
+        }}
+      >
+        <AlertDialogPrimitive.Portal>
+          <AlertDialogPrimitive.Overlay className="alert-dialog-overlay" />
+          <AlertDialogPrimitive.Content className="alert-dialog-content">
+            <AlertDialogPrimitive.Title className="alert-dialog-title">
+              删除会话？
+            </AlertDialogPrimitive.Title>
+            <AlertDialogPrimitive.Description className="alert-dialog-description">
+              “{deleteTarget?.title ?? ""}”及其消息记录将被永久删除。
+            </AlertDialogPrimitive.Description>
+            <div className="alert-dialog-actions">
+              <AlertDialogPrimitive.Cancel asChild>
+                <Button variant="outline">取消</Button>
+              </AlertDialogPrimitive.Cancel>
+              <AlertDialogPrimitive.Action asChild>
+                <Button
+                  className="alert-dialog-delete"
+                  onClick={() => {
+                    const target = deleteTarget;
+                    setDeleteTarget(undefined);
+                    if (!target) return;
+                    setErrorMessage("");
+                    void onDelete(target.id).catch((error) => {
+                      setErrorMessage(
+                        error instanceof Error ? error.message : "删除会话失败",
+                      );
+                    });
+                  }}
+                >
+                  删除
+                </Button>
+              </AlertDialogPrimitive.Action>
+            </div>
+          </AlertDialogPrimitive.Content>
+        </AlertDialogPrimitive.Portal>
+      </AlertDialogPrimitive.Root>
     </>
   );
 }
