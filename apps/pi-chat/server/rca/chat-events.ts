@@ -181,6 +181,18 @@ export class RcaChatEventMapper {
           },
         }];
       }
+      case "expert.thinking.delta": {
+        const taskId = String(event.payload.expertTaskId ?? "");
+        const delta = String(event.payload.delta ?? "");
+        if (!taskId || !delta) return [];
+        return [{
+          type: "agent.thinking.delta",
+          payload: {
+            agentId: this.agentId(taskId),
+            delta,
+          },
+        }];
+      }
       case "expert.completed": {
         const task = event.payload.expertTask as ExpertTask | undefined;
         if (!task) return [];
@@ -194,7 +206,6 @@ export class RcaChatEventMapper {
         }];
       }
       case "investigation.started":
-      case "expert.thinking.delta":
       case "round.completed":
       case "investigation.completed":
       case "investigation.failed":
