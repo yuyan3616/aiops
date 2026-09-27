@@ -494,13 +494,8 @@ export class RcaService {
     briefs: InvestigationBrief[],
     options: AgenticDispatchOptions = {},
   ): Promise<DispatchedFinding[]> {
-    const runner = this.requireExpertRunner();
     const investigation = await this.repository.get(investigationId);
     this.assertRunning(investigation);
-    const bus = await this.busFor(investigationId);
-    const running = this.agenticRunning.get(investigationId);
-    if (!running) throw new Error("Agentic investigation is not active");
-    checkCancelled(running.controller.signal);
 
     if (briefs.length === 0) throw new Error("At least one investigation brief is required");
     if (briefs.length > 3) throw new Error("At most three independent briefs may be dispatched in one batch");
@@ -547,7 +542,7 @@ export class RcaService {
     }
 
     const knownHypotheses = new Set(investigation.hypotheses.map((item) => item.id));
-    const taskPairs = briefs.map((brief) => {
+    for (const brief of briefs) {
       if (!brief.question.trim()) throw new Error("Brief question is required");
       if (brief.expected.length === 0) throw new Error("Brief expected outputs are required");
       if (brief.hypothesisIds.length === 0) {
@@ -556,6 +551,15 @@ export class RcaService {
       for (const id of brief.hypothesisIds) {
         if (!knownHypotheses.has(id)) throw new Error(`Brief references unknown hypothesis ${id}`);
       }
+    }
+
+    const runner = this.requireExpertRunner();
+    const bus = await this.busFor(investigationId);
+    const running = this.agenticRunning.get(investigationId);
+    if (!running) throw new Error("Agentic investigation is not active");
+    checkCancelled(running.controller.signal);
+
+    const taskPairs = briefs.map((brief) => {
       const task: ExpertTask = {
         id: this.nextTaskId(investigation),
         expert: brief.role,
@@ -699,7 +703,7 @@ export class RcaService {
     result: Omit<RCAResult, "investigationId">,
   ): Promise<{ investigation: Investigation; report: string }> {
     const investigation = await this.repository.get(investigationId);
-    this.assertRunning(investigation);
+    this.assertConcludable(investigation);
     const bus = await this.busFor(investigationId);
     const evidenceIds = new Set(investigation.evidence.map((item) => item.id));
     const hypothesisIds = new Set(investigation.hypotheses.map((item) => item.id));
