@@ -55,6 +55,7 @@ export class RcaChatEventMapper {
   private readonly investigationId: string;
   private activeThinkingId?: string;
   private thinkingSequence = 0;
+  private readonly toolToAgent = new Map<string, string>();
 
   constructor(investigationId: string) {
     this.investigationId = investigationId;
@@ -118,13 +119,53 @@ export class RcaChatEventMapper {
       }
       case "expert.started": {
         const task = event.payload.expertTask as ExpertTask | undefined;
-        return this.reason(
-          `将下一步检查交给 **${expertLabel(task)}**。\n\n${task?.objective ?? event.summary}`,
-        );
+        if (!task) return [];
+        const agentId = this.agentId(task.id);
+        return [
+          ...this.reason(
+            `根据当前证据缺口，将下一步交给 **${expertLabel(task)}**：${task.objective}`,
+          ),
+          ...this.completeThinking(),
+          {
+            type: "agent.started",
+            payload: {
+              agent: {
+                id: agentId,
+                taskId: task.id,
+                expert: task.expert,
+                label: expertLabel(task),
+                objective: task.objective,
+                status: "running",
+                tools: [],
+                evidence: [],
+                implementation: "deterministic",
+              },
+            },
+          },
+        ];
       }
       case "tool.started": {
         const call = event.payload.toolCall as ToolCallRecord | undefined;
         if (!call) return [];
+        if (call.expertTaskId) {
+          const agentId = this.agentId(call.expertTaskId);
+          this.toolToAgent.set(call.id, agentId);
+          return [
+            {
+              type: "agent.tool.started",
+              payload: {
+                agentId,
+                tool: {
+                  id: this.toolId(call.id),
+                  name: call.tool,
+                  args: call.query,
+                  status: "running",
+                  details: { expertTaskId: call.expertTaskId },
+                },
+              },
+            },
+          ];
+        }
         return [
           ...this.completeThinking(),
           {
@@ -133,7 +174,7 @@ export class RcaChatEventMapper {
               id: this.toolId(call.id),
               name: call.tool,
               args: call.query,
-              details: { expertTaskId: call.expertTaskId },
+              details: {},
             },
           },
         ];
@@ -141,6 +182,29 @@ export class RcaChatEventMapper {
       case "tool.completed": {
         const call = event.payload.toolCall as ToolCallRecord | undefined;
         if (!call) return [];
+        if (call.expertTaskId) {
+          const agentId = this.agentId(call.expertTaskId);
+          this.toolToAgent.set(call.id, agentId);
+          return [
+            {
+              type: "agent.tool.completed",
+              payload: {
+                agentId,
+                tool: {
+                  id: this.toolId(call.id),
+                  name: call.tool,
+                  args: call.query,
+                  status: call.status === "completed" ? "success" : "error",
+                  result: call.resultSummary ?? call.error ?? event.summary,
+                  details: {
+                    expertTaskId: call.expertTaskId,
+                    rawRef: call.rawRef,
+                  },
+                },
+              },
+            },
+          ];
+        }
         return [
           {
             type: "tool.completed",
@@ -150,21 +214,46 @@ export class RcaChatEventMapper {
               args: call.query,
               status: call.status === "completed" ? "success" : "error",
               result: call.resultSummary ?? call.error ?? event.summary,
-              details: {
-                expertTaskId: call.expertTaskId,
-                rawRef: call.rawRef,
-              },
+              details: { rawRef: call.rawRef },
             },
           },
         ];
       }
       case "evidence.created": {
         const evidence = event.payload.evidence as Evidence | undefined;
-        return evidence ? this.reason(evidenceSummary(evidence)) : [];
+        if (!evidence) return [];
+        const agentId = this.toolToAgent.get(evidence.toolCallId);
+        if (agentId) {
+          return [
+            {
+              type: "agent.evidence.added",
+              payload: {
+                agentId,
+                evidence: {
+                  id: evidence.id,
+                  modality: evidence.modality,
+                  summary: evidence.summary,
+                },
+              },
+            },
+          ];
+        }
+        return this.reason(evidenceSummary(evidence));
       }
       case "expert.completed": {
         const task = event.payload.expertTask as ExpertTask | undefined;
-        return this.reason(`**${expertLabel(task)} 已完成调查**\n\n${event.summary}`);
+        if (!task) return [];
+        return [
+          {
+            type: "agent.completed",
+            payload: {
+              agentId: this.agentId(task.id),
+              status: task.status,
+              summary: event.summary,
+            },
+          },
+          ...this.reason(`**${expertLabel(task)} findings 已回传。**\n\n${event.summary}`),
+        ];
       }
       case "round.completed":
         // Round bookkeeping remains in the investigation artifact. The chat
@@ -196,7 +285,11 @@ export class RcaChatEventMapper {
       this.activeThinkingId = `${this.investigationId}:thinking:${++this.thinkingSequence}`;
       projections.push({
         type: "thinking.started",
-        payload: { id: this.activeThinkingId },
+        payload: {
+          id: this.activeThinkingId,
+          source: "rca-projection",
+          label: "调查过程",
+        },
       });
     }
     projections.push({
@@ -218,6 +311,10 @@ export class RcaChatEventMapper {
 
   private toolId(callId: string): string {
     return `${this.investigationId}:${callId}`;
+  }
+
+  private agentId(taskId: string): string {
+    return `${this.investigationId}:agent:${taskId}`;
   }
 }
 
