@@ -34,13 +34,18 @@ export interface ToolExecution {
   summary: string;
 }
 
+export interface PiToolExecutionResult {
+  content: Array<{ type: "text"; text: string }>;
+  details: unknown;
+}
+
 export interface PiToolFactoryOptions {
   names?: readonly ObservabilityToolName[];
   execute?: (
     name: ObservabilityToolName,
     toolCallId: string,
     parameters: Record<string, unknown>,
-  ) => Promise<unknown>;
+  ) => Promise<PiToolExecutionResult>;
 }
 
 function throwIfCancelled(signal?: AbortSignal): void {
