@@ -178,6 +178,10 @@ test("projects RCA events onto native Pi Chat thinking and tool events", () => {
     .map((item) => String(item.payload.delta))
     .join("\n");
   assert.match(reasoning, /Trace Expert/);
-  assert.equal(reasoning.includes("E01"), false);
+  assert.equal(
+    reasoning.includes("Latency is concentrated in checkout to shipping."),
+    false,
+  );
+  assert.match(reasoning, /E01/);
   assert.match(reasoning, /H01.*已排除/);
 });
