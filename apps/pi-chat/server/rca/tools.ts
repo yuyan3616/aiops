@@ -75,6 +75,87 @@ function toolResult(result: unknown) {
   };
 }
 
+function objectValue(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+export function compactToolResultForAgent(
+  tool: ObservabilityToolName,
+  result: unknown,
+): unknown {
+  if (tool !== "query_metrics") return result;
+  const envelope = objectValue(result);
+  const data = objectValue(envelope?.data);
+  if (!envelope || !data) return result;
+
+  const anomalies = Array.isArray(data.anomalies)
+    ? data.anomalies
+        .filter((item): item is Record<string, unknown> => Boolean(objectValue(item)))
+        .slice(0, 12)
+        .map((item) => ({
+          entitySet: item.entitySet,
+          entity: item.entity,
+          service: item.service,
+          metric: item.metric,
+          baselineCount: item.baselineCount,
+          incidentCount: item.incidentCount,
+          baselineMedian: item.baselineMedian,
+          incidentMedian: item.incidentMedian,
+          baselineP95: item.baselineP95,
+          incidentP95: item.incidentP95,
+          ratio: item.ratio,
+          robustZ: item.robustZ,
+          direction: item.direction,
+          score: item.score,
+          rawRef: item.rawRef,
+        }))
+    : [];
+
+  const peerOutliers = Array.isArray(data.peerOutliers)
+    ? data.peerOutliers
+        .filter((item): item is Record<string, unknown> => Boolean(objectValue(item)))
+        .slice(0, 8)
+        .map((item) => ({
+          entitySet: item.entitySet,
+          entity: item.entity,
+          metric: item.metric,
+          incidentMedian: item.incidentMedian,
+          peerMedian: item.peerMedian,
+          ratio: item.ratio,
+          rawRef: item.rawRef,
+        }))
+    : [];
+
+  const directionCounts = anomalies.reduce(
+    (counts, item) => {
+      const direction = item.direction;
+      if (direction === "increase") counts.increase++;
+      else if (direction === "decrease") counts.decrease++;
+      else counts.flat++;
+      return counts;
+    },
+    { increase: 0, decrease: 0, flat: 0 },
+  );
+
+  return {
+    caseId: envelope.caseId,
+    modality: envelope.modality,
+    query: envelope.query,
+    matchedRows: envelope.matchedRows,
+    returnedRows: envelope.returnedRows,
+    truncated: envelope.truncated,
+    rawRef: envelope.rawRef,
+    data: {
+      anomalies,
+      peerOutliers,
+      directionCounts,
+      sampleOmitted: Array.isArray(data.sample) ? data.sample.length : 0,
+    },
+  };
+}
+
 export class ObservabilityToolRegistry {
   readonly adapter: RCA100Adapter;
 
