@@ -21,10 +21,11 @@ GIT_LFS_SKIP_SMUDGE=1 git clone --depth=1 --filter=blob:none "$SOURCE_REPO" "$WO
 
 cd "$WORKDIR/agenticopseval"
 git sparse-checkout init --cone
-git sparse-checkout set "RCA100/cases/$CASE_ID" RCA100/LICENSE
+git sparse-checkout set "RCA100/cases/$CASE_ID"
 git checkout
 git lfs install --local
 git lfs pull --include="RCA100/cases/$CASE_ID/*"
+git show HEAD:RCA100/LICENSE > "$WORKDIR/RCA100-LICENSE"
 
 SOURCE_CASE="$WORKDIR/agenticopseval/RCA100/cases/$CASE_ID"
 if [[ ! -f "$SOURCE_CASE/task.json" ]]; then
@@ -36,7 +37,7 @@ cd - >/dev/null
 mkdir -p "$DEST_ROOT"
 rm -rf "$DEST_ROOT/$CASE_ID"
 cp -a "$SOURCE_CASE" "$DEST_ROOT/$CASE_ID"
-cp "$WORKDIR/agenticopseval/RCA100/LICENSE" "$(dirname "$DEST_ROOT")/RCA100-LICENSE"
+cp "$WORKDIR/RCA100-LICENSE" "$(dirname "$DEST_ROOT")/RCA100-LICENSE"
 
 echo
 echo "Downloaded files:"
