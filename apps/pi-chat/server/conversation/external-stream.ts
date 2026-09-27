@@ -1,4 +1,6 @@
 import type {
+  AgentThreadEvidence,
+  AgentThreadRun,
   ChatMessage,
   EventType,
   MessageListItem,
@@ -68,7 +70,12 @@ export function applyExternalStreamEvent(
     if (!id || items.some((item) => item.kind === "thinking" && item.id === id)) {
       return { items, sequence };
     }
-    const thinking: ThinkingBlock = { id, text: "" };
+    const thinking: ThinkingBlock = {
+      id,
+      text: "",
+      ...(data.source === "rca-projection" ? { source: "rca-projection" as const } : {}),
+      ...(typeof data.label === "string" ? { label: data.label } : {}),
+    };
     items.push({ kind: "thinking", id, thinking, seqId: allocate() });
     return { items, sequence };
   }
@@ -96,6 +103,74 @@ export function applyExternalStreamEvent(
     items = updateItem(items, id, (item) =>
       item.kind === "thinking"
         ? { ...item, thinking: { ...item.thinking, completed: true } }
+        : item,
+    );
+    return { items, sequence };
+  }
+
+  if (type === "agent.started") {
+    const agent = data.agent as AgentThreadRun | undefined;
+    if (!agent?.id) return { items, sequence };
+    const existing = items.find((item) => item.kind === "agent" && item.id === agent.id);
+    if (existing) {
+      items = updateItem(items, agent.id, (item) =>
+        item.kind === "agent" ? { ...item, agent: { ...item.agent, ...agent } } : item,
+      );
+    } else {
+      items.push({ kind: "agent", id: agent.id, agent, seqId: allocate() });
+    }
+    return { items, sequence };
+  }
+
+  if (type === "agent.tool.started" || type === "agent.tool.completed") {
+    const agentId = String(data.agentId ?? "");
+    const tool = data.tool as ToolRun | undefined;
+    if (!agentId || !tool?.id) return { items, sequence };
+    items = updateItem(items, agentId, (item) => {
+      if (item.kind !== "agent") return item;
+      const existingIndex = item.agent.tools.findIndex((entry) => entry.id === tool.id);
+      const tools =
+        existingIndex < 0
+          ? [...item.agent.tools, tool]
+          : item.agent.tools.map((entry, index) =>
+              index === existingIndex ? { ...entry, ...tool } : entry,
+            );
+      return { ...item, agent: { ...item.agent, tools } };
+    });
+    return { items, sequence };
+  }
+
+  if (type === "agent.evidence.added") {
+    const agentId = String(data.agentId ?? "");
+    const evidence = data.evidence as AgentThreadEvidence | undefined;
+    if (!agentId || !evidence?.id) return { items, sequence };
+    items = updateItem(items, agentId, (item) => {
+      if (item.kind !== "agent") return item;
+      if (item.agent.evidence.some((entry) => entry.id === evidence.id)) return item;
+      return {
+        ...item,
+        agent: { ...item.agent, evidence: [...item.agent.evidence, evidence] },
+      };
+    });
+    return { items, sequence };
+  }
+
+  if (type === "agent.completed") {
+    const agentId = String(data.agentId ?? "");
+    if (!agentId) return { items, sequence };
+    items = updateItem(items, agentId, (item) =>
+      item.kind === "agent"
+        ? {
+            ...item,
+            agent: {
+              ...item.agent,
+              status:
+                data.status === "failed" || data.status === "cancelled"
+                  ? data.status
+                  : "completed",
+              ...(typeof data.summary === "string" ? { summary: data.summary } : {}),
+            },
+          }
         : item,
     );
     return { items, sequence };
