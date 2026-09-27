@@ -1,4 +1,10 @@
-export type InvestigationStatus = "running" | "completed" | "inconclusive" | "failed" | "cancelled";
+export type InvestigationStatus =
+  | "running"
+  | "interrupted"
+  | "completed"
+  | "inconclusive"
+  | "failed"
+  | "cancelled";
 
 export type HypothesisStatus =
   | "possible"
@@ -162,6 +168,7 @@ export interface ToolCallRecord {
   rawRef?: string;
   startedAt: string;
   completedAt?: string;
+  interruptions?: Array<{ at: string; reason: string }>;
   error?: string;
 }
 
@@ -216,6 +223,8 @@ export type InvestigationEventType =
   | "evidence.created"
   | "round.completed"
   | "investigation.completed"
+  | "investigation.interrupted"
+  | "investigation.resumed"
   | "investigation.failed"
   | "investigation.cancelled";
 
