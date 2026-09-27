@@ -29,3 +29,15 @@ RCA100 t039 调查、数据隔离和评分说明见 [docs/rca-t039.md](docs/rca-
 ## 许可
 
 ISC
+
+## Railway demo deployment
+
+The repository includes a single-service Railway deployment for the Pi Chat RCA demo.
+
+- The Docker image installs dependencies, downloads only the agent-facing RCA100 `t039` telemetry, and builds Pi Chat.
+- Railway exposes the Vite preview server on `$PORT`.
+- `/api` is proxied inside the container to the Hono backend on port `4328`.
+- The public demo defaults to `RCA_AGENTIC_PLANNER=false`, so it works without a model API key while still showing the full investigation/tool/evidence stream.
+- To enable the Pi coordinator planner later, set `RCA_AGENTIC_PLANNER=true` and configure `RCA_MODEL_PROVIDER` / `RCA_MODEL_ID` plus the provider credentials in Railway variables.
+
+The deployment source should use branch `feat/pi-chat-rca` and the repository root, where `Dockerfile` and `railway.json` are located.
