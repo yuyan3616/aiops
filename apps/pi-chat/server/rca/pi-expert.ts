@@ -101,6 +101,7 @@ Rules:
 - Distinguish facts from inference. Negative evidence is a valid successful result when it directly tests a hypothesis; do not keep searching merely because you found no anomaly.
 - Stop when the brief's expected outputs are answered, the path is disproven, or you are blocked.
 - For metrics investigations, prefer aggregated anomaly summaries. Do not expand into a broad metric inventory after the brief can already be answered.
+- Treat a baseline window as a comparison candidate, not guaranteed healthy ground truth. If the baseline already looks abnormal relative to peers, an earlier window, or the surrounding trend, explicitly report possible baseline contamination and do not use a near-1 incident/baseline ratio to rule out the hypothesis.
 - Do not investigate outside notInScope.
 - Your evidenceClaims modality must be one of: ${modalities}.
 - Final output must be JSON only, with exactly this shape:
