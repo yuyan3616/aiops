@@ -7,6 +7,7 @@ import {
   metadataFields,
   readParquetMetadata,
   readParquetRows,
+  readParquetRowsBatched,
   timestampMs,
   type ParquetRow,
 } from "./parquet";
@@ -96,7 +97,6 @@ interface TraceRow {
   endMs: number;
   durationMs: number;
   statusCode: string;
-  attributes: string;
 }
 
 interface TopologyEntity {
@@ -539,7 +539,14 @@ export class RCA100Adapter {
       : defaultBaseline(timeRange(query));
     const baseline = ensureValidRange(baselineRange);
     const topN = clampLimit(query.topN, 15, 50);
-    const rawRows = await this.rows(caseId, "traces", [
+    const basis = query.timeBasis ?? "end";
+    const inRange = (row: TraceRow, range: { from: number; to: number }) => {
+      if (basis === "start") return row.startMs >= range.from && row.startMs <= range.to;
+      if (basis === "overlap") return row.startMs <= range.to && row.endMs >= range.from;
+      return row.endMs >= range.from && row.endMs <= range.to;
+    };
+
+    const columns = [
       "traceId",
       "spanId",
       "parentSpanId",
@@ -550,33 +557,49 @@ export class RCA100Adapter {
       "serviceName",
       "hostname",
       "statusCode",
-      "attributes",
-    ]);
-    const rows = rawRows
-      .map((row) => this.traceRow(row))
-      .filter((row): row is TraceRow => row !== undefined);
-    const basis = query.timeBasis ?? "end";
-    const inRange = (row: TraceRow, range: { from: number; to: number }) => {
-      if (basis === "start") return row.startMs >= range.from && row.startMs <= range.to;
-      if (basis === "overlap") return row.startMs <= range.to && row.endMs >= range.from;
-      return row.endMs >= range.from && row.endMs <= range.to;
-    };
-    const focus = rows.filter(
-      (row) =>
-        inRange(row, incident) &&
-        includes(row.service, query.service) &&
-        includes(row.operation, query.operation) &&
-        includes(row.host, query.host),
-    );
+    ];
+    const tracePath = join(this.caseDir(caseId), "traces.parquet");
     const groups = new Map<string, { sample: TraceRow; baseline: number[]; incident: number[] }>();
-    for (const row of rows) {
-      if (!inRange(row, baseline) && !inRange(row, incident)) continue;
-      const key = `${row.service}\u0000${row.operation}\u0000${row.host}`;
-      const group = groups.get(key) ?? { sample: row, baseline: [], incident: [] };
-      if (inRange(row, baseline)) group.baseline.push(row.durationMs);
-      if (inRange(row, incident)) group.incident.push(row.durationMs);
-      groups.set(key, group);
-    }
+    const rootByTrace = new Map<string, TraceRow>();
+    const topFocus: TraceRow[] = [];
+    let matchedRows = 0;
+
+    const retainTopFocus = (row: TraceRow) => {
+      topFocus.push(row);
+      topFocus.sort((left, right) => right.durationMs - left.durationMs);
+      if (topFocus.length > topN) topFocus.length = topN;
+    };
+
+    await readParquetRowsBatched(tracePath, columns, (batch) => {
+      for (const raw of batch) {
+        const row = this.traceRow(raw);
+        if (!row) continue;
+        const inBaseline = inRange(row, baseline);
+        const inIncident = inRange(row, incident);
+        if (!inBaseline && !inIncident) continue;
+
+        const key = `${row.service}\u0000${row.operation}\u0000${row.host}`;
+        const group = groups.get(key) ?? { sample: row, baseline: [], incident: [] };
+        if (inBaseline) group.baseline.push(row.durationMs);
+        if (inIncident) group.incident.push(row.durationMs);
+        groups.set(key, group);
+
+        if (
+          inIncident &&
+          includes(row.service, query.service) &&
+          includes(row.operation, query.operation) &&
+          includes(row.host, query.host)
+        ) {
+          matchedRows++;
+          retainTopFocus(row);
+          const existing = rootByTrace.get(row.traceId);
+          if (!existing || row.durationMs > existing.durationMs) {
+            rootByTrace.set(row.traceId, row);
+          }
+        }
+      }
+    });
+
     const anomalies: TraceAnomaly[] = [];
     for (const group of groups.values()) {
       if (group.baseline.length < 5 || group.incident.length < 2) continue;
@@ -608,15 +631,29 @@ export class RCA100Adapter {
         Math.log2(Math.max(right.ratio, 1)) * Math.log10(right.incidentP95Ms + 10) -
         Math.log2(Math.max(left.ratio, 1)) * Math.log10(left.incidentP95Ms + 10),
     );
-    const focusSorted = [...focus].sort((left, right) => right.durationMs - left.durationMs);
-    const paths: CriticalTracePath[] = [];
-    const usedTraceIds = new Set<string>();
-    for (const root of focusSorted) {
-      if (usedTraceIds.has(root.traceId)) continue;
-      usedTraceIds.add(root.traceId);
-      const traceRows = rows.filter((row) => row.traceId === root.traceId);
-      const path = this.longestChildPath(root, traceRows);
-      paths.push({
+
+    const roots = [...rootByTrace.values()]
+      .sort((left, right) => right.durationMs - left.durationMs)
+      .slice(0, Math.min(5, topN));
+    const selectedTraceIds = new Set(roots.map((row) => row.traceId));
+    const rowsByTrace = new Map<string, TraceRow[]>();
+    if (selectedTraceIds.size > 0) {
+      await readParquetRowsBatched(tracePath, columns, (batch) => {
+        for (const raw of batch) {
+          const traceId = String(raw.traceId ?? "");
+          if (!selectedTraceIds.has(traceId)) continue;
+          const row = this.traceRow(raw);
+          if (!row) continue;
+          const traceRows = rowsByTrace.get(traceId) ?? [];
+          traceRows.push(row);
+          rowsByTrace.set(traceId, traceRows);
+        }
+      });
+    }
+
+    const paths: CriticalTracePath[] = roots.map((root) => {
+      const path = this.longestChildPath(root, rowsByTrace.get(root.traceId) ?? [root]);
+      return {
         traceId: root.traceId,
         totalDurationMs: root.durationMs,
         path: path.map((row) => this.tracePathNode(row)),
@@ -624,9 +661,9 @@ export class RCA100Adapter {
           traceId: root.traceId,
           spanId: root.spanId,
         }),
-      });
-      if (paths.length >= Math.min(5, topN)) break;
-    }
+      };
+    });
+
     const candidateGroups = new Map<string, { sample: TracePathNode; durations: number[] }>();
     for (const item of paths) {
       const rootService = item.path[0]?.service;
@@ -653,13 +690,13 @@ export class RCA100Adapter {
       caseId,
       modality: "trace",
       query: query as unknown as Record<string, unknown>,
-      matchedRows: focus.length,
-      returnedRows: Math.min(focus.length, topN),
-      truncated: focus.length > topN,
+      matchedRows,
+      returnedRows: Math.min(matchedRows, topN),
+      truncated: matchedRows > topN,
       rawRef,
       data: {
         anomalies: anomalies.slice(0, topN),
-        topSpans: focusSorted.slice(0, topN).map((row) => this.tracePathNode(row)),
+        topSpans: topFocus.map((row) => this.tracePathNode(row)),
         criticalPaths: paths,
         propagationCandidates,
       },
@@ -999,7 +1036,6 @@ export class RCA100Adapter {
       endMs: Date.parse(endIso),
       durationMs: durationNs / 1_000_000,
       statusCode: String(row.statusCode ?? ""),
-      attributes: String(row.attributes ?? ""),
     };
   }
 
