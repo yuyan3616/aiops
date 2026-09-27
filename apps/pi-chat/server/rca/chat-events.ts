@@ -194,6 +194,7 @@ export class RcaChatEventMapper {
         }];
       }
       case "investigation.started":
+      case "expert.thinking.delta":
       case "round.completed":
       case "investigation.completed":
       case "investigation.failed":
