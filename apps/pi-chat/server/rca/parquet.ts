@@ -12,6 +12,12 @@ import type { SchemaField } from "./types";
 
 export type ParquetRow = Record<string, unknown>;
 
+function throwIfCancelled(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw new DOMException("Investigation cancelled", "AbortError");
+  }
+}
+
 export async function readParquetRows(path: string, columns?: string[]): Promise<ParquetRow[]> {
   const file = await asyncBufferFromFile(resolve(path));
   const rows = await parquetReadObjects({
@@ -27,11 +33,16 @@ export async function readParquetRowsBatched(
   columns: string[],
   onBatch: (rows: ParquetRow[]) => void | Promise<void>,
   batchSize = 20_000,
+  signal?: AbortSignal,
 ): Promise<number> {
+  throwIfCancelled(signal);
   const file = await asyncBufferFromFile(resolve(path));
+  throwIfCancelled(signal);
   const metadata = await parquetMetadataAsync(file);
+  throwIfCancelled(signal);
   const totalRows = Number(metadata.num_rows);
   for (let rowStart = 0; rowStart < totalRows; rowStart += batchSize) {
+    throwIfCancelled(signal);
     const rowEnd = Math.min(totalRows, rowStart + batchSize);
     const rows = (await parquetReadObjects({
       file,
@@ -40,7 +51,9 @@ export async function readParquetRowsBatched(
       rowStart,
       rowEnd,
     })) as ParquetRow[];
+    throwIfCancelled(signal);
     await onBatch(rows);
+    throwIfCancelled(signal);
   }
   return totalRows;
 }
