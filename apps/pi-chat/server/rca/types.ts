@@ -65,6 +65,7 @@ export interface Evidence {
   contradicts: string[];
   sourceQuery: Record<string, unknown>;
   toolCallId: string;
+  expertTaskId?: string;
   facts: Record<string, unknown>;
   createdAt: string;
 }
@@ -120,6 +121,7 @@ export interface ExpertTask {
   brief?: InvestigationBrief;
   implementation?: "deterministic" | "pi-session";
   sessionId?: string;
+  finding?: AgentExpertFinding;
   createdAt: string;
   completedAt?: string;
 }
