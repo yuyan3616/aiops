@@ -519,6 +519,7 @@ export class RCA100Adapter {
   async queryTraces(
     caseId: string,
     query: TraceQuery,
+    signal?: AbortSignal,
   ): Promise<
     QueryEnvelope<{
       anomalies: TraceAnomaly[];
@@ -598,7 +599,7 @@ export class RCA100Adapter {
           }
         }
       }
-    });
+    }, undefined, signal);
 
     const anomalies: TraceAnomaly[] = [];
     for (const group of groups.values()) {
@@ -648,7 +649,7 @@ export class RCA100Adapter {
           traceRows.push(row);
           rowsByTrace.set(traceId, traceRows);
         }
-      });
+      }, undefined, signal);
     }
 
     const paths: CriticalTracePath[] = roots.map((root) => {
