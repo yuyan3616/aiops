@@ -3,6 +3,7 @@ import type {
   AgentThreadRun,
   ChatMessage,
   EventType,
+  HypothesisView,
   MessageListItem,
   ThinkingBlock,
   ToolRun,
@@ -105,6 +106,60 @@ export function applyExternalStreamEvent(
         ? { ...item, thinking: { ...item.thinking, completed: true } }
         : item,
     );
+    return { items, sequence };
+  }
+
+  if (type === "hypothesis.updated") {
+    const investigationId = String(data.investigationId ?? "");
+    const incoming = data.hypothesis as Partial<HypothesisView> | undefined;
+    if (!investigationId || !incoming?.id) return { items, sequence };
+    const boardId = `${investigationId}:hypotheses`;
+    const existing = items.find((item) => item.kind === "hypotheses" && item.id === boardId);
+    if (!existing || existing.kind !== "hypotheses") {
+      const hypothesis: HypothesisView = {
+        id: incoming.id,
+        statement: incoming.statement ?? "",
+        status: incoming.status ?? "possible",
+        ...(typeof incoming.confidence === "number" ? { confidence: incoming.confidence } : {}),
+        supportingEvidenceIds: incoming.supportingEvidenceIds ?? [],
+        contradictingEvidenceIds: incoming.contradictingEvidenceIds ?? [],
+        ...(incoming.reason ? { reason: incoming.reason } : {}),
+      };
+      items.push({
+        kind: "hypotheses",
+        id: boardId,
+        board: { investigationId, hypotheses: [hypothesis] },
+        seqId: allocate(),
+      });
+      return { items, sequence };
+    }
+    items = updateItem(items, boardId, (item) => {
+      if (item.kind !== "hypotheses") return item;
+      const current = item.board.hypotheses.find((entry) => entry.id === incoming.id);
+      const hypothesis: HypothesisView = {
+        id: incoming.id!,
+        statement: incoming.statement ?? current?.statement ?? "",
+        status: incoming.status ?? current?.status ?? "possible",
+        ...(typeof incoming.confidence === "number"
+          ? { confidence: incoming.confidence }
+          : current?.confidence !== undefined
+            ? { confidence: current.confidence }
+            : {}),
+        supportingEvidenceIds:
+          incoming.supportingEvidenceIds ?? current?.supportingEvidenceIds ?? [],
+        contradictingEvidenceIds:
+          incoming.contradictingEvidenceIds ?? current?.contradictingEvidenceIds ?? [],
+        ...(incoming.reason
+          ? { reason: incoming.reason }
+          : current?.reason
+            ? { reason: current.reason }
+            : {}),
+      };
+      const hypotheses = current
+        ? item.board.hypotheses.map((entry) => (entry.id === hypothesis.id ? hypothesis : entry))
+        : [...item.board.hypotheses, hypothesis];
+      return { ...item, board: { ...item.board, hypotheses } };
+    });
     return { items, sequence };
   }
 
