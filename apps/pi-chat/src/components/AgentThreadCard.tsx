@@ -1,6 +1,8 @@
+import { Markdown } from "@components/Markdown";
 import { ToolCard } from "@components/ToolCard";
 import type { AgentThreadRun } from "@shared/types";
 import {
+  Brain,
   CheckCircle2,
   ChevronRight,
   LoaderCircle,
@@ -97,6 +99,18 @@ export function AgentThreadCard({ agent }: { agent: AgentThreadRun }) {
                 <label>调查目标</label>
                 <p>{agent.objective}</p>
               </section>
+
+              {agent.thinking && (
+                <section>
+                  <div className="agent-thread-section-title">
+                    <Brain size={14} />
+                    思考过程
+                  </div>
+                  <div className="agent-thread-thinking">
+                    <Markdown content={agent.thinking} />
+                  </div>
+                </section>
+              )}
 
               <section>
                 <div className="agent-thread-section-title">
