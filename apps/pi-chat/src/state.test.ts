@@ -3,7 +3,7 @@ import test from "node:test";
 
 import type { ConversationSnapshot, StreamEvent } from "@shared/types";
 
-import { browserPanelReducer, createBrowserPanelState } from "./state";
+import { browserPanelReducer, conversationReducer, createBrowserPanelState } from "./state";
 
 test("runtime.error keeps the user-facing error message in browser state", () => {
   const initial = createBrowserPanelState("c1");
@@ -59,4 +59,67 @@ test("snapshot restores a persisted runtime error after page refresh", () => {
   assert.equal(restored.status, "error");
   assert.equal(restored.error, "模型未配置");
   assert.equal(restored.connected, true);
+});
+
+
+test("conversationReducer keeps expert tools nested in an agent thread", () => {
+  let items = conversationReducer([], {
+    type: "event",
+    event: {
+      id: 1,
+      streamId: "s1",
+      type: "agent.started",
+      payload: {
+        agent: {
+          id: "agent-1",
+          taskId: "T01",
+          expert: "trace",
+          label: "Trace Expert",
+          objective: "Locate latency propagation.",
+          status: "running",
+          tools: [],
+          evidence: [],
+          implementation: "deterministic",
+        },
+      },
+    },
+  });
+  items = conversationReducer(items, {
+    type: "event",
+    event: {
+      id: 2,
+      streamId: "s1",
+      type: "agent.tool.completed",
+      payload: {
+        agentId: "agent-1",
+        tool: {
+          id: "tool-1",
+          name: "query_traces",
+          args: {},
+          status: "success",
+          result: "shipping degraded",
+        },
+      },
+    },
+  });
+  items = conversationReducer(items, {
+    type: "event",
+    event: {
+      id: 3,
+      streamId: "s1",
+      type: "agent.completed",
+      payload: {
+        agentId: "agent-1",
+        status: "completed",
+        summary: "shipping localized",
+      },
+    },
+  });
+
+  assert.equal(items.length, 1);
+  assert.equal(items[0]?.kind, "agent");
+  if (items[0]?.kind !== "agent") return;
+  assert.equal(items[0].agent.tools[0]?.name, "query_traces");
+  assert.equal(items[0].agent.status, "completed");
+  assert.equal(items[0].agent.summary, "shipping localized");
 });
