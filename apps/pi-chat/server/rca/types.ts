@@ -53,6 +53,18 @@ export interface Hypothesis {
   mechanism?: string;
 }
 
+export interface Observation {
+  id: string;
+  caseId: string;
+  modality: EvidenceModality;
+  toolCallId: string;
+  expertTaskId?: string;
+  summary: string;
+  rawRef?: string;
+  facts: Record<string, unknown>;
+  createdAt: string;
+}
+
 export interface Evidence {
   id: string;
   caseId: string;
@@ -98,9 +110,22 @@ export interface AgentEvidenceClaim {
   contradicts: string[];
 }
 
+export type FindingVerdict = "supports" | "contradicts" | "no-signal" | "mixed" | "inconclusive";
+
+export interface AgentRunDiagnostics {
+  toolCallCount: number;
+  thinkingChars: number;
+  outputChars: number;
+  repairAttempted: boolean;
+  repairSucceeded: boolean;
+  failureReason?: "json_missing" | "json_invalid" | "aborted" | "model_error" | "unknown";
+  failureDetail?: string;
+}
+
 export interface AgentExpertFinding {
   status: ExpertFindingStatus;
   strength: FindingStrength;
+  verdict?: FindingVerdict;
   summary: string;
   conclusions: string[];
   evidenceClaims: AgentEvidenceClaim[];
@@ -122,6 +147,7 @@ export interface ExpertTask {
   implementation?: "deterministic" | "pi-session";
   sessionId?: string;
   finding?: AgentExpertFinding;
+  diagnostics?: AgentRunDiagnostics;
   createdAt: string;
   completedAt?: string;
 }
@@ -166,6 +192,7 @@ export interface Investigation {
   alertContext: AlertContext;
   scope: InvestigationScope;
   hypotheses: Hypothesis[];
+  observations: Observation[];
   evidence: Evidence[];
   expertTasks: ExpertTask[];
   toolCalls: ToolCallRecord[];
@@ -185,6 +212,7 @@ export type InvestigationEventType =
   | "expert.completed"
   | "tool.started"
   | "tool.completed"
+  | "observation.created"
   | "evidence.created"
   | "round.completed"
   | "investigation.completed"
