@@ -121,3 +121,18 @@ test("agent runtime sources cannot expose an answer key", async () => {
     assert.doesNotMatch(text, /from\s+["'].*evaluation|RCA100_ANSWER_KEY_DIR|\.gt\.json/);
   }
 });
+
+
+test("production wiring has a single agentic RCA execution path", async () => {
+  const indexSource = await readFile(join(appDir, "server/index.ts"), "utf8");
+  const serviceSource = await readFile(join(appDir, "server/rca/service.ts"), "utf8");
+  const routeSource = await readFile(join(appDir, "server/routes/rca.ts"), "utf8");
+  const packageJson = JSON.parse(await readFile(join(appDir, "package.json"), "utf8")) as {
+    scripts?: Record<string, string>;
+  };
+
+  assert.doesNotMatch(indexSource, /RcaOrchestrator|PiRcaPlanner|RCA_AGENTIC_PLANNER/);
+  assert.doesNotMatch(serviceSource, /Legacy deterministic|private readonly orchestrator|RunningInvestigation/);
+  assert.doesNotMatch(routeSource, /app\.post\("\/investigations"/);
+  assert.equal(packageJson.scripts?.["rca:run"], undefined);
+});
