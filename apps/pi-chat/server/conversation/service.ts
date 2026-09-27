@@ -5,20 +5,17 @@ import { join } from "node:path";
 
 import {
   getSupportedThinkingLevels,
-  Type,
   type ImageContent,
   type TextContent,
   type ThinkingLevel,
 } from "@earendil-works/pi-ai";
 import {
-  defineTool,
   ModelRuntime,
   SessionManager,
   loadSkillsFromDir,
-  type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import type { GlobalConfig } from "@server/config";
-import { RcaChatEventMapper } from "@server/rca/chat-events";
+import { createRcaMainAgentTools } from "@server/rca/main-agent-tools";
 import type { RcaService } from "@server/rca/service";
 import { hasSameStringItems } from "@server/utils";
 import type {
@@ -388,13 +385,59 @@ export class ConversationService {
     selectedSkills: string[] = [],
   ) {
     console.log("createManagedSession", selectedSkills);
+    const rcaMainTools = createRcaMainAgentTools({
+      rcaService: this.rcaService,
+      conversationId: conversationRecord.id,
+      getModelRef: () => {
+        const managed = this.managedSessions.get(conversationRecord.id);
+        if (managed) {
+          return {
+            provider: managed.runtime.session.agent.state.model.provider,
+            id: managed.runtime.session.agent.state.model.id,
+          };
+        }
+        const fallback = this.modelRuntime.getAvailableSnapshot()[0];
+        if (!fallback) throw new Error("No model is available for RCA sub-agents");
+        return { provider: fallback.provider, id: fallback.id };
+      },
+      onProjection: (projection) =>
+        this.publishExternalEvent(
+          conversationRecord.id,
+          projection.type,
+          projection.payload,
+        ),
+      onLinkInvestigation: (investigationId) =>
+        this.linkInvestigation(conversationRecord.id, investigationId),
+      onConcluded: (investigation, report) => {
+        const managed = this.managedSessions.get(conversationRecord.id);
+        if (!managed || !investigation.rootCause) return;
+        const modelRef: TitleModelRef = {
+          provider: managed.runtime.session.agent.state.model.provider,
+          id: managed.runtime.session.agent.state.model.id,
+        };
+        runDetached(
+          () =>
+            this.refineTitleAfterInvestigation(
+              conversationRecord.id,
+              {
+                caseId: investigation.caseId,
+                summary: investigation.rootCause?.summary ?? report,
+                rootCauseEntities: investigation.rootCause?.rootCauseEntities ?? [],
+              },
+              modelRef,
+            ),
+          () => undefined,
+        );
+      },
+    });
+
     const runtime = await createRuntime({
       globalConfig: this.globalConfig,
       conversationRecord,
       sessionManager,
       modelRuntime: this.modelRuntime,
       selectedSkills,
-      customTools: [this.createRcaInvestigationTool(conversationRecord.id)],
+      customTools: rcaMainTools,
     });
 
     const managedSession: ManagedSession = {
@@ -680,89 +723,6 @@ export class ConversationService {
       },
     });
     this.publishConversationTitle(updated);
-  }
-
-  private createRcaInvestigationTool(conversationId: string): ToolDefinition {
-    return defineTool({
-      name: "investigate_rca_case",
-      label: "RCA investigation",
-      description:
-        "Run the full auditable RCA workflow for a concrete RCA100 case such as t039. Use this when the user asks to investigate, diagnose, troubleshoot, or find the root cause of that case. The workflow streams child expert tasks and evidence into the conversation and returns the final structured investigation result.",
-      parameters: Type.Object({
-        caseId: Type.String({ description: "RCA100 case id, for example t039" }),
-      }),
-      execute: async (_toolCallId: string, parameters: Record<string, unknown>) => {
-        const caseId = String(parameters.caseId ?? "")
-          .trim()
-          .toLowerCase();
-        if (!/^t\d+$/i.test(caseId)) {
-          throw new Error("caseId must look like t039");
-        }
-
-        let mapper: RcaChatEventMapper;
-        const handle = this.rcaService.run(caseId, {
-          conversationId,
-          onEvent: async (event) => {
-            for (const projection of mapper.map(event)) {
-              await this.publishExternalEvent(conversationId, projection.type, projection.payload);
-            }
-          },
-        });
-        mapper = new RcaChatEventMapper(handle.investigationId);
-        await this.linkInvestigation(conversationId, handle.investigationId);
-
-        const { investigation, report } = await handle.promise;
-        const managedSession = this.managedSessions.get(conversationId);
-        if (managedSession && investigation.rootCause) {
-          const modelRef: TitleModelRef = {
-            provider: managedSession.runtime.session.agent.state.model.provider,
-            id: managedSession.runtime.session.agent.state.model.id,
-          };
-          runDetached(
-            () =>
-              this.refineTitleAfterInvestigation(
-                conversationId,
-                {
-                  caseId: investigation.caseId,
-                  summary: investigation.rootCause?.summary ?? report,
-                  rootCauseEntities: investigation.rootCause?.rootCauseEntities ?? [],
-                },
-                modelRef,
-              ),
-            () => undefined,
-          );
-        }
-        const result = {
-          investigationId: investigation.id,
-          caseId: investigation.caseId,
-          status: investigation.status,
-          rootCause: investigation.rootCause,
-          hypotheses: investigation.hypotheses.map((hypothesis) => ({
-            id: hypothesis.id,
-            statement: hypothesis.statement,
-            status: hypothesis.status,
-            confidence: hypothesis.confidence,
-            supportingEvidenceIds: hypothesis.supportingEvidenceIds,
-            contradictingEvidenceIds: hypothesis.contradictingEvidenceIds,
-          })),
-          evidence: investigation.evidence.map((evidence) => ({
-            id: evidence.id,
-            modality: evidence.modality,
-            entity: evidence.entity,
-            summary: evidence.summary,
-            supports: evidence.supports,
-            contradicts: evidence.contradicts,
-            rawRef: evidence.rawRef,
-          })),
-          report,
-        };
-
-        return {
-          content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
-          details: result,
-        };
-      },
-    });
   }
 
   private async publishExternalEvent(
