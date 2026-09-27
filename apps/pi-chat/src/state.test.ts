@@ -123,3 +123,48 @@ test("conversationReducer keeps expert tools nested in an agent thread", () => {
   assert.equal(items[0].agent.status, "completed");
   assert.equal(items[0].agent.summary, "shipping localized");
 });
+
+
+test("conversationReducer merges structured RCA hypothesis updates", () => {
+  let items = conversationReducer([], {
+    type: "event",
+    event: {
+      id: 10,
+      streamId: "s1",
+      type: "hypothesis.updated",
+      payload: {
+        investigationId: "INV-test",
+        hypothesis: {
+          id: "H01",
+          statement: "checkout local slowdown",
+          status: "possible",
+          supportingEvidenceIds: [],
+          contradictingEvidenceIds: [],
+        },
+      },
+    },
+  });
+  items = conversationReducer(items, {
+    type: "event",
+    event: {
+      id: 11,
+      streamId: "s1",
+      type: "hypothesis.updated",
+      payload: {
+        investigationId: "INV-test",
+        hypothesis: {
+          id: "H01",
+          status: "rejected",
+          contradictingEvidenceIds: ["E01"],
+        },
+      },
+    },
+  });
+
+  assert.equal(items.length, 1);
+  assert.equal(items[0]?.kind, "hypotheses");
+  if (items[0]?.kind !== "hypotheses") return;
+  assert.equal(items[0].board.hypotheses[0]?.statement, "checkout local slowdown");
+  assert.equal(items[0].board.hypotheses[0]?.status, "rejected");
+  assert.deepEqual(items[0].board.hypotheses[0]?.contradictingEvidenceIds, ["E01"]);
+});
