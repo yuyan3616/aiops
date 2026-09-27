@@ -194,7 +194,12 @@ export class RcaChatEventMapper {
                   id: this.toolId(call.id),
                   name: call.tool,
                   args: call.query,
-                  status: call.status === "completed" ? "success" : "error",
+                  status:
+                    call.status === "completed"
+                      ? "success"
+                      : call.status === "cancelled"
+                        ? "cancelled"
+                        : "error",
                   result: call.resultSummary ?? call.error ?? event.summary,
                   details: {
                     expertTaskId: call.expertTaskId,
@@ -212,7 +217,12 @@ export class RcaChatEventMapper {
               id: this.toolId(call.id),
               name: call.tool,
               args: call.query,
-              status: call.status === "completed" ? "success" : "error",
+              status:
+                call.status === "completed"
+                  ? "success"
+                  : call.status === "cancelled"
+                    ? "cancelled"
+                    : "error",
               result: call.resultSummary ?? call.error ?? event.summary,
               details: { rawRef: call.rawRef },
             },
