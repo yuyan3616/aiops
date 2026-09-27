@@ -14,6 +14,12 @@ type SessionMessage = SessionMessageEntry["message"];
 type ConversationMessage = Extract<SessionMessage, { role: "user" | "assistant" }>;
 type AgentToolResultMessage = Extract<SessionMessage, { role: "toolResult" }>;
 
+function sequenceBase(timestamp: unknown): number {
+  const milliseconds =
+    typeof timestamp === "number" ? timestamp : Date.parse(String(timestamp ?? ""));
+  return (Number.isFinite(milliseconds) ? milliseconds : Date.now()) * 100;
+}
+
 /** Narrows a content part to an image with the required fields. */
 export function isImagePart(part: ContentPart): part is ImageContent & {
   data: string;
@@ -115,6 +121,7 @@ export class ConversationViewBuilder {
       kind: "message",
       id: entry.id,
       message: chatMessage,
+      seqId: sequenceBase(entry.timestamp),
     });
   }
 
@@ -135,6 +142,8 @@ export class ConversationViewBuilder {
 
     let thinkingBlock: ThinkingBlock | undefined;
     let messageAdded = false;
+    let sequenceOffset = 0;
+    const nextSequence = () => sequenceBase(entry.timestamp) + sequenceOffset++;
     for (const part of content) {
       if (part.type === "thinking") {
         if (!thinkingBlock) {
@@ -146,6 +155,7 @@ export class ConversationViewBuilder {
             kind: "thinking",
             id: thinkingBlock.id,
             thinking: thinkingBlock,
+            seqId: nextSequence(),
           });
         }
         thinkingBlock.text += part.thinking ?? "";
@@ -166,6 +176,7 @@ export class ConversationViewBuilder {
           kind: "tool",
           id: tool.id,
           tool,
+          seqId: nextSequence(),
         };
         this.toolsByCallId.set(part.id, toolItem);
         this.messageList.push(toolItem);
@@ -181,6 +192,7 @@ export class ConversationViewBuilder {
           kind: "message",
           id: entry.id,
           message: chatMessage,
+          seqId: nextSequence(),
         });
       }
     }
@@ -189,6 +201,7 @@ export class ConversationViewBuilder {
         kind: "message",
         id: entry.id,
         message: chatMessage,
+        seqId: nextSequence(),
       });
     }
   }

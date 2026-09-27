@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { InvestigationEventBus, type InvestigationEventListener } from "./events";
 import { createExpertRegistry, type ExpertAgent, type RecordedToolExecution } from "./experts";
+import { DeterministicRcaPlanner, type RcaPlanner } from "./planner";
 import { InvestigationRepository } from "./repository";
 import { ObservabilityToolRegistry, type ObservabilityToolName, type ToolExecution } from "./tools";
 import type {
@@ -72,11 +73,17 @@ export class RcaOrchestrator {
   private readonly tools: ObservabilityToolRegistry;
   private readonly repository: InvestigationRepository;
   private readonly experts: Map<ExpertKind, ExpertAgent>;
+  private readonly planner: RcaPlanner;
 
-  constructor(tools: ObservabilityToolRegistry, repository: InvestigationRepository) {
+  constructor(
+    tools: ObservabilityToolRegistry,
+    repository: InvestigationRepository,
+    planner: RcaPlanner = new DeterministicRcaPlanner(),
+  ) {
     this.tools = tools;
     this.repository = repository;
     this.experts = createExpertRegistry();
+    this.planner = planner;
   }
 
   async investigate(options: InvestigationRunOptions): Promise<InvestigationRunResult> {
@@ -145,16 +152,37 @@ export class RcaOrchestrator {
       const maxRounds = Math.max(1, Math.min(options.maxRounds ?? 8, 12));
       while (investigation.rounds < maxRounds) {
         checkCancelled(options.signal);
-        const next = this.selectNextExpert(investigation, task, candidate);
-        if (!next) break;
+        const decision = await this.planner.decide({
+          investigation,
+          task,
+          candidate,
+          maxRounds,
+        });
+        if (decision.action === "finish") {
+          await bus.publish("round.completed", `Planner stopped: ${decision.reason}`, {
+            round: investigation.rounds,
+            plannerSource: decision.source,
+            decisionReason: decision.reason,
+            hypotheses: investigation.hypotheses,
+            evidenceIds: investigation.evidence.map((item) => item.id),
+          });
+          break;
+        }
+        const next = decision.action;
         investigation.rounds++;
         const taskRecord = this.createExpertTask(investigation, next, ids);
         await this.markRelevantInvestigating(investigation, next, ids, bus);
         await this.repository.save(investigation);
-        await bus.publish("expert.started", `${this.expertLabel(next)} investigating.`, {
-          expertTask: taskRecord,
-          round: investigation.rounds,
-        });
+        await bus.publish(
+          "expert.started",
+          `${this.expertLabel(next)} investigating: ${decision.reason}`,
+          {
+            expertTask: taskRecord,
+            round: investigation.rounds,
+            plannerSource: decision.source,
+            decisionReason: decision.reason,
+          },
+        );
         const expert = this.experts.get(next);
         if (!expert) throw new Error(`Expert ${next} is not registered`);
         const finding = await expert.investigate({
@@ -166,7 +194,7 @@ export class RcaOrchestrator {
             this.invokeTool(investigation!, taskRecord, bus, tool, arguments_, options.signal),
         });
         const evidence = await this.acceptFinding(investigation, taskRecord, finding, bus);
-        candidate = this.updateCandidate(candidate, finding);
+        candidate = this.updateCandidate(candidate, finding, next);
         if (candidate && !ids.candidate) {
           const hypothesis = this.createCandidateHypothesis(investigation, candidate);
           ids.candidate = hypothesis.id;
@@ -312,22 +340,6 @@ export class RcaOrchestrator {
     };
   }
 
-  private selectNextExpert(
-    investigation: Investigation,
-    task: RcaTask,
-    candidate?: Candidate,
-  ): ExpertKind | undefined {
-    const modalities = new Set(investigation.evidence.map((item) => item.modality));
-    if (task.alert.entity.domain === "apm" && !modalities.has("trace")) return "trace";
-    if (!candidate && !modalities.has("metric")) return "metrics";
-    if (candidate && !modalities.has("metric")) return "metrics";
-    if (candidate && !modalities.has("log")) return "log";
-    if (candidate && (!modalities.has("topology") || !modalities.has("event"))) {
-      return "event-topology";
-    }
-    return undefined;
-  }
-
   private createExpertTask(
     investigation: Investigation,
     kind: ExpertKind,
@@ -447,8 +459,9 @@ export class RcaOrchestrator {
   private updateCandidate(
     candidate: Candidate | undefined,
     finding: ExpertFinding,
+    expert: ExpertKind,
   ): Candidate | undefined {
-    if (candidate) return candidate;
+    if (candidate || expert !== "trace") return candidate;
     const host = finding.candidateEntities.find((item) =>
       /-[a-f0-9]{5,10}-[a-z0-9]{5}$/.test(item),
     );
@@ -520,7 +533,7 @@ export class RcaOrchestrator {
             ? [ids.infrastructure, ...(ids.candidate ? [ids.candidate] : [])]
             : ids.candidate
               ? [ids.candidate]
-              : [ids.downstream];
+              : [ids.local];
     for (const id of relevant) {
       const hypothesis = investigation.hypotheses.find((item) => item.id === id);
       if (!hypothesis || hypothesis.status !== "possible") continue;
@@ -550,6 +563,38 @@ export class RcaOrchestrator {
         )
       : [];
     const modalities = new Set(supporting.map((item) => item.modality));
+    const localHypothesis = investigation.hypotheses.find((item) => item.id === ids.local);
+    const localSupporting = investigation.evidence.filter((item) => item.supports.includes(ids.local));
+    const localModalities = new Set(localSupporting.map((item) => item.modality));
+    if (!candidate && localHypothesis && localModalities.size >= 2) {
+      localHypothesis.status = localModalities.size >= 3 ? "confirmed" : "supported";
+      localHypothesis.confidence = localModalities.size >= 3 ? 0.9 : 0.8;
+      const logEvidence = localSupporting.find((item) => item.modality === "log");
+      const applicationErrorCount = Number(logEvidence?.facts.applicationErrorCount ?? 0);
+      const slowAccessLog = logEvidence?.facts.slowestAccessLog;
+      const mechanism = slowAccessLog
+        ? "Slow successful processing in the alerted service is supported by local metrics and logs."
+        : applicationErrorCount > 0
+          ? "Application errors in the alerted service coincide with its local latency anomaly."
+          : "Multiple local telemetry modalities support degradation inside the alerted service, but the low-level mechanism remains uncertain.";
+      return {
+        investigationId: investigation.id,
+        status: localModalities.size >= 3 ? "confirmed" : "probable",
+        rootCauseEntities: [
+          investigation.alertContext.service ?? investigation.alertContext.entity.name,
+        ],
+        mechanism,
+        summary: `${investigation.alertContext.service ?? investigation.alertContext.entity.name} has independent local evidence across ${localModalities.size} modalities; no downstream candidate was required for this conclusion.`,
+        evidenceIds: localSupporting.map((item) => item.id),
+        rejectedHypotheses: investigation.hypotheses
+          .filter((item) => item.status === "rejected")
+          .map((item) => item.id),
+        confidence: localHypothesis.confidence,
+        missingEvidence: [
+          "A direct low-level runtime or packet measurement would be needed to prove the exact mechanism.",
+        ],
+      };
+    }
     if (!candidate || !candidateHypothesis || modalities.size < 2) {
       return {
         investigationId: investigation.id,

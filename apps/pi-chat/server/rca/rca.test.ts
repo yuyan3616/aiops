@@ -28,8 +28,19 @@ let repository: InvestigationRepository;
 let completed: Investigation;
 let evaluation: RcaEvaluation;
 
+async function exists(path: string): Promise<boolean> {
+  return access(path).then(
+    () => true,
+    () => false,
+  );
+}
+
+const hasT039 = await exists(join(casesDir, "t039", "task.json"));
+const hasT039Answer = await exists(join(answerKeyDir, "t039.gt.json"));
+const rca100Test = hasT039 ? test : test.skip;
+const evaluationTest = hasT039 && hasT039Answer ? test : test.skip;
+
 test.before(async () => {
-  await access(join(casesDir, "t039", "task.json"));
   tempDir = await mkdtemp(join(tmpdir(), "pi-chat-rca-test-"));
   repository = new InvestigationRepository(tempDir);
 });
@@ -38,7 +49,7 @@ test.after(async () => {
   if (tempDir) await rm(tempDir, { recursive: true, force: true });
 });
 
-test("loads every required t039 modality using its actual schema", async () => {
+rca100Test("loads every required t039 modality using its actual schema", async () => {
   assert.deepEqual(await adapter.validateCase("t039"), {
     "task.json": 1,
     "metrics.parquet": 91_162,
@@ -70,7 +81,7 @@ test("loads every required t039 modality using its actual schema", async () => {
   assert.ok(schemas.every((schema) => schema.fields.length > 0));
 });
 
-test("tools query t039 by time, service, operation, and keyword with bounded output", async () => {
+rca100Test("tools query t039 by time, service, operation, and keyword with bounded output", async () => {
   const alert = await adapter.getAlertContext("t039");
   const range = { caseId: "t039", from: alert.window.from, to: alert.window.to };
   const metrics = await tools.execute("query_metrics", {
@@ -136,7 +147,7 @@ test("runtime path and tool registry cannot expose an answer key", async () => {
   }
 });
 
-test("end-to-end investigation persists traceable evidence and hypothesis transitions", async () => {
+rca100Test("end-to-end investigation persists traceable evidence and hypothesis transitions", async () => {
   const orchestrator = new RcaOrchestrator(tools, repository);
   completed = (await orchestrator.investigate({ caseId: "t039" })).investigation;
   assert.equal(completed.status, "completed");
@@ -168,7 +179,7 @@ test("end-to-end investigation persists traceable evidence and hypothesis transi
   }
 });
 
-test("independent scorer reads t039 ground truth only after prediction completion", async () => {
+evaluationTest("independent scorer reads t039 ground truth only after prediction completion", async () => {
   assert.ok(completed?.completedAt);
   evaluation = await new RcaScorer(answerKeyDir, repository).evaluate(completed.id);
   assert.equal(evaluation.rootCauseEntity.matched, true);
@@ -179,7 +190,7 @@ test("independent scorer reads t039 ground truth only after prediction completio
   await access(join(repository.directory(completed.id), "evaluation.json"));
 });
 
-test("follow-up QA explains the completed investigation without new tool calls or mutation", async () => {
+rca100Test("follow-up QA explains the completed investigation without new tool calls or mutation", async () => {
   const service = new InvestigationFollowUpService(repository);
   const originalHypotheses = structuredClone(completed.hypotheses);
   const originalToolCalls = structuredClone(completed.toolCalls);
@@ -212,7 +223,7 @@ test("follow-up QA explains the completed investigation without new tool calls o
   assert.deepEqual(completed.toolCalls, originalToolCalls);
 });
 
-test("follow-up QA supports evidence drill-down, lifecycle replay, and read-only counterfactuals", async () => {
+rca100Test("follow-up QA supports evidence drill-down, lifecycle replay, and read-only counterfactuals", async () => {
   const service = new InvestigationFollowUpService(repository);
   const original = JSON.stringify(await repository.get(completed.id));
   const evidence = await service.answer(completed.id, "E01 是什么？");

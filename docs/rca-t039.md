@@ -10,6 +10,16 @@ RCA business events are projected onto the original Pi Chat stream protocol:
 
 There is no RCA dashboard or RCA-specific frontend component. Raw references and full evidence remain in the investigation artifacts rather than being dumped into the chat.
 
+## Agentic coordinator and chat-history persistence
+
+The production Pi Chat server now uses a Pi-backed RCA coordinator planner by default. The planner chooses the next specialist from the current hypotheses and Evidence; guarded server-side rules still validate Evidence and the final conclusion. Set `RCA_AGENTIC_PLANNER=false` to use the deterministic fallback planner for offline or reproducible runs.
+
+If the planner model is unavailable, returns malformed output, or is not authenticated, the runtime automatically falls back to the deterministic planner rather than failing the investigation.
+
+RCA chat projections are persisted in the conversation record. User messages, investigation summaries, Tool cards, Evidence/Hypothesis reasoning summaries, follow-up explanations, and the final RCA answer are merged with the native Pi Session transcript by chronological sequence. Refreshing the browser or restarting the server therefore restores the same chat-first RCA history instead of relying only on the in-memory SSE channel.
+
+When traces cannot localize a downstream candidate, the investigation no longer aborts or dead-ends. Metrics, logs, and event/topology experts can continue against the alerted service itself. A local-service conclusion still requires at least two independent supporting modalities; otherwise the result remains `inconclusive`.
+
 ## Investigation follow-up
 
 The conversation record persists the most recent `activeInvestigationId` and all investigation IDs started in that session. After RCA completes, natural follow-up questions stay in the same Pi Chat conversation and read the complete immutable investigation artifact:

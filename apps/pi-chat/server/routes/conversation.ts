@@ -15,7 +15,7 @@ import {
 } from "@server/rca/follow-up";
 import type { RcaService } from "@server/rca/service";
 import { jsonBody } from "@server/utils";
-import type { ConversationConfigUpdate, StreamEvent } from "@shared/types";
+import type { ConversationConfigUpdate, EventType, StreamEvent } from "@shared/types";
 import { Hono } from "hono";
 export function createConversationRoutes(
   conversationService: ConversationService,
@@ -110,39 +110,51 @@ export function createConversationRoutes(
         // ignore malformed skills
       }
     }
-    const publishUserMessage = () => {
+    const publishPersisted = async (
+      channel: ReturnType<ConversationService["getEventChannel"]>,
+      type: EventType,
+      payload: unknown,
+    ) => {
+      channel.publish(type, payload);
+      await conversationService.persistExternalEvent(conversationId, type, payload);
+    };
+    const publishUserMessage = async () => {
       const channel = conversationService.getEventChannel(conversationId);
-      channel.publish("message.added", {
+      const message = {
         id: randomUUID(),
-        role: "user",
+        role: "user" as const,
         text: userInput.trim(),
         images: [],
         timestamp: Date.now(),
-      });
+      };
+      await publishPersisted(channel, "message.added", message);
       channel.publish("runtime.status", { status: "running" });
       return channel;
     };
     const startInvestigation = async (caseId: string) => {
-      const channel = publishUserMessage();
-      const publish = (events: ChatStreamProjection[]) => {
-        for (const event of events) channel.publish(event.type, event.payload);
+      const channel = await publishUserMessage();
+      const publish = async (events: ChatStreamProjection[]) => {
+        for (const event of events) {
+          await publishPersisted(channel, event.type, event.payload);
+        }
       };
       let mapper: RcaChatEventMapper;
       const investigationId = rcaService.start(caseId, {
         conversationId,
-        onEvent: (event) => {
-          publish(mapper.map(event));
+        onEvent: async (event) => {
+          await publish(mapper.map(event));
         },
-        onCompleted: (investigation) => {
-          channel.publish("message.completed", {
+        onCompleted: async (investigation) => {
+          const payload = {
             message: {
               id: randomUUID(),
-              role: "assistant",
+              role: "assistant" as const,
               text: formatRcaFinalAnswer(investigation),
               images: [],
               timestamp: investigation.completedAt,
             },
-          });
+          };
+          await publishPersisted(channel, "message.completed", payload);
           channel.publish("runtime.status", { status: "ready" });
           channel.publish("runtime.settled", {});
         },
@@ -152,7 +164,7 @@ export function createConversationRoutes(
         },
       });
       mapper = new RcaChatEventMapper(investigationId);
-      publish(mapper.begin());
+      await publish(mapper.begin());
       await conversationService.linkInvestigation(conversationId, investigationId);
       return ctx.json({ accepted: true, investigationId }, 202);
     };
@@ -170,17 +182,20 @@ export function createConversationRoutes(
         const previous = await rcaService.get(investigationId);
         return startInvestigation(previous.caseId);
       }
-      const channel = publishUserMessage();
+      const channel = await publishUserMessage();
       try {
         const answer = await followUpService.answer(investigationId, userInput);
         const thinkingId = `${investigationId}:follow-up:${randomUUID()}:thinking`;
-        channel.publish("thinking.started", { id: thinkingId });
-        channel.publish("thinking.delta", { id: thinkingId, delta: answer.thinking });
-        channel.publish("thinking.completed", { id: thinkingId });
-        channel.publish("message.completed", {
+        await publishPersisted(channel, "thinking.started", { id: thinkingId });
+        await publishPersisted(channel, "thinking.delta", {
+          id: thinkingId,
+          delta: answer.thinking,
+        });
+        await publishPersisted(channel, "thinking.completed", { id: thinkingId });
+        await publishPersisted(channel, "message.completed", {
           message: {
             id: randomUUID(),
-            role: "assistant",
+            role: "assistant" as const,
             text: answer.answer,
             images: [],
             timestamp: Date.now(),

@@ -7,6 +7,7 @@ import { ConversationService } from "@server/conversation/service";
 import { RCA100Adapter } from "@server/rca/adapter";
 import { InvestigationFollowUpService } from "@server/rca/follow-up";
 import { RcaOrchestrator } from "@server/rca/orchestrator";
+import { PiRcaPlanner } from "@server/rca/planner";
 import { InvestigationRepository } from "@server/rca/repository";
 import { RcaService } from "@server/rca/service";
 import { ObservabilityToolRegistry } from "@server/rca/tools";
@@ -23,8 +24,10 @@ await writeFile(globalConfig.mcpConfigPath, JSON.stringify({ mcpServers: {} }, n
 const modelRuntime = await ModelRuntime.create();
 const rcaTools = new ObservabilityToolRegistry(new RCA100Adapter(globalConfig.rcaCasesDir));
 const investigationRepository = new InvestigationRepository(globalConfig.rcaInvestigationsDir);
+const rcaPlanner =
+  process.env.RCA_AGENTIC_PLANNER === "false" ? undefined : new PiRcaPlanner(modelRuntime);
 const rcaService = new RcaService(
-  new RcaOrchestrator(rcaTools, investigationRepository),
+  new RcaOrchestrator(rcaTools, investigationRepository, rcaPlanner),
   investigationRepository,
 );
 const followUpService = new InvestigationFollowUpService(investigationRepository);

@@ -9,7 +9,7 @@
     "server:dev": "tsx --watch --tsconfig tsconfig.node.json --env-file-if-exists=.env server/index.ts",
     "build": "tsc -b && vite build",
     "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.app.json --noEmit",
-    "test": "node --import tsx --test server/rca/*.test.ts",
+    "test": "node --import tsx --test server/conversation/*.test.ts server/rca/*.test.ts",
     "rca:run": "node --import tsx server/rca/cli/run.ts",
     "rca:evaluate": "node --import tsx server/rca/cli/evaluate.ts",
     "format": "oxfmt .",

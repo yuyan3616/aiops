@@ -205,8 +205,14 @@ export class MetricsExpert implements ExpertAgent {
   readonly kind = "metrics" as const;
 
   async investigate(context: ExpertContext): Promise<ExpertFinding> {
-    const candidate = context.candidate;
-    if (!candidate) throw new Error("Metrics expert requires a trace-localized candidate");
+    const traceLocalized = Boolean(context.candidate);
+    const candidate = context.candidate ?? {
+      service: context.task.alert.service ?? context.task.alert.entity.name.split("::")[0],
+      ...(context.task.alert.operation ? { operation: context.task.alert.operation } : {}),
+    };
+    const primaryHypothesisId =
+      context.hypothesisIds.candidate ??
+      (traceLocalized ? context.hypothesisIds.downstream : context.hypothesisIds.local);
     await context.invoke("get_metric_catalog", { caseId: context.task.caseId });
     const recorded = await context.invoke("query_metrics", {
       ...rangeArguments(context.task.caseId, context.task.alert.window),
@@ -259,10 +265,8 @@ export class MetricsExpert implements ExpertAgent {
         timeRange: context.task.alert.window,
         summary: `${temporal.entity} ${temporal.metric} rose from median ${temporal.baselineMedian.toFixed(4)} to ${temporal.incidentMedian.toFixed(4)} (${temporal.ratio.toFixed(1)}×) at the incident onset.`,
         rawRef: temporal.rawRef,
-        supports: context.hypothesisIds.candidate
-          ? [context.hypothesisIds.candidate]
-          : [context.hypothesisIds.downstream],
-        contradicts: [context.hypothesisIds.local],
+        supports: [primaryHypothesisId],
+        contradicts: traceLocalized ? [context.hypothesisIds.local] : [],
         sourceQuery: result.query,
         toolCallId: recorded.callId,
         facts: {
@@ -284,10 +288,8 @@ export class MetricsExpert implements ExpertAgent {
         timeRange: context.task.alert.window,
         summary: `${latency.entity} is a peer outlier for ${latency.metric}: incident median ${latency.incidentMedian.toFixed(3)} versus peer median ${latency.peerMedian.toFixed(3)} (${latency.ratio.toFixed(1)}×).`,
         rawRef: latency.rawRef,
-        supports: context.hypothesisIds.candidate
-          ? [context.hypothesisIds.candidate]
-          : [context.hypothesisIds.downstream],
-        contradicts: [context.hypothesisIds.local],
+        supports: [primaryHypothesisId],
+        contradicts: traceLocalized ? [context.hypothesisIds.local] : [],
         sourceQuery: result.query,
         toolCallId: recorded.callId,
         facts: latency,
@@ -339,8 +341,14 @@ export class LogExpert implements ExpertAgent {
   readonly kind = "log" as const;
 
   async investigate(context: ExpertContext): Promise<ExpertFinding> {
-    const candidate = context.candidate;
-    if (!candidate) throw new Error("Log expert requires a trace-localized candidate");
+    const traceLocalized = Boolean(context.candidate);
+    const candidate = context.candidate ?? {
+      service: context.task.alert.service ?? context.task.alert.entity.name.split("::")[0],
+      ...(context.task.alert.operation ? { operation: context.task.alert.operation } : {}),
+    };
+    const primaryHypothesisId =
+      context.hypothesisIds.candidate ??
+      (traceLocalized ? context.hypothesisIds.downstream : context.hypothesisIds.local);
     await context.invoke("get_log_fields", { caseId: context.task.caseId });
     const errorCall = await context.invoke("query_logs", {
       ...rangeArguments(context.task.caseId, context.task.alert.window),
@@ -391,12 +399,7 @@ export class LogExpert implements ExpertAgent {
           timeRange: context.task.alert.window,
           summary,
           rawRef: access.rawRef,
-          supports:
-            slow && context.hypothesisIds.candidate
-              ? [context.hypothesisIds.candidate]
-              : errorCount > 0
-                ? [context.hypothesisIds.downstream]
-                : [],
+          supports: slow || errorCount > 0 ? [primaryHypothesisId] : [],
           contradicts: [],
           sourceQuery: access.query,
           toolCallId: accessCall.callId,
@@ -422,8 +425,10 @@ export class EventTopologyExpert implements ExpertAgent {
   readonly kind = "event-topology" as const;
 
   async investigate(context: ExpertContext): Promise<ExpertFinding> {
-    const candidate = context.candidate;
-    if (!candidate) throw new Error("Event/topology expert requires a candidate");
+    const candidate = context.candidate ?? {
+      service: context.task.alert.service ?? context.task.alert.entity.name.split("::")[0],
+      ...(context.task.alert.operation ? { operation: context.task.alert.operation } : {}),
+    };
     const target = candidate.host ?? candidate.service;
     const topologyCall = await context.invoke("get_topology", {
       caseId: context.task.caseId,

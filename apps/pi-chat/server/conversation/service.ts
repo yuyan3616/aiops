@@ -18,12 +18,14 @@ import type {
   ConversationConfigUpdate,
   ConversationSnapshot,
   ConversationSummary,
+  EventType,
   ModelOption,
   RuntimeStatus,
   SkillOption,
 } from "@shared/types";
 
 import { EventChannel } from "./channel";
+import { applyExternalStreamEvent, mergeMessageLists } from "./external-stream";
 import { ConversationViewBuilder, extractImages, extractText, resultText } from "./helper";
 import { ConversationRepository } from "./repository";
 import { createRuntime } from "./runtime";
@@ -37,6 +39,7 @@ export class ConversationService {
   readonly ttlMs: number = 30_000;
   private readonly channels = new Map<string, EventChannel>();
   private readonly managedSessions = new Map<string, ManagedSession>();
+  private readonly recordWriteQueues = new Map<string, Promise<void>>();
 
   constructor(
     globalConfig: GlobalConfig,
@@ -97,6 +100,7 @@ export class ConversationService {
   }
 
   public async snapshot(id: string): Promise<ConversationSnapshot> {
+    await this.waitForRecordWrites(id);
     const conversationRecord = await this.conversationRepository.get(id);
     if (!conversationRecord) {
       throw new Error(`Conversation with id ${id} not found.`);
@@ -106,7 +110,10 @@ export class ConversationService {
     const channel = managedSession.channel;
 
     const builder = new ConversationViewBuilder(session.sessionManager.getBranch());
-    const messageList = builder.build();
+    const messageList = mergeMessageLists(
+      builder.build(),
+      conversationRecord.externalMessageList ?? [],
+    );
 
     return {
       conversation: this.summary(conversationRecord, managedSession.status),
@@ -157,16 +164,39 @@ export class ConversationService {
     await this.conversationRepository.delete(id);
   }
 
+  async persistExternalEvent(
+    conversationId: string,
+    type: EventType,
+    payload: unknown,
+  ): Promise<void> {
+    await this.enqueueRecordWrite(conversationId, async () => {
+      const record = await this.conversationRepository.get(conversationId);
+      if (!record) throw new Error(`Conversation with ID ${conversationId} not found`);
+      const next = applyExternalStreamEvent(
+        record.externalMessageList ?? [],
+        record.externalSequence ?? 0,
+        type,
+        payload,
+      );
+      await this.conversationRepository.update(conversationId, {
+        externalMessageList: next.items,
+        externalSequence: next.sequence,
+      });
+    });
+  }
+
   async linkInvestigation(conversationId: string, investigationId: string): Promise<void> {
-    const record = await this.conversationRepository.get(conversationId);
-    if (!record) throw new Error(`Conversation with ID ${conversationId} not found`);
-    const investigationIds = [
-      ...(record.investigationIds ?? []).filter((id) => id !== investigationId),
-      investigationId,
-    ];
-    await this.conversationRepository.update(conversationId, {
-      activeInvestigationId: investigationId,
-      investigationIds,
+    await this.enqueueRecordWrite(conversationId, async () => {
+      const record = await this.conversationRepository.get(conversationId);
+      if (!record) throw new Error(`Conversation with ID ${conversationId} not found`);
+      const investigationIds = [
+        ...(record.investigationIds ?? []).filter((id) => id !== investigationId),
+        investigationId,
+      ];
+      await this.conversationRepository.update(conversationId, {
+        activeInvestigationId: investigationId,
+        investigationIds,
+      });
     });
   }
 
@@ -174,6 +204,7 @@ export class ConversationService {
     conversationId: string,
     requestedInvestigationId?: string,
   ): Promise<string | undefined> {
+    await this.waitForRecordWrites(conversationId);
     const record = await this.conversationRepository.get(conversationId);
     if (!record) throw new Error(`Conversation with ID ${conversationId} not found`);
     if (!requestedInvestigationId) return record.activeInvestigationId;
@@ -494,6 +525,22 @@ export class ConversationService {
       sessionManager,
       conversationRecord.selectedSkills,
     );
+  }
+
+  private enqueueRecordWrite(conversationId: string, write: () => Promise<void>): Promise<void> {
+    const previous = this.recordWriteQueues.get(conversationId) ?? Promise.resolve();
+    const next = previous.catch(() => undefined).then(write);
+    const tracked = next.finally(() => {
+      if (this.recordWriteQueues.get(conversationId) === tracked) {
+        this.recordWriteQueues.delete(conversationId);
+      }
+    });
+    this.recordWriteQueues.set(conversationId, tracked);
+    return tracked;
+  }
+
+  private async waitForRecordWrites(conversationId: string): Promise<void> {
+    await this.recordWriteQueues.get(conversationId);
   }
 
   private isBusy(managedSession: ManagedSession): boolean {
