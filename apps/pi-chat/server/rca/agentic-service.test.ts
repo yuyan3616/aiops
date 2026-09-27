@@ -5,7 +5,6 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { createRcaMainAgentTools } from "./main-agent-tools";
-import type { RcaOrchestrator } from "./orchestrator";
 import { InvestigationRepository } from "./repository";
 import { RcaService } from "./service";
 import type { Investigation } from "./types";
@@ -95,7 +94,7 @@ test("hypothesis mutations partially accept valid items and publish only persist
   const directory = await mkdtemp(join(tmpdir(), "pi-chat-agentic-"));
   try {
     const repository = new InvestigationRepository(directory);
-    const service = new RcaService({} as RcaOrchestrator, repository);
+    const service = new RcaService(repository);
     const current = investigation("INV-agentic-hypotheses");
     await repository.save(current);
 
@@ -154,7 +153,7 @@ test("agentic conclusion requires real evidence and complete hypothesis accounti
   const directory = await mkdtemp(join(tmpdir(), "pi-chat-agentic-"));
   try {
     const repository = new InvestigationRepository(directory);
-    const service = new RcaService({} as RcaOrchestrator, repository);
+    const service = new RcaService(repository);
     const current = investigation("INV-agentic-conclusion");
     current.hypotheses.push({
       id: "H01",
@@ -205,7 +204,7 @@ test("hypothesis updates cannot rewrite statements; revisions create a linked ne
   const directory = await mkdtemp(join(tmpdir(), "pi-chat-agentic-"));
   try {
     const repository = new InvestigationRepository(directory);
-    const service = new RcaService({} as RcaOrchestrator, repository);
+    const service = new RcaService(repository);
     const current = investigation("INV-agentic-hypothesis-identity");
     current.hypotheses.push({
       id: "H01",
@@ -410,7 +409,6 @@ test("agentic tool success persists an observation independently from evidence",
     };
 
     const service = new RcaService(
-      {} as RcaOrchestrator,
       repository,
       undefined,
       fakeTools as never,
@@ -473,7 +471,7 @@ test("recoverInterrupted marks active investigations interrupted and resumable",
     assert.equal(interrupted.interruptions?.length, 1);
     assert.equal(interrupted.expertTasks[0]?.status, "failed");
 
-    const service = new RcaService({} as RcaOrchestrator, repository);
+    const service = new RcaService(repository);
     const resumed = await service.resumeAgentic(current.id);
     assert.equal(resumed.status, "running");
     assert.equal(resumed.interruptions?.length, 1);
@@ -499,7 +497,7 @@ test("interrupted investigation may still conclude from persisted evidence", asy
     });
     await repository.save(current);
 
-    const service = new RcaService({} as RcaOrchestrator, repository);
+    const service = new RcaService(repository);
     const concluded = await service.concludeAgentic(current.id, {
       status: "probable",
       rootCauseEntities: ["shipping"],
@@ -534,7 +532,7 @@ test("dispatch rejects a baseline window that overlaps the main incident window"
     });
     await repository.save(current);
 
-    const service = new RcaService({} as RcaOrchestrator, repository);
+    const service = new RcaService(repository);
     await assert.rejects(
       service.dispatchAgentic(current.id, [
         {
@@ -636,7 +634,7 @@ test("conclusion rejects any hypothesis left outside selected rejected or unreso
   const directory = await mkdtemp(join(tmpdir(), "pi-chat-hypothesis-closure-"));
   try {
     const repository = new InvestigationRepository(directory);
-    const service = new RcaService({} as RcaOrchestrator, repository);
+    const service = new RcaService(repository);
     const current = investigation("INV-hypothesis-closure");
     current.hypotheses.push(
       {
