@@ -247,13 +247,18 @@ test("Main Agent overview mutations are serialized so parallel calls cannot allo
   const overview = definitions.find((tool) => tool.name === "query_rca_overview");
   assert.ok(overview);
 
+  const executeOverview = overview.execute as unknown as (
+    toolCallId: string,
+    parameters: Record<string, unknown>,
+  ) => Promise<unknown>;
+
   await Promise.all([
-    overview.execute("call-1", {
+    executeOverview("call-1", {
       investigationId: "INV-serialize",
       kind: "dependencies",
       service: "checkout",
     }),
-    overview.execute("call-2", {
+    executeOverview("call-2", {
       investigationId: "INV-serialize",
       kind: "traces",
       service: "checkout",
