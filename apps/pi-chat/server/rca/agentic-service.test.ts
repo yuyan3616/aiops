@@ -81,6 +81,7 @@ test("Main Agent RCA tools expose explicit investigation controls instead of a b
   const names = tools.map((tool) => tool.name);
   assert.deepEqual(names, [
     "start_rca_investigation",
+    "resume_rca_investigation",
     "query_rca_overview",
     "update_hypotheses",
     "dispatch_investigations",
@@ -402,6 +403,123 @@ test("agentic tool success persists an observation independently from evidence",
     assert.equal(saved.evidence.length, 1);
     assert.equal(saved.observations?.[0]?.toolCallId, "C01");
     assert.match(saved.observations?.[0]?.summary ?? "", /email cpu_usage_total/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+
+test("recoverInterrupted marks active investigations interrupted and resumable", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-chat-recover-"));
+  try {
+    const repository = new InvestigationRepository(directory);
+    const current = investigation("INV-recoverable-restart");
+    current.status = "running";
+    current.expertTasks.push({
+      id: "T01",
+      expert: "metrics",
+      objective: "check saturation",
+      status: "running",
+      hypothesisIds: ["H01"],
+      toolCallIds: [],
+      evidenceIds: [],
+      implementation: "pi-session",
+      createdAt: "2026-01-01T00:10:00.000Z",
+    });
+    await repository.save(current);
+
+    const recovered = await repository.recoverInterrupted();
+    assert.deepEqual(recovered, [current.id]);
+
+    const interrupted = await repository.get(current.id);
+    assert.equal(interrupted.status, "interrupted");
+    assert.equal(interrupted.completedAt, undefined);
+    assert.equal(interrupted.interruptions?.length, 1);
+    assert.equal(interrupted.expertTasks[0]?.status, "failed");
+
+    const service = new RcaService({} as RcaOrchestrator, repository);
+    const resumed = await service.resumeAgentic(current.id);
+    assert.equal(resumed.status, "running");
+    assert.equal(resumed.interruptions?.length, 1);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("interrupted investigation may still conclude from persisted evidence", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-chat-interrupted-conclude-"));
+  try {
+    const repository = new InvestigationRepository(directory);
+    const current = investigation("INV-interrupted-conclude");
+    current.status = "interrupted";
+    current.hypotheses.push({
+      id: "H01",
+      statement: "shipping is the most likely latency source",
+      status: "supported",
+      confidence: 0.7,
+      supportingEvidenceIds: ["E01"],
+      contradictingEvidenceIds: [],
+      nextChecks: [],
+    });
+    await repository.save(current);
+
+    const service = new RcaService({} as RcaOrchestrator, repository);
+    const concluded = await service.concludeAgentic(current.id, {
+      status: "probable",
+      rootCauseEntities: ["shipping"],
+      summary: "shipping remains the best-supported cause from persisted evidence",
+      evidenceIds: ["E01"],
+      rejectedHypotheses: [],
+      confidence: 0.65,
+      missingEvidence: ["additional metric confirmation after restart"],
+    });
+    assert.equal(concluded.investigation.status, "completed");
+    assert.equal(concluded.investigation.rootCause?.status, "probable");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("dispatch rejects a baseline window that overlaps the main incident window", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-chat-baseline-"));
+  try {
+    const repository = new InvestigationRepository(directory);
+    const current = investigation("INV-baseline-overlap");
+    current.hypotheses.push({
+      id: "H01",
+      statement: "checkout is resource saturated",
+      status: "possible",
+      confidence: 0.4,
+      supportingEvidenceIds: [],
+      contradictingEvidenceIds: [],
+      nextChecks: [],
+    });
+    await repository.save(current);
+
+    const service = new RcaService({} as RcaOrchestrator, repository);
+    await assert.rejects(
+      service.dispatchAgentic(current.id, [
+        {
+          role: "metrics",
+          question: "Is checkout resource saturated?",
+          hypothesisIds: ["H01"],
+          context: {
+            alertSummary: "checkout latency",
+            mainWindow: {
+              from: "2026-01-01T00:00:00.000Z",
+              to: "2026-01-01T00:10:00.000Z",
+            },
+            baselineWindow: {
+              from: "2025-12-31T23:55:00.000Z",
+              to: "2026-01-01T00:05:00.000Z",
+            },
+            knownFacts: [],
+          },
+          expected: ["state whether saturation is present"],
+        },
+      ]),
+      /baselineWindow overlaps mainWindow/,
+    );
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
