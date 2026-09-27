@@ -23,6 +23,7 @@ export default defineConfig({
     },
   },
   preview: {
+    allowedHosts: ["pi-chat-rca-production.up.railway.app", "localhost", "127.0.0.1"],
     proxy: {
       "/api": {
         target: "http://127.0.0.1:4328",
