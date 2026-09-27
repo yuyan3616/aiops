@@ -943,6 +943,15 @@ export class RcaService {
     const selected = new Set(result.selectedHypothesisIds);
     const rejected = new Set(result.rejectedHypotheses);
     const unresolved = new Set(result.unresolvedHypotheses.map((item) => item.id));
+    if (selected.size !== result.selectedHypothesisIds.length) {
+      throw new Error("selectedHypothesisIds contains duplicate hypothesis ids");
+    }
+    if (rejected.size !== result.rejectedHypotheses.length) {
+      throw new Error("rejectedHypotheses contains duplicate hypothesis ids");
+    }
+    if (unresolved.size !== result.unresolvedHypotheses.length) {
+      throw new Error("unresolvedHypotheses contains duplicate hypothesis ids");
+    }
     const overlaps = [...hypothesisIds].filter(
       (id) =>
         Number(selected.has(id)) + Number(rejected.has(id)) + Number(unresolved.has(id)) > 1,
@@ -974,6 +983,14 @@ export class RcaService {
       if (hypothesis.status !== "rejected") {
         throw new Error(
           `Rejected hypothesis ${id} must be marked rejected before conclusion`,
+        );
+      }
+    }
+    for (const item of result.unresolvedHypotheses) {
+      const hypothesis = investigation.hypotheses.find((candidate) => candidate.id === item.id)!;
+      if (hypothesis.status === "rejected" || hypothesis.status === "confirmed") {
+        throw new Error(
+          `Unresolved hypothesis ${item.id} cannot already be ${hypothesis.status}`,
         );
       }
     }
