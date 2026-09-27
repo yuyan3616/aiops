@@ -15,7 +15,6 @@ import type {
 import type {
   Investigation,
   InvestigationBrief,
-  RCAResult,
   TimeRange,
 } from "./types";
 
