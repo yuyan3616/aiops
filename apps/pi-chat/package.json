@@ -10,7 +10,7 @@
     "start:railway": "bash scripts/start-railway.sh",
     "build": "tsc -b && vite build",
     "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.app.json --noEmit",
-    "test": "node --import tsx --test server/conversation/*.test.ts server/rca/*.test.ts",
+    "test": "node --import tsx --test server/*.test.ts server/conversation/*.test.ts server/rca/*.test.ts",
     "rca:fetch:t039": "bash scripts/fetch-rca100-case.sh t039 .rca-data/cases",
     "rca:run": "node --import tsx server/rca/cli/run.ts",
     "rca:evaluate": "node --import tsx server/rca/cli/evaluate.ts",
