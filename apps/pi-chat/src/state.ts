@@ -6,6 +6,7 @@ import type {
   ChatImage,
   ChatMessage,
   ConversationSnapshot,
+  HypothesisView,
   MessageListItem,
   RuntimeStatus,
   StreamEvent,
@@ -271,6 +272,59 @@ export function conversationReducer(
             }
           : item,
       );
+    case "hypothesis.updated": {
+      const investigationId = String(payload.investigationId ?? "");
+      const incoming = payload.hypothesis as Partial<HypothesisView> | undefined;
+      if (!investigationId || !incoming?.id) return items;
+      const boardId = `${investigationId}:hypotheses`;
+      const existing = items.find((item) => item.kind === "hypotheses" && item.id === boardId);
+      if (!existing || existing.kind !== "hypotheses") {
+        const hypothesis: HypothesisView = {
+          id: incoming.id,
+          statement: incoming.statement ?? "",
+          status: incoming.status ?? "possible",
+          ...(typeof incoming.confidence === "number" ? { confidence: incoming.confidence } : {}),
+          supportingEvidenceIds: incoming.supportingEvidenceIds ?? [],
+          contradictingEvidenceIds: incoming.contradictingEvidenceIds ?? [],
+          ...(incoming.reason ? { reason: incoming.reason } : {}),
+        };
+        return [
+          ...items,
+          {
+            kind: "hypotheses",
+            id: boardId,
+            board: { investigationId, hypotheses: [hypothesis] },
+          },
+        ];
+      }
+      return updateItem(items, boardId, (item) => {
+        if (item.kind !== "hypotheses") return item;
+        const current = item.board.hypotheses.find((entry) => entry.id === incoming.id);
+        const hypothesis: HypothesisView = {
+          id: incoming.id!,
+          statement: incoming.statement ?? current?.statement ?? "",
+          status: incoming.status ?? current?.status ?? "possible",
+          ...(typeof incoming.confidence === "number"
+            ? { confidence: incoming.confidence }
+            : current?.confidence !== undefined
+              ? { confidence: current.confidence }
+              : {}),
+          supportingEvidenceIds:
+            incoming.supportingEvidenceIds ?? current?.supportingEvidenceIds ?? [],
+          contradictingEvidenceIds:
+            incoming.contradictingEvidenceIds ?? current?.contradictingEvidenceIds ?? [],
+          ...(incoming.reason
+            ? { reason: incoming.reason }
+            : current?.reason
+              ? { reason: current.reason }
+              : {}),
+        };
+        const hypotheses = current
+          ? item.board.hypotheses.map((entry) => (entry.id === hypothesis.id ? hypothesis : entry))
+          : [...item.board.hypotheses, hypothesis];
+        return { ...item, board: { ...item.board, hypotheses } };
+      });
+    }
     case "agent.started": {
       const agent = payload.agent as AgentThreadRun | undefined;
       if (!agent?.id) return items;
