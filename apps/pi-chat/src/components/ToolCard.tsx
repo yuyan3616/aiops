@@ -47,8 +47,8 @@ export function ToolCard({ tool }: { tool: ToolRun }) {
   const statusIcon =
     tool.status === "running" ? (
       <LoaderCircle className="running" size={17} />
-    ) : tool.status === "error" ? (
-      <XCircle className="error" size={17} />
+    ) : tool.status === "error" || tool.status === "cancelled" ? (
+      <XCircle className={tool.status === "cancelled" ? "cancelled" : "error"} size={17} />
     ) : (
       <CheckCircle2 className="success" size={17} />
     );
