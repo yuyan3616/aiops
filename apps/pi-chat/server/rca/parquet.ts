@@ -166,16 +166,6 @@ export function getParquetRuntimeDiagnostics(): ParquetRuntimeDiagnostics {
   return { ...runtimeDiagnostics };
 }
 
-export async function readParquetRows(path: string, columns?: string[]): Promise<ParquetRow[]> {
-  const file = await asyncBufferFromFile(resolve(path));
-  const rows = await parquetReadObjects({
-    file,
-    compressors,
-    ...(columns ? { columns } : {}),
-  });
-  return rows as ParquetRow[];
-}
-
 export async function readParquetRowsBatched(
   path: string,
   columns: string[],
