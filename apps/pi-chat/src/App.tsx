@@ -66,6 +66,7 @@ export default function App() {
     browser,
     selectedSkills,
     setSelectedSkills,
+    conversationTitle: streamedConversationTitle,
   } = useConversationStream(conversationId);
   const { draftConfig, model, models, thinkingLevel, thinkingLevels, changeModel, changeThinking } =
     useConversationConfig(conversationId, bootstrap.models);
@@ -103,6 +104,15 @@ export default function App() {
   }, [conversationId]);
 
   useEffect(() => {
+    if (!conversationId || !streamedConversationTitle) return;
+    setConversations((items) =>
+      items.map((item) =>
+        item.id === conversationId ? { ...item, title: streamedConversationTitle } : item,
+      ),
+    );
+  }, [conversationId, streamedConversationTitle]);
+
+  useEffect(() => {
     const onScroll = () => {
       const scrollY = window.scrollY;
       lastScrollYRef.current = scrollY;
@@ -137,7 +147,9 @@ export default function App() {
 
   const isEmpty = !conversationId || (!historyLoading && messageItems.length === 0);
   const conversationTitle =
-    conversations.find((item) => item.id === conversationId)?.title ?? "新会话";
+    streamedConversationTitle ??
+    conversations.find((item) => item.id === conversationId)?.title ??
+    "新会话";
   return (
     <div className={"app-shell" + (browserOpen && bootstrap.browser ? " browser-open" : "")}>
       <ConversationSidebar
