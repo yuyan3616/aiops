@@ -26,7 +26,6 @@ ENV PI_CHAT_ROOT_DIR=/tmp/pi-chat
 ENV RCA_INVESTIGATIONS_DIR=/tmp/pi-chat/data/rca/investigations
 ENV RCA100_CASES_DIR=/app/apps/pi-chat/.rca-data/cases
 ENV RCA_DEFAULT_CASE_ID=t039
-ENV RCA_AGENTIC_PLANNER=false
 
 EXPOSE 3000
 
