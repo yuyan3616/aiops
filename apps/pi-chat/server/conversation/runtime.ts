@@ -12,9 +12,9 @@ import {
   type CreateAgentSessionRuntimeFactory,
   defineTool,
   type ExtensionFactory,
+  type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import type { GlobalConfig } from "@server/config";
-import type { ObservabilityToolRegistry } from "@server/rca/tools";
 
 import type { ConversationRecord } from "./types";
 
@@ -24,33 +24,30 @@ export interface RuntimeOptions {
   modelRuntime: ModelRuntime;
   sessionManager: SessionManager;
   selectedSkills?: string[];
-  rcaTools?: ObservabilityToolRegistry;
+  customTools?: ToolDefinition[];
 }
 
-const SYSTEM_PROMPT = `You are Pi Chat, a helpful, precise coding assistant running in a dedicated conversation workspace.
+const SYSTEM_PROMPT = `You are Pi Chat, an SRE and root-cause-analysis assistant.
 
-You can inspect files, run commands, and edit the workspace. Explain important actions and summarize concrete results. Prefer small, verifiable changes. Never claim a command or edit succeeded unless its tool result confirms it.
+Reply in the user's language. Be precise and evidence-grounded. Never invent telemetry, evidence IDs, tool results, or root causes.
 
-The workspace is a convenience boundary, not an operating-system sandbox. Stay inside the current working directory unless the user explicitly asks otherwise. Do not expose credentials or secrets. Reply in the user's language.
+When the user asks you to investigate, diagnose, troubleshoot, or find the root cause of a concrete RCA case (for example t039), call investigate_rca_case. That tool runs the auditable RCA workflow, streams specialist investigations into the conversation, and returns the structured result. Do not simulate that workflow in prose and do not guess from the case ID.
 
-For RCA work, never guess a root cause from the alert alone. Create competing hypotheses, delegate each check to the appropriate observability tool, cite query-traceable evidence, update or reject hypotheses, and state uncertainty when evidence is insufficient. The runtime has no ground-truth or answer-key tool; never request or infer benchmark answers from a case identifier.`;
+After investigate_rca_case returns, synthesize the result for the user. Cite the returned evidence IDs when explaining why a conclusion is supported or why an alternative was rejected. Preserve uncertainty when the result is inconclusive.
+
+For follow-up questions, use the investigation result already present in the conversation when it is sufficient. Start another investigation only when the user explicitly asks to re-run, deepen, or investigate a new case.
+
+Your visible thinking stream is produced by the Pi runtime itself. Do not manufacture fake thinking or fixed investigation narration in normal answers.`;
 
 const utcTimeTool = defineTool({
   name: "utc_time",
   label: "utc_time",
   description: "return the current UTC ISO timestamp",
   parameters: Type.Object({}),
-  execute: async () => {
-    return {
-      content: [
-        {
-          type: "text",
-          text: new Date().toISOString(),
-        },
-      ],
-      details: {},
-    };
-  },
+  execute: async () => ({
+    content: [{ type: "text", text: new Date().toISOString() }],
+    details: {},
+  }),
 });
 
 const webAccessExtensionPath = dirname(
@@ -68,7 +65,7 @@ export async function createRuntime(options: RuntimeOptions) {
     modelRuntime,
     sessionManager,
     selectedSkills = [],
-    rcaTools,
+    customTools = [],
   } = options;
   const selectedSkillsSet = new Set(selectedSkills);
   let runtimeSessionManager = sessionManager;
@@ -86,14 +83,9 @@ export async function createRuntime(options: RuntimeOptions) {
       resourceLoaderOptions: {
         noExtensions: true,
         systemPromptOverride: () => SYSTEM_PROMPT,
-        additionalExtensionPaths: [
-          // "npm:pi-web-access@0.28.0",
-          webAccessExtensionPath,
-          langfuseExtensionPath,
-        ],
+        additionalExtensionPaths: [webAccessExtensionPath, langfuseExtensionPath],
         extensionFactories: [
           async (pi) => {
-            // The package root ships TypeScript source that is incompatible with this app's type-check settings.
             const packageName = "pi-mcp-adapter";
             const { createMcpAdapter } = (await import(packageName)) as {
               createMcpAdapter(options: { configPath: string }): ExtensionFactory;
@@ -103,27 +95,19 @@ export async function createRuntime(options: RuntimeOptions) {
         ],
         noSkills: true,
         additionalSkillPaths: [globalConfig.skillsDir],
-        skillsOverride: (base) => {
-          console.log("skillOverride", base);
-          console.log("skillOverride", selectedSkillsSet);
-          console.log(
-            "skillOverride",
-            base.skills.filter((skill) => selectedSkillsSet.has(skill.name)),
-          );
-          return {
-            ...base,
-            skills: base.skills.filter((skill) => selectedSkillsSet.has(skill.name)),
-          };
-        },
+        skillsOverride: (base) => ({
+          ...base,
+          skills: base.skills.filter((skill) => selectedSkillsSet.has(skill.name)),
+        }),
       },
     });
-    const rcaToolDefinitions = rcaTools?.createPiTools() ?? [];
+    const toolDefinitions = [utcTimeTool, ...customTools];
     const agentSession = await createAgentSessionFromServices({
       services,
       sessionManager,
       noTools: "builtin",
-      tools: [utcTimeTool.name, ...rcaToolDefinitions.map((tool) => tool.name)],
-      customTools: [utcTimeTool, ...rcaToolDefinitions],
+      tools: toolDefinitions.map((tool) => tool.name),
+      customTools: toolDefinitions,
     });
 
     await agentSession.session.bindExtensions({});
