@@ -160,6 +160,8 @@ export interface ExpertTask {
   toolCallIds: string[];
   evidenceIds: string[];
   brief?: InvestigationBrief;
+  // "deterministic" is retained only to read investigations persisted by pre-agentic builds.
+  // New runtime tasks are always written as "pi-session".
   implementation?: "deterministic" | "pi-session";
   sessionId?: string;
   finding?: AgentExpertFinding;
