@@ -10,6 +10,31 @@ RCA business events are projected onto the original Pi Chat stream protocol:
 
 There is no RCA dashboard or RCA-specific frontend component. Raw references and full evidence remain in the investigation artifacts rather than being dumped into the chat.
 
+## Fetching the real t039 telemetry
+
+The repository does not vendor the 32 MB RCA100 t039 Parquet payload directly. Instead it provides a reproducible downloader that fetches only the agent-facing case files and keeps Ground Truth outside the Agent runtime:
+
+```bash
+cd apps/pi-chat
+pnpm rca:fetch:t039
+```
+
+This writes the case to:
+
+```
+apps/pi-chat/.rca-data/cases/t039/
+```
+
+and preserves the upstream RCA100 license at `apps/pi-chat/.rca-data/RCA100-LICENSE`. The `.rca-data/` directory is gitignored so large benchmark binaries do not bloat normal source-code commits.
+
+To run Pi Chat against that data, set:
+
+```bash
+RCA100_CASES_DIR=$PWD/.rca-data/cases
+```
+
+The downloader intentionally does not fetch `RCA100/answer_key`; Ground Truth remains evaluator-only.
+
 ## Agentic coordinator and chat-history persistence
 
 The production Pi Chat server now uses a Pi-backed RCA coordinator planner by default. The planner chooses the next specialist from the current hypotheses and Evidence; guarded server-side rules still validate Evidence and the final conclusion. Set `RCA_AGENTIC_PLANNER=false` to use the deterministic fallback planner for offline or reproducible runs.
