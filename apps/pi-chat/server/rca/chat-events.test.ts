@@ -137,29 +137,47 @@ test("projects RCA events onto native Pi Chat thinking and tool events", () => {
   const types = projected.map((item) => item.type);
   assert.deepEqual(types.slice(0, 2), ["thinking.started", "thinking.delta"]);
   assert.ok(types.includes("thinking.completed"));
-  assert.ok(types.includes("tool.started"));
-  assert.ok(types.includes("tool.completed"));
+  assert.ok(types.includes("agent.started"));
+  assert.ok(types.includes("agent.tool.started"));
+  assert.ok(types.includes("agent.tool.completed"));
+  assert.ok(types.includes("agent.evidence.added"));
   assert.equal(
     types.some((type) => String(type) === "investigation.event"),
     false,
   );
 
-  const toolStart = projected.find((item) => item.type === "tool.started");
+  const agentStart = projected.find((item) => item.type === "agent.started");
+  assert.equal(
+    (agentStart?.payload.agent as { id?: string } | undefined)?.id,
+    "INV-test:agent:T01",
+  );
+  const toolStart = projected.find((item) => item.type === "agent.tool.started");
   assert.deepEqual(toolStart?.payload, {
-    id: "INV-test:C01",
-    name: "query_traces",
-    args: { caseId: "t039", service: "checkout" },
-    details: { expertTaskId: "T01" },
+    agentId: "INV-test:agent:T01",
+    tool: {
+      id: "INV-test:C01",
+      name: "query_traces",
+      args: { caseId: "t039", service: "checkout" },
+      status: "running",
+      details: { expertTaskId: "T01" },
+    },
   });
-  const toolComplete = projected.find((item) => item.type === "tool.completed");
-  assert.equal(toolComplete?.payload.result, "326 matched, 20 returned");
-  assert.equal(JSON.stringify(toolComplete).includes("Latency is concentrated"), false);
+  const toolComplete = projected.find((item) => item.type === "agent.tool.completed");
+  assert.equal(
+    (toolComplete?.payload.tool as { result?: string } | undefined)?.result,
+    "326 matched, 20 returned",
+  );
+  const evidenceEvent = projected.find((item) => item.type === "agent.evidence.added");
+  assert.equal(
+    (evidenceEvent?.payload.evidence as { id?: string } | undefined)?.id,
+    "E01",
+  );
 
   const reasoning = projected
     .filter((item) => item.type === "thinking.delta")
     .map((item) => String(item.payload.delta))
     .join("\n");
   assert.match(reasoning, /Trace Expert/);
-  assert.match(reasoning, /E01/);
+  assert.equal(reasoning.includes("E01"), false);
   assert.match(reasoning, /H01.*已排除/);
 });
