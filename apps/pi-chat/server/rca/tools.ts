@@ -34,6 +34,12 @@ export interface ToolExecution {
   summary: string;
 }
 
+function throwIfCancelled(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw new DOMException("Investigation cancelled", "AbortError");
+  }
+}
+
 function caseId(arguments_: Record<string, unknown>): string {
   const value = arguments_.caseId;
   if (typeof value !== "string" || !value) throw new Error("caseId is required");
@@ -69,7 +75,9 @@ export class ObservabilityToolRegistry {
   async execute(
     tool: ObservabilityToolName,
     arguments_: Record<string, unknown>,
+    signal?: AbortSignal,
   ): Promise<ToolExecution> {
+    throwIfCancelled(signal);
     const id = caseId(arguments_);
     let result: unknown;
     switch (tool) {
@@ -92,7 +100,7 @@ export class ObservabilityToolRegistry {
         result = await this.adapter.queryLogs(id, arguments_ as unknown as LogQuery);
         break;
       case "query_traces":
-        result = await this.adapter.queryTraces(id, arguments_ as unknown as TraceQuery);
+        result = await this.adapter.queryTraces(id, arguments_ as unknown as TraceQuery, signal);
         break;
       case "query_events":
         result = await this.adapter.queryEvents(id, arguments_ as unknown as EventQuery);
@@ -133,6 +141,7 @@ export class ObservabilityToolRegistry {
         break;
       }
     }
+    throwIfCancelled(signal);
     const rawRef =
       result && typeof result === "object" && "rawRef" in result
         ? String((result as { rawRef?: unknown }).rawRef ?? "")
