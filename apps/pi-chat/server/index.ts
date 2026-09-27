@@ -24,6 +24,12 @@ await writeFile(globalConfig.mcpConfigPath, JSON.stringify({ mcpServers: {} }, n
 const modelRuntime = await ModelRuntime.create();
 const rcaTools = new ObservabilityToolRegistry(new RCA100Adapter(globalConfig.rcaCasesDir));
 const investigationRepository = new InvestigationRepository(globalConfig.rcaInvestigationsDir);
+const recoveredInvestigations = await investigationRepository.recoverInterrupted();
+if (recoveredInvestigations.length > 0) {
+  process.stderr.write(
+    `Recovered interrupted RCA investigations: ${recoveredInvestigations.join(", ")}\n`,
+  );
+}
 const rcaPlanner =
   process.env.RCA_AGENTIC_PLANNER === "false" ? undefined : new PiRcaPlanner(modelRuntime);
 const rcaService = new RcaService(
