@@ -62,6 +62,7 @@ export type EventType =
   | "thinking.completed"
   | "hypothesis.updated"
   | "agent.started"
+  | "agent.thinking.delta"
   | "agent.tool.started"
   | "agent.tool.completed"
   | "agent.evidence.added"
@@ -142,6 +143,7 @@ export interface AgentThreadRun {
   status: "running" | "completed" | "failed" | "cancelled";
   tools: ToolRun[];
   evidence: AgentThreadEvidence[];
+  thinking?: string;
   summary?: string;
   implementation: "deterministic" | "pi-session";
 }
