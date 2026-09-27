@@ -206,6 +206,8 @@ export class RcaChatEventMapper {
         }];
       }
       case "investigation.started":
+      case "investigation.interrupted":
+      case "investigation.resumed":
       case "observation.created":
       case "round.completed":
       case "investigation.completed":
