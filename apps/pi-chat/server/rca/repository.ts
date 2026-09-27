@@ -105,23 +105,26 @@ export class InvestigationRepository {
       }
       if (investigation.status !== "running") continue;
 
-      const completedAt = new Date().toISOString();
+      const interruptedAt = new Date().toISOString();
       const errorMessage = "Investigation interrupted by process restart before completion.";
-      investigation.status = "failed";
-      investigation.completedAt = completedAt;
+      investigation.status = "interrupted";
+      investigation.interruptions = [
+        ...(investigation.interruptions ?? []),
+        { at: interruptedAt, reason: errorMessage },
+      ];
       investigation.error = errorMessage;
 
       for (const toolCall of investigation.toolCalls) {
         if (toolCall.status !== "running") continue;
         toolCall.status = "failed";
-        toolCall.completedAt = completedAt;
+        toolCall.completedAt = interruptedAt;
         toolCall.error = errorMessage;
         await this.appendToolCall(investigation.id, toolCall);
       }
       for (const task of investigation.expertTasks) {
         if (task.status !== "running" && task.status !== "pending") continue;
         task.status = "failed";
-        task.completedAt = completedAt;
+        task.completedAt = interruptedAt;
       }
 
       await this.save(investigation);
@@ -129,10 +132,10 @@ export class InvestigationRepository {
       await this.appendEvent({
         id: (events.at(-1)?.id ?? 0) + 1,
         investigationId: investigation.id,
-        type: "investigation.failed",
-        at: completedAt,
+        type: "investigation.interrupted",
+        at: interruptedAt,
         summary: errorMessage,
-        payload: { recoveredAfterRestart: true },
+        payload: { recoveredAfterRestart: true, resumable: true },
       });
       recovered.push(investigation.id);
     }
