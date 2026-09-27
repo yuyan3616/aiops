@@ -91,7 +91,7 @@ test("Main Agent RCA tools expose explicit investigation controls instead of a b
   assert.equal(names.includes("investigate_rca_case"), false);
 });
 
-test("agentic hypothesis updates reject unknown evidence and preserve model-owned status", async () => {
+test("hypothesis mutations partially accept valid items and publish only persisted changes", async () => {
   const directory = await mkdtemp(join(tmpdir(), "pi-chat-agentic-"));
   try {
     const repository = new InvestigationRepository(directory);
@@ -99,8 +99,10 @@ test("agentic hypothesis updates reject unknown evidence and preserve model-owne
     const current = investigation("INV-agentic-hypotheses");
     await repository.save(current);
 
-    const hypotheses = await service.updateHypotheses(current.id, [
+    const result = await service.updateHypotheses(current.id, [
       {
+        op: "create",
+        requestId: "create-valid",
         id: "H01",
         statement: "shipping is propagating latency to checkout",
         status: "supported",
@@ -108,27 +110,47 @@ test("agentic hypothesis updates reject unknown evidence and preserve model-owne
         supportingEvidenceIds: ["E01"],
         nextChecks: ["cross-check with an independent modality"],
       },
+      {
+        op: "create",
+        requestId: "create-invalid",
+        id: "H02",
+        statement: "an ungrounded alternative",
+        status: "supported",
+        supportingEvidenceIds: ["E99"],
+      },
     ]);
 
-    assert.equal(hypotheses[0]?.status, "supported");
-    assert.deepEqual(hypotheses[0]?.supportingEvidenceIds, ["E01"]);
+    assert.deepEqual(result.accepted.map((item) => item.requestId), ["create-valid"]);
+    assert.equal(result.rejected.length, 1);
+    assert.equal(result.rejected[0]?.requestId, "create-invalid");
+    assert.equal(result.rejected[0]?.code, "UNKNOWN_EVIDENCE");
+    assert.equal(result.hypotheses.length, 1);
+    assert.equal(result.hypotheses[0]?.status, "supported");
+    assert.deepEqual(result.hypotheses[0]?.supportingEvidenceIds, ["E01"]);
 
-    await assert.rejects(
-      service.updateHypotheses(current.id, [
-        {
-          id: "H01",
-          status: "confirmed",
-          supportingEvidenceIds: ["E99"],
-        },
-      ]),
-      /unknown evidence E99/,
-    );
+    const saved = await repository.get(current.id);
+    assert.equal(saved.hypotheses.length, 1);
+    const events = await repository.listEvents(current.id);
+    assert.equal(events.filter((event) => event.type === "hypothesis.created").length, 1);
+
+    const rejectedUpdate = await service.updateHypotheses(current.id, [
+      {
+        op: "update",
+        requestId: "bad-update",
+        id: "H01",
+        status: "confirmed",
+        supportingEvidenceIds: ["E99"],
+      },
+    ]);
+    assert.equal(rejectedUpdate.accepted.length, 0);
+    assert.equal(rejectedUpdate.rejected[0]?.code, "UNKNOWN_EVIDENCE");
+    assert.equal((await repository.get(current.id)).hypotheses[0]?.status, "supported");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
 });
 
-test("agentic conclusion requires real evidence and stronger evidence for confirmed status", async () => {
+test("agentic conclusion requires real evidence and complete hypothesis accounting", async () => {
   const directory = await mkdtemp(join(tmpdir(), "pi-chat-agentic-"));
   try {
     const repository = new InvestigationRepository(directory);
@@ -137,7 +159,7 @@ test("agentic conclusion requires real evidence and stronger evidence for confir
     current.hypotheses.push({
       id: "H01",
       statement: "shipping is propagating latency",
-      status: "supported",
+      status: "confirmed",
       confidence: 0.8,
       supportingEvidenceIds: ["E01"],
       contradictingEvidenceIds: [],
@@ -151,7 +173,9 @@ test("agentic conclusion requires real evidence and stronger evidence for confir
         rootCauseEntities: ["shipping"],
         summary: "shipping is the root cause",
         evidenceIds: ["E01"],
+        selectedHypothesisIds: ["H01"],
         rejectedHypotheses: [],
+        unresolvedHypotheses: [],
         confidence: 0.9,
       }),
       /at least two evidence items/,
@@ -162,7 +186,9 @@ test("agentic conclusion requires real evidence and stronger evidence for confir
       rootCauseEntities: ["shipping"],
       summary: "shipping is the most evidence-supported latency source",
       evidenceIds: ["E01"],
+      selectedHypothesisIds: ["H01"],
       rejectedHypotheses: [],
+      unresolvedHypotheses: [],
       confidence: 0.8,
       missingEvidence: ["independent log or metric confirmation"],
     });
@@ -175,7 +201,7 @@ test("agentic conclusion requires real evidence and stronger evidence for confir
 });
 
 
-test("existing hypothesis statement is immutable; semantic revisions require a new id", async () => {
+test("hypothesis updates cannot rewrite statements; revisions create a linked new id", async () => {
   const directory = await mkdtemp(join(tmpdir(), "pi-chat-agentic-"));
   try {
     const repository = new InvestigationRepository(directory);
@@ -192,27 +218,35 @@ test("existing hypothesis statement is immutable; semantic revisions require a n
     });
     await repository.save(current);
 
-    await assert.rejects(
-      service.updateHypotheses(current.id, [
-        {
-          id: "H01",
-          statement: "email is slow in absolute terms but not incident-specific",
-          status: "supported",
-        },
-      ]),
-      /statement is immutable/,
-    );
-
-    const hypotheses = await service.updateHypotheses(current.id, [
+    const updated = await service.updateHypotheses(current.id, [
       {
+        op: "update",
+        id: "H01",
+        status: "rejected",
+        confidence: 0.15,
+      },
+      {
+        op: "create",
+        id: "H02",
         statement: "email is slow in absolute terms but not incident-specific",
         status: "supported",
         confidence: 0.65,
+        supersedes: "H01",
       },
     ]);
-    assert.equal(hypotheses.length, 2);
-    assert.equal(hypotheses[0]?.statement, "email service is the incident-specific latency source");
-    assert.equal(hypotheses[1]?.statement, "email is slow in absolute terms but not incident-specific");
+
+    assert.equal(updated.rejected.length, 0);
+    assert.equal(updated.hypotheses.length, 2);
+    assert.equal(
+      updated.hypotheses[0]?.statement,
+      "email service is the incident-specific latency source",
+    );
+    assert.equal(updated.hypotheses[0]?.status, "rejected");
+    assert.equal(
+      updated.hypotheses[1]?.statement,
+      "email is slow in absolute terms but not incident-specific",
+    );
+    assert.equal(updated.hypotheses[1]?.supersedes, "H01");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
