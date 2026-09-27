@@ -15,6 +15,12 @@ import {
   loadSkillsFromDir,
 } from "@earendil-works/pi-coding-agent";
 import type { GlobalConfig } from "@server/config";
+import {
+  conversationRcaContextFromInvestigation,
+  idleConversationRcaContext,
+  type ConversationRcaContext,
+  unavailableConversationRcaContext,
+} from "@server/rca/conversation-context";
 import { createRcaMainAgentTools } from "@server/rca/main-agent-tools";
 import type { RcaService } from "@server/rca/service";
 import type { Investigation } from "@server/rca/types";
@@ -369,6 +375,21 @@ export class ConversationService {
     }));
   }
 
+  private async resolveRcaContext(
+    conversationId: string,
+  ): Promise<ConversationRcaContext> {
+    await this.waitForRecordWrites(conversationId);
+    const record = await this.conversationRepository.get(conversationId);
+    if (!record?.activeInvestigationId) return idleConversationRcaContext();
+
+    try {
+      const investigation = await this.rcaService.get(record.activeInvestigationId);
+      return conversationRcaContextFromInvestigation(investigation);
+    } catch {
+      return unavailableConversationRcaContext(record.activeInvestigationId);
+    }
+  }
+
   private async loadLinkedInvestigations(
     record: ConversationRecord,
   ): Promise<Map<string, Investigation>> {
@@ -417,6 +438,7 @@ export class ConversationService {
     selectedSkills: string[] = [],
   ) {
     console.log("createManagedSession", selectedSkills);
+    const getRcaContext = () => this.resolveRcaContext(conversationRecord.id);
     const rcaMainTools = createRcaMainAgentTools({
       rcaService: this.rcaService,
       conversationId: conversationRecord.id,
@@ -440,6 +462,7 @@ export class ConversationService {
         ),
       onLinkInvestigation: (investigationId) =>
         this.linkInvestigation(conversationRecord.id, investigationId),
+      getRcaContext,
       onConcluded: (investigation, report) => {
         const managed = this.managedSessions.get(conversationRecord.id);
         if (!managed || !investigation.rootCause) return;
@@ -470,6 +493,7 @@ export class ConversationService {
       modelRuntime: this.modelRuntime,
       selectedSkills,
       customTools: rcaMainTools,
+      getRcaContext,
     });
 
     const managedSession: ManagedSession = {

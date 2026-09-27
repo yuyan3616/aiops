@@ -6,6 +6,11 @@ import {
 
 import { RcaChatEventMapper, type ChatStreamProjection } from "./chat-events";
 import {
+  decideStartRcaInvestigation,
+  idleConversationRcaContext,
+  type ConversationRcaContext,
+} from "./conversation-context";
+import {
   createInvestigationId,
   type AgenticConclusionInput,
   type HypothesisMutation,
@@ -24,6 +29,7 @@ export interface RcaMainAgentToolsOptions {
   getModelRef: () => { provider: string; id: string };
   onProjection: (projection: ChatStreamProjection) => void | Promise<void>;
   onLinkInvestigation: (investigationId: string) => void | Promise<void>;
+  getRcaContext?: () => ConversationRcaContext | Promise<ConversationRcaContext>;
   onConcluded?: (investigation: Investigation, report: string) => void | Promise<void>;
 }
 
@@ -128,23 +134,50 @@ export function createRcaMainAgentTools(options: RcaMainAgentToolsOptions): Tool
     name: "start_rca_investigation",
     label: "Start RCA investigation",
     description:
-      "Start an auditable RCA investigation for a concrete case. Returns alert context and an empty hypothesis set. Use this before RCA overview, hypothesis, dispatch, or conclusion tools.",
+      "Start an auditable RCA investigation for a concrete case. When Current RCA context already links an investigation, do not replace it implicitly. Set forceNew=true only when the user explicitly asked to re-run, start fresh, or investigate a different case.",
     parameters: Type.Object({
       caseId: Type.String({ description: "RCA case id, for example t039" }),
+      forceNew: Type.Optional(
+        Type.Boolean({
+          description:
+            "Explicitly replace the linked investigation. Use only when the user clearly requested a new/re-run investigation or a different case.",
+        }),
+      ),
     }),
-    execute: async (_toolCallId, parameters) => {
-      const caseId = parameters.caseId.trim().toLowerCase();
-      if (!/^t\d+$/i.test(caseId)) throw new Error("caseId must look like t039");
-      const investigationId = createInvestigationId();
-      mappers.set(investigationId, new RcaChatEventMapper(investigationId));
-      const investigation = await rcaService.beginAgentic(caseId, {
-        investigationId,
-        conversationId,
-        onEvent: project,
-      });
-      await options.onLinkInvestigation(investigationId);
-      return toolResult(compactInvestigation(investigation));
-    },
+    execute: async (_toolCallId, parameters) =>
+      serializeMutation(async () => {
+        const caseId = parameters.caseId.trim().toLowerCase();
+        if (!/^t\d+$/i.test(caseId)) throw new Error("caseId must look like t039");
+
+        const rcaContext =
+          (await options.getRcaContext?.()) ?? idleConversationRcaContext();
+        const decision = decideStartRcaInvestigation(
+          rcaContext,
+          caseId,
+          parameters.forceNew === true,
+        );
+        if (!decision.allowed) {
+          return toolResult({
+            started: false,
+            caseId,
+            activeRcaContext: rcaContext,
+            ...decision,
+          });
+        }
+
+        const investigationId = createInvestigationId();
+        mappers.set(investigationId, new RcaChatEventMapper(investigationId));
+        const investigation = await rcaService.beginAgentic(caseId, {
+          investigationId,
+          conversationId,
+          onEvent: project,
+        });
+        await options.onLinkInvestigation(investigationId);
+        return toolResult({
+          started: true,
+          ...compactInvestigation(investigation),
+        });
+      }),
   });
 
   const resumeTool = defineTool({

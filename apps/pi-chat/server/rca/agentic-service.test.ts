@@ -90,6 +90,49 @@ test("Main Agent RCA tools expose explicit investigation controls instead of a b
   assert.equal(names.includes("investigate_rca_case"), false);
 });
 
+test("start_rca_investigation does not implicitly replace a linked investigation", async () => {
+  let beginCalls = 0;
+  const fakeService = {
+    async beginAgentic() {
+      beginCalls++;
+      throw new Error("beginAgentic should not be called");
+    },
+  } as unknown as RcaService;
+
+  const definitions = createRcaMainAgentTools({
+    rcaService: fakeService,
+    conversationId: "conversation-existing-rca",
+    getModelRef: () => ({ provider: "packy", id: "deepseek-flash" }),
+    onProjection: () => {},
+    onLinkInvestigation: () => {},
+    getRcaContext: () => ({
+      state: "completed",
+      investigationId: "INV-existing",
+      caseId: "t039",
+      rounds: 2,
+      rootCauseStatus: "probable",
+    }),
+  });
+  const start = definitions.find((tool) => tool.name === "start_rca_investigation");
+  assert.ok(start);
+  const executeStart = start.execute as unknown as (
+    toolCallId: string,
+    parameters: { caseId: string; forceNew?: boolean },
+  ) => Promise<{ content: Array<{ type: string; text: string }> }>;
+
+  const result = await executeStart("call-start", { caseId: "t039" });
+  const payload = JSON.parse(result.content[0]?.text ?? "{}") as {
+    started?: boolean;
+    recommendedAction?: string;
+    activeRcaContext?: { investigationId?: string };
+  };
+
+  assert.equal(beginCalls, 0);
+  assert.equal(payload.started, false);
+  assert.equal(payload.recommendedAction, "read_active_investigation");
+  assert.equal(payload.activeRcaContext?.investigationId, "INV-existing");
+});
+
 test("hypothesis mutations partially accept valid items and publish only persisted changes", async () => {
   const directory = await mkdtemp(join(tmpdir(), "pi-chat-agentic-"));
   try {
