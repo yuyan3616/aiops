@@ -96,7 +96,7 @@ export interface ToolRun {
   id: string;
   name: string;
   args: Record<string, unknown>;
-  status: "running" | "success" | "error";
+  status: "running" | "success" | "error" | "cancelled";
   result?: string;
   images?: ChatImage[];
   details?: unknown;
