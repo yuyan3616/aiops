@@ -172,3 +172,94 @@ test("agentic conclusion requires real evidence and stronger evidence for confir
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+
+test("existing hypothesis statement is immutable; semantic revisions require a new id", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-chat-agentic-"));
+  try {
+    const repository = new InvestigationRepository(directory);
+    const service = new RcaService({} as RcaOrchestrator, repository);
+    const current = investigation("INV-agentic-hypothesis-identity");
+    current.hypotheses.push({
+      id: "H01",
+      statement: "email service is the incident-specific latency source",
+      status: "possible",
+      confidence: 0.4,
+      supportingEvidenceIds: [],
+      contradictingEvidenceIds: [],
+      nextChecks: [],
+    });
+    await repository.save(current);
+
+    await assert.rejects(
+      service.updateHypotheses(current.id, [
+        {
+          id: "H01",
+          statement: "email is slow in absolute terms but not incident-specific",
+          status: "supported",
+        },
+      ]),
+      /statement is immutable/,
+    );
+
+    const hypotheses = await service.updateHypotheses(current.id, [
+      {
+        statement: "email is slow in absolute terms but not incident-specific",
+        status: "supported",
+        confidence: 0.65,
+      },
+    ]);
+    assert.equal(hypotheses.length, 2);
+    assert.equal(hypotheses[0]?.statement, "email service is the incident-specific latency source");
+    assert.equal(hypotheses[1]?.statement, "email is slow in absolute terms but not incident-specific");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Main Agent overview mutations are serialized so parallel calls cannot allocate stale ids", async () => {
+  let active = 0;
+  let maxActive = 0;
+  let sequence = 0;
+  const fakeService = {
+    async queryOverview() {
+      active++;
+      maxActive = Math.max(maxActive, active);
+      const id = ++sequence;
+      await new Promise((resolve) => setTimeout(resolve, 15));
+      active--;
+      return {
+        evidenceId: `E0${id}`,
+        toolCallId: `C0${id + 1}`,
+        summary: `overview-${id}`,
+        result: {},
+      };
+    },
+  } as unknown as RcaService;
+
+  const definitions = createRcaMainAgentTools({
+    rcaService: fakeService,
+    conversationId: "conversation-serialize",
+    getModelRef: () => ({ provider: "packy", id: "deepseek-flash" }),
+    onProjection: () => {},
+    onLinkInvestigation: () => {},
+  });
+  const overview = definitions.find((tool) => tool.name === "query_rca_overview");
+  assert.ok(overview);
+
+  await Promise.all([
+    overview.execute("call-1", {
+      investigationId: "INV-serialize",
+      kind: "dependencies",
+      service: "checkout",
+    }),
+    overview.execute("call-2", {
+      investigationId: "INV-serialize",
+      kind: "traces",
+      service: "checkout",
+    }),
+  ]);
+
+  assert.equal(maxActive, 1);
+  assert.equal(sequence, 2);
+});
