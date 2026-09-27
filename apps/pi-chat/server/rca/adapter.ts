@@ -6,7 +6,6 @@ import {
   jsonSafe,
   metadataFields,
   readParquetMetadata,
-  readParquetRows,
   readParquetRowsBatched,
   timestampMs,
   type ParquetRow,
@@ -184,8 +183,6 @@ function ensureValidRange(query: { from: string; to: string }): { from: number; 
 
 export class RCA100Adapter {
   readonly casesDir: string;
-  private readonly rowCache = new Map<string, Promise<ParquetRow[]>>();
-
   constructor(casesDir: string) {
     this.casesDir = resolve(casesDir);
   }
@@ -284,36 +281,43 @@ export class RCA100Adapter {
     };
   }
 
-  async getMetricCatalog(caseId: string): Promise<{
+  async getMetricCatalog(
+    caseId: string,
+    signal?: AbortSignal,
+  ): Promise<{
     metrics: Array<{ metric: string; entitySets: string[]; entities: number; rows: number }>;
     timeRange: TimeRange;
   }> {
-    const rows = await this.rows(caseId, "metrics", [
-      "time",
-      "entity_set",
-      "entity_name",
-      "metric",
-    ]);
     const catalog = new Map<
       string,
       { entitySets: Set<string>; entities: Set<string>; rows: number }
     >();
     let minimum = Number.POSITIVE_INFINITY;
     let maximum = Number.NEGATIVE_INFINITY;
-    for (const row of rows) {
-      const at = timestampMs(row.time, "us");
-      if (at !== undefined) {
-        minimum = Math.min(minimum, at);
-        maximum = Math.max(maximum, at);
-      }
-      const name = String(row.metric ?? "");
-      if (!name) continue;
-      const item = catalog.get(name) ?? { entitySets: new Set(), entities: new Set(), rows: 0 };
-      item.entitySets.add(String(row.entity_set ?? ""));
-      item.entities.add(String(row.entity_name ?? ""));
-      item.rows++;
-      catalog.set(name, item);
-    }
+    const path = join(this.caseDir(caseId), "metrics.parquet");
+    await readParquetRowsBatched(
+      path,
+      ["time", "entity_set", "entity_name", "metric"],
+      (rows) => {
+        for (const row of rows) {
+          const at = timestampMs(row.time, "us");
+          if (at !== undefined) {
+            minimum = Math.min(minimum, at);
+            maximum = Math.max(maximum, at);
+          }
+          const name = String(row.metric ?? "");
+          if (!name) continue;
+          const item =
+            catalog.get(name) ?? { entitySets: new Set(), entities: new Set(), rows: 0 };
+          item.entitySets.add(String(row.entity_set ?? ""));
+          item.entities.add(String(row.entity_name ?? ""));
+          item.rows++;
+          catalog.set(name, item);
+        }
+      },
+      20_000,
+      signal,
+    );
     return {
       metrics: [...catalog.entries()]
         .map(([metric, item]) => ({
@@ -333,6 +337,7 @@ export class RCA100Adapter {
   async queryMetrics(
     caseId: string,
     query: MetricQuery,
+    signal?: AbortSignal,
   ): Promise<
     QueryEnvelope<{
       anomalies: MetricAnomaly[];
@@ -354,48 +359,72 @@ export class RCA100Adapter {
       : defaultBaseline(timeRange(query));
     const baseline = ensureValidRange(baselineRange);
     const topN = clampLimit(query.topN, 20, 100);
-    const rows = await this.rows(caseId, "metrics", [
-      "time",
-      "domain",
-      "entity_set",
-      "entity_id",
-      "entity_name",
-      "metric",
-      "value",
-      "service",
-    ]);
-    const selected = rows.filter((row) => {
-      const at = timestampMs(row.time, "us");
-      if (at === undefined || at < baseline.from || at > incident.to) return false;
-      if (
-        query.service &&
-        !includes(row.service, query.service) &&
-        !includes(row.entity_name, query.service)
-      ) {
-        return false;
-      }
-      if (query.operation && !includes(row.entity_name, query.operation)) return false;
-      if (
-        query.entity &&
-        !includes(row.entity_name, query.entity) &&
-        !includes(row.entity_id, query.entity)
-      ) {
-        return false;
-      }
-      if (query.metric && !includes(row.metric, query.metric)) return false;
-      return true;
-    });
+    const sampleLimit = Math.min(topN, 20);
     const groups = new Map<string, { row: ParquetRow; baseline: number[]; incident: number[] }>();
-    for (const row of selected) {
-      const at = timestampMs(row.time, "us");
-      const value = finiteNumber(row.value);
-      if (at === undefined || value === undefined) continue;
-      const key = `${String(row.entity_set)}\u0000${String(row.entity_name)}\u0000${String(row.metric)}`;
-      const group = groups.get(key) ?? { row, baseline: [], incident: [] };
-      if (at >= baseline.from && at < baseline.to) group.baseline.push(value);
-      if (at >= incident.from && at <= incident.to) group.incident.push(value);
-      groups.set(key, group);
-    }
+    const sample: Record<string, unknown>[] = [];
+    let matchedRows = 0;
+    const path = join(this.caseDir(caseId), "metrics.parquet");
+
+    await readParquetRowsBatched(
+      path,
+      [
+        "time",
+        "domain",
+        "entity_set",
+        "entity_id",
+        "entity_name",
+        "metric",
+        "value",
+        "service",
+      ],
+      (rows) => {
+        for (const row of rows) {
+          const at = timestampMs(row.time, "us");
+          if (at === undefined || at < baseline.from || at > incident.to) continue;
+          if (
+            query.service &&
+            !includes(row.service, query.service) &&
+            !includes(row.entity_name, query.service)
+          ) {
+            continue;
+          }
+          if (query.operation && !includes(row.entity_name, query.operation)) continue;
+          if (
+            query.entity &&
+            !includes(row.entity_name, query.entity) &&
+            !includes(row.entity_id, query.entity)
+          ) {
+            continue;
+          }
+          if (query.metric && !includes(row.metric, query.metric)) continue;
+          matchedRows++;
+
+          const value = finiteNumber(row.value);
+          if (value === undefined) continue;
+          const key = `${String(row.entity_set)}\u0000${String(row.entity_name)}\u0000${String(
+            row.metric,
+          )}`;
+          const group = groups.get(key) ?? { row, baseline: [], incident: [] };
+          if (at >= baseline.from && at < baseline.to) group.baseline.push(value);
+          if (at >= incident.from && at <= incident.to) {
+            group.incident.push(value);
+            if (sample.length < sampleLimit) {
+              sample.push({
+                time: epochToIso(row.time, "us"),
+                entitySet: row.entity_set,
+                entity: row.entity_name,
+                metric: row.metric,
+                value: row.value,
+              });
+            }
+          }
+          groups.set(key, group);
+        }
+      },
+      20_000,
+      signal,
+    );
+
     const anomalies: MetricAnomaly[] = [];
     for (const group of groups.values()) {
       if (group.baseline.length < 3 || group.incident.length < 1) continue;
@@ -431,6 +460,7 @@ export class RCA100Adapter {
       });
     }
     anomalies.sort((left, right) => right.score - left.score);
+
     const peerGroups = new Map<
       string,
       Array<{ row: ParquetRow; entity: string; incidentMedian: number }>
@@ -446,6 +476,7 @@ export class RCA100Adapter {
       });
       peerGroups.set(key, peers);
     }
+
     const peerOutliers: Array<{
       entitySet: string;
       entity: string;
@@ -482,19 +513,7 @@ export class RCA100Adapter {
         Math.abs(Math.log2(Math.max(right.ratio, 1e-9))) -
         Math.abs(Math.log2(Math.max(left.ratio, 1e-9))),
     );
-    const sample = selected
-      .filter((row) => {
-        const at = timestampMs(row.time, "us");
-        return at !== undefined && at >= incident.from && at <= incident.to;
-      })
-      .slice(0, Math.min(topN, 20))
-      .map((row) => ({
-        time: epochToIso(row.time, "us"),
-        entitySet: row.entity_set,
-        entity: row.entity_name,
-        metric: row.metric,
-        value: row.value,
-      }));
+
     const rawRef = sourceRef(
       caseId,
       "metrics.parquet",
@@ -504,7 +523,7 @@ export class RCA100Adapter {
       caseId,
       modality: "metric",
       query: query as unknown as Record<string, unknown>,
-      matchedRows: selected.length,
+      matchedRows,
       returnedRows: Math.min(anomalies.length, topN),
       truncated: anomalies.length > topN,
       rawRef,
@@ -707,6 +726,7 @@ export class RCA100Adapter {
   async queryLogs(
     caseId: string,
     query: LogQuery,
+    signal?: AbortSignal,
   ): Promise<
     QueryEnvelope<{
       serviceCounts: Record<string, number>;
@@ -732,73 +752,83 @@ export class RCA100Adapter {
       "fatal",
       "reset",
     ];
-    const rows = await this.rows(caseId, "logs", [
-      "content",
-      "_time_",
-      "_container_name_",
-      "_pod_name_",
-      "__tag__:_node_name_",
-    ]);
-    const selected = rows.filter((row) => {
-      const at = timestampMs(row._time_);
-      if (at === undefined || at < range.from || at > range.to) return false;
-      if (!includes(row._container_name_, query.service)) return false;
-      if (!includes(row._pod_name_, query.pod)) return false;
-      return true;
-    });
     const serviceCounts: Record<string, number> = {};
     const keywordCounts: Record<string, number> = {};
-    const matching: ParquetRow[] = [];
+    const samples: Array<Record<string, unknown>> = [];
     const durationSignals: Array<Record<string, unknown>> = [];
-    for (const row of selected) {
-      const service = String(row._container_name_ ?? "unknown");
-      serviceCounts[service] = (serviceCounts[service] ?? 0) + 1;
-      const content = String(row.content ?? "");
-      const lower = content.toLowerCase();
-      let matched = keywords.length === 0;
-      for (const keyword of keywords) {
-        if (!lower.includes(keyword.toLowerCase())) continue;
-        keywordCounts[keyword] = (keywordCounts[keyword] ?? 0) + 1;
-        matched = true;
-      }
-      if (matched) matching.push(row);
-      const accessDuration = /"\s+\d{3}\s+-?\s+([\d.]+)\s*$/.exec(content)?.[1];
-      const durationSeconds = finiteNumber(accessDuration);
-      if (durationSeconds !== undefined && durationSeconds >= 1) {
-        durationSignals.push({
-          time: row._time_,
-          service,
-          pod: row._pod_name_,
-          durationSeconds,
-          content: content.slice(0, 600),
-        });
-      }
-    }
-    durationSignals.sort(
-      (left, right) => Number(right.durationSeconds ?? 0) - Number(left.durationSeconds ?? 0),
+    let matchedRows = 0;
+    const path = join(this.caseDir(caseId), "logs.parquet");
+
+    await readParquetRowsBatched(
+      path,
+      ["content", "_time_", "_container_name_", "_pod_name_", "__tag__:_node_name_"],
+      (rows) => {
+        for (const row of rows) {
+          const at = timestampMs(row._time_);
+          if (at === undefined || at < range.from || at > range.to) continue;
+          if (!includes(row._container_name_, query.service)) continue;
+          if (!includes(row._pod_name_, query.pod)) continue;
+
+          const service = String(row._container_name_ ?? "unknown");
+          serviceCounts[service] = (serviceCounts[service] ?? 0) + 1;
+          const content = String(row.content ?? "");
+          const lower = content.toLowerCase();
+          let matched = keywords.length === 0;
+          for (const keyword of keywords) {
+            if (!lower.includes(keyword.toLowerCase())) continue;
+            keywordCounts[keyword] = (keywordCounts[keyword] ?? 0) + 1;
+            matched = true;
+          }
+          if (matched) {
+            matchedRows++;
+            if (samples.length < limit) {
+              samples.push({
+                time: row._time_,
+                service: row._container_name_,
+                pod: row._pod_name_,
+                node: row["__tag__:_node_name_"],
+                content: content.slice(0, 1_200),
+              });
+            }
+          }
+
+          const accessDuration = /"\s+\d{3}\s+-?\s+([\d.]+)\s*$/.exec(content)?.[1];
+          const durationSeconds = finiteNumber(accessDuration);
+          if (durationSeconds !== undefined && durationSeconds >= 1) {
+            durationSignals.push({
+              time: row._time_,
+              service,
+              pod: row._pod_name_,
+              durationSeconds,
+              content: content.slice(0, 600),
+            });
+            durationSignals.sort(
+              (left, right) =>
+                Number(right.durationSeconds ?? 0) - Number(left.durationSeconds ?? 0),
+            );
+            if (durationSignals.length > limit) durationSignals.length = limit;
+          }
+        }
+      },
+      20_000,
+      signal,
     );
-    const samples = matching.slice(0, limit).map((row) => ({
-      time: row._time_,
-      service: row._container_name_,
-      pod: row._pod_name_,
-      node: row["__tag__:_node_name_"],
-      content: String(row.content ?? "").slice(0, 1_200),
-    }));
+
     const rawRef = sourceRef(caseId, "logs.parquet", query as unknown as Record<string, unknown>);
     return {
       caseId,
       modality: "log",
       query: query as unknown as Record<string, unknown>,
-      matchedRows: matching.length,
+      matchedRows,
       returnedRows: samples.length,
-      truncated: matching.length > limit,
+      truncated: matchedRows > limit,
       rawRef,
       data: {
         serviceCounts,
         keywordCounts,
-        samples,
-        durationSignals: durationSignals.slice(0, limit),
-        noRelevantEvidence: matching.length === 0 && durationSignals.length === 0,
+        samples: jsonSafe(samples) as Array<Record<string, unknown>>,
+        durationSignals: jsonSafe(durationSignals) as Array<Record<string, unknown>>,
+        noRelevantEvidence: matchedRows === 0 && durationSignals.length === 0,
       },
     };
   }
@@ -806,6 +836,7 @@ export class RCA100Adapter {
   async queryEvents(
     caseId: string,
     query: EventQuery,
+    signal?: AbortSignal,
   ): Promise<
     QueryEnvelope<{
       levelCounts: Record<string, number>;
@@ -815,59 +846,65 @@ export class RCA100Adapter {
   > {
     const range = ensureValidRange(query);
     const limit = clampLimit(query.limit, 30, 100);
-    const rows = await this.rows(caseId, "events", [
-      "eventId",
-      "hostname",
-      "level",
-      "pod_name",
-      "clusterName",
-    ]);
-    const parsed = rows.map((row) => {
-      const event = parseJsonObject(row.eventId);
-      const metadata = (event?.metadata ?? {}) as Record<string, unknown>;
-      const time =
-        event?.lastTimestamp ??
-        event?.eventTime ??
-        event?.firstTimestamp ??
-        metadata.creationTimestamp;
-      return { row, event, at: timestampMs(time), time };
-    });
-    const selected = parsed.filter(({ row, event, at }) => {
-      if (at === undefined || at < range.from || at > range.to) return false;
-      if (query.level && !includes(row.level, query.level)) return false;
-      if (query.entity) {
-        const haystack = `${String(row.hostname ?? "")} ${String(row.pod_name ?? "")} ${JSON.stringify(event ?? {})}`;
-        if (!includes(haystack, query.entity)) return false;
-      }
-      return true;
-    });
     const levelCounts: Record<string, number> = {};
-    const samples = selected.slice(0, limit).map(({ row, event, time }) => {
-      const level = String(row.level ?? "unknown");
-      levelCounts[level] = (levelCounts[level] ?? 0) + 1;
-      return {
-        time,
-        level,
-        pod: row.pod_name,
-        node: row.hostname,
-        reason: event?.reason,
-        message: event?.message,
-        involvedObject: event?.involvedObject,
-      };
-    });
+    const samples: Array<Record<string, unknown>> = [];
+    let matchedRows = 0;
+    const path = join(this.caseDir(caseId), "events.parquet");
+
+    await readParquetRowsBatched(
+      path,
+      ["eventId", "hostname", "level", "pod_name", "clusterName"],
+      (rows) => {
+        for (const row of rows) {
+          const event = parseJsonObject(row.eventId);
+          const metadata = (event?.metadata ?? {}) as Record<string, unknown>;
+          const time =
+            event?.lastTimestamp ??
+            event?.eventTime ??
+            event?.firstTimestamp ??
+            metadata.creationTimestamp;
+          const at = timestampMs(time);
+          if (at === undefined || at < range.from || at > range.to) continue;
+          if (query.level && !includes(row.level, query.level)) continue;
+          if (query.entity) {
+            const haystack = `${String(row.hostname ?? "")} ${String(
+              row.pod_name ?? "",
+            )} ${JSON.stringify(event ?? {})}`;
+            if (!includes(haystack, query.entity)) continue;
+          }
+          matchedRows++;
+          const level = String(row.level ?? "unknown");
+          levelCounts[level] = (levelCounts[level] ?? 0) + 1;
+          if (samples.length < limit) {
+            samples.push({
+              time,
+              level,
+              pod: row.pod_name,
+              node: row.hostname,
+              reason: event?.reason,
+              message: event?.message,
+              involvedObject: event?.involvedObject,
+            });
+          }
+        }
+      },
+      20_000,
+      signal,
+    );
+
     const rawRef = sourceRef(caseId, "events.parquet", query as unknown as Record<string, unknown>);
     return {
       caseId,
       modality: "event",
       query: query as unknown as Record<string, unknown>,
-      matchedRows: selected.length,
+      matchedRows,
       returnedRows: samples.length,
-      truncated: selected.length > limit,
+      truncated: matchedRows > limit,
       rawRef,
       data: {
         levelCounts,
         samples: jsonSafe(samples) as Array<Record<string, unknown>>,
-        noRelevantEvidence: selected.length === 0,
+        noRelevantEvidence: matchedRows === 0,
       },
     };
   }
@@ -875,44 +912,54 @@ export class RCA100Adapter {
   async queryAlerts(
     caseId: string,
     query: AlertQuery,
+    signal?: AbortSignal,
   ): Promise<QueryEnvelope<{ samples: Array<Record<string, unknown>> }>> {
     const range = ensureValidRange(query);
     const limit = clampLimit(query.limit, 20, 100);
-    const rows = await this.rows(caseId, "alerts", [
-      "time",
-      "subject",
-      "severity",
-      "status",
-      "resource",
-      "data",
-      "id",
-    ]);
-    const selected = rows.filter((row) => {
-      const at = timestampMs(row.time);
-      return (
-        at !== undefined &&
-        at >= range.from &&
-        at <= range.to &&
-        includes(row.subject, query.subject)
-      );
-    });
-    const samples = selected.slice(0, limit).map((row) => ({
-      id: row.id,
-      time: row.time,
-      subject: row.subject,
-      severity: row.severity,
-      status: row.status,
-      resource: parseJsonObject(row.resource),
-      data: parseJsonObject(row.data),
-    }));
+    const samples: Array<Record<string, unknown>> = [];
+    let matchedRows = 0;
+    const path = join(this.caseDir(caseId), "alerts.parquet");
+
+    await readParquetRowsBatched(
+      path,
+      ["time", "subject", "severity", "status", "resource", "data", "id"],
+      (rows) => {
+        for (const row of rows) {
+          const at = timestampMs(row.time);
+          if (
+            at === undefined ||
+            at < range.from ||
+            at > range.to ||
+            !includes(row.subject, query.subject)
+          ) {
+            continue;
+          }
+          matchedRows++;
+          if (samples.length < limit) {
+            samples.push({
+              id: row.id,
+              time: row.time,
+              subject: row.subject,
+              severity: row.severity,
+              status: row.status,
+              resource: parseJsonObject(row.resource),
+              data: parseJsonObject(row.data),
+            });
+          }
+        }
+      },
+      20_000,
+      signal,
+    );
+
     const rawRef = sourceRef(caseId, "alerts.parquet", query as unknown as Record<string, unknown>);
     return {
       caseId,
       modality: "alert",
       query: query as unknown as Record<string, unknown>,
-      matchedRows: selected.length,
+      matchedRows,
       returnedRows: samples.length,
-      truncated: selected.length > limit,
+      truncated: matchedRows > limit,
       rawRef,
       data: { samples: jsonSafe(samples) as Array<Record<string, unknown>> },
     };
@@ -999,21 +1046,6 @@ export class RCA100Adapter {
       throw new Error(`Modality ${modality} is not a parquet modality`);
     }
     return plural as ParquetModality;
-  }
-
-  private rows(
-    caseId: string,
-    modality: ParquetModality,
-    columns: string[],
-  ): Promise<ParquetRow[]> {
-    const path = join(this.caseDir(caseId), `${modality}.parquet`);
-    const key = `${path}\u0000${columns.join(",")}`;
-    let rows = this.rowCache.get(key);
-    if (!rows) {
-      rows = readParquetRows(path, columns);
-      this.rowCache.set(key, rows);
-    }
-    return rows;
   }
 
   private async loadTopology(caseId: string): Promise<TopologyFile> {
