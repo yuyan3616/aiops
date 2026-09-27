@@ -10,6 +10,7 @@ import {
   type InvestigationRunResult,
 } from "./orchestrator";
 import {
+  PiExpertRunError,
   PiExpertRunner,
   type RecordedAgentToolExecution,
 } from "./pi-expert";
@@ -547,6 +548,7 @@ export class RcaService {
               }).then(() => undefined),
           });
           task.sessionId = run.sessionId;
+          task.diagnostics = run.diagnostics;
 
           const finding = await this.acceptAgentFinding(investigation, task, run.finding, bus);
           task.finding = finding;
@@ -568,6 +570,10 @@ export class RcaService {
           const cancelled = running.controller.signal.aborted || isAbortError(error);
           task.status = cancelled ? "cancelled" : "failed";
           task.completedAt = now();
+          if (error instanceof PiExpertRunError) {
+            task.diagnostics = error.diagnostics;
+            if (error.sessionId) task.sessionId = error.sessionId;
+          }
           const finding: AgentExpertFinding = {
             status: cancelled ? "failed" : "failed",
             strength: "inconclusive",
@@ -575,6 +581,7 @@ export class RcaService {
             conclusions: [],
             evidenceClaims: [],
             candidateEntities: [],
+            verdict: "inconclusive",
             suggestedFollowUps: [],
           };
           task.finding = finding;
