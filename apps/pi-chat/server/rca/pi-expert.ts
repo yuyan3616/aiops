@@ -9,6 +9,11 @@ import {
 
 import { getParquetRuntimeDiagnostics } from "./parquet";
 import {
+  buildExpertSystemPrompt,
+  getExpertProfile,
+  normalizeFindingForProfile,
+} from "./profiles/registry";
+import {
   compactToolResultForAgent,
   type ObservabilityToolName,
   type ObservabilityToolRegistry,
@@ -62,73 +67,6 @@ export class PiExpertRunError extends Error {
     this.diagnostics = diagnostics;
     this.sessionId = sessionId;
   }
-}
-
-const ROLE_TOOLS: Record<ExpertKind, readonly ObservabilityToolName[]> = {
-  trace: ["get_trace_fields", "get_service_dependencies", "query_traces"],
-  metrics: ["get_metric_catalog", "query_metrics"],
-  log: ["get_log_fields", "query_logs"],
-  "event-topology": ["get_service_dependencies", "get_topology", "query_events", "query_alerts"],
-};
-
-const ROLE_MODALITIES: Record<ExpertKind, readonly EvidenceModality[]> = {
-  trace: ["trace", "topology"],
-  metrics: ["metric"],
-  log: ["log"],
-  "event-topology": ["event", "topology", "alert"],
-};
-
-function roleLabel(role: ExpertKind): string {
-  return {
-    trace: "trace investigation",
-    metrics: "metrics investigation",
-    log: "log investigation",
-    "event-topology": "event and topology investigation",
-  }[role];
-}
-
-function systemPrompt(role: ExpertKind): string {
-  const modalities = ROLE_MODALITIES[role].join(", ");
-  return `You are a specialist SRE sub-agent for ${roleLabel(role)}.
-
-You receive one falsifiable investigation brief from a main RCA agent. Investigate only that brief.
-
-Rules:
-- Decide your own tool sequence from the evidence you observe. Do NOT call every available tool mechanically.
-- Start narrow and expand only when the current result leaves a relevant evidence gap.
-- The case id is only a routing identifier. Never infer benchmark ground truth from it.
-- Treat tool output as evidence; never invent telemetry, counts, timestamps, services, hosts, or raw references.
-- A conclusion may cite only toolCallId values actually returned by your tool calls.
-- Distinguish facts from inference. Negative evidence is a valid successful result when it directly tests a hypothesis; do not keep searching merely because you found no anomaly.
-- Stop when the brief's expected outputs are answered, the path is disproven, or you are blocked.
-- For metrics investigations, prefer aggregated anomaly summaries. Do not expand into a broad metric inventory after the brief can already be answered.
-- Treat a baseline window as a comparison candidate, not guaranteed healthy ground truth. If the baseline already looks abnormal relative to peers, an earlier window, or the surrounding trend, explicitly report possible baseline contamination and do not use a near-1 incident/baseline ratio to rule out the hypothesis.
-- Do not investigate outside notInScope.
-- Your evidenceClaims modality must be one of: ${modalities}.
-- Final output must be JSON only, with exactly this shape:
-{
-  "status": "succeeded|failed|inconclusive|blocked",
-  "strength": "strong|moderate|weak|inconclusive",
-  "verdict": "supports|contradicts|no-signal|mixed|inconclusive",
-  "summary": "concise finding",
-  "conclusions": ["1-5 direct answers to the brief"],
-  "evidenceClaims": [
-    {
-      "toolCallId": "Cxx returned by a real tool call",
-      "modality": "one allowed modality",
-      "entity": "optional entity",
-      "summary": "what this tool result establishes",
-      "supports": ["hypothesis ids from the brief"],
-      "contradicts": ["hypothesis ids from the brief"]
-    }
-  ],
-  "candidateEntities": ["optional narrowed entities"],
-  "candidateMechanism": "optional mechanism",
-  "suggestedFollowUps": ["only follow-ups outside your current evidence"],
-  "blockedOn": "only when status=blocked"
-}
-
-Do not include markdown fences around the final JSON.`;
 }
 
 function extractJson(output: string): Record<string, unknown> {
@@ -188,6 +126,7 @@ export class PiExpertRunner {
     }
 
     const role = context.brief.role;
+    const profile = getExpertProfile(role);
     const settingsManager = SettingsManager.inMemory({
       compaction: { enabled: false },
       retry: { enabled: true, maxRetries: 1 },
@@ -202,7 +141,7 @@ export class PiExpertRunner {
       noPromptTemplates: true,
       noThemes: true,
       noContextFiles: true,
-      systemPromptOverride: () => systemPrompt(role),
+      systemPromptOverride: () => buildExpertSystemPrompt(profile, context.brief),
     });
     await resourceLoader.reload();
 
@@ -259,19 +198,24 @@ export class PiExpertRunner {
     };
     sampleProcessMemory();
 
-    let metricsQueries = 0;
+    const perToolCalls = new Map<ObservabilityToolName, number>();
     let toolCallCount = 0;
     const toolDefinitions = this.tools.createPiTools({
-      names: ROLE_TOOLS[role],
+      names: profile.tools,
       execute: async (name, _toolCallId, parameters) => {
-        if (role === "metrics" && name === "query_metrics") {
-          if (metricsQueries >= 6) {
-            throw new Error(
-              "Metrics query budget reached. Finalize the finding from the observations already collected.",
-            );
-          }
-          metricsQueries++;
+        if (toolCallCount >= profile.maxToolCalls) {
+          throw new Error(
+            `${profile.label} tool-call budget reached. Finalize from the observations already collected.`,
+          );
         }
+        const toolBudget = profile.toolBudgets?.[name];
+        const currentToolCalls = perToolCalls.get(name) ?? 0;
+        if (toolBudget !== undefined && currentToolCalls >= toolBudget) {
+          throw new Error(
+            `${name} budget reached for ${profile.label}. Finalize from the observations already collected.`,
+          );
+        }
+        perToolCalls.set(name, currentToolCalls + 1);
         toolCallCount++;
         sampleProcessMemory();
         const boundedParameters =
@@ -431,7 +375,7 @@ export class PiExpertRunner {
       session.dispose();
     }
     const validHypotheses = new Set(context.brief.hypothesisIds);
-    const validModalities = new Set(ROLE_MODALITIES[role]);
+    const validModalities = new Set(profile.modalities);
     const claims = Array.isArray(parsed.evidenceClaims) ? parsed.evidenceClaims : [];
     const evidenceClaims = claims
       .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"))
@@ -463,6 +407,26 @@ export class PiExpertRunner {
         ? parsed.verdict
         : "inconclusive";
 
+    const finding: AgentExpertFinding = {
+      status: findingStatus(parsed.status),
+      strength: strength(parsed.strength),
+      verdict,
+      summary:
+        typeof parsed.summary === "string" && parsed.summary.trim()
+          ? parsed.summary.trim().slice(0, 1500)
+          : "Sub-agent completed without a concise summary.",
+      conclusions: strings(parsed.conclusions, 5),
+      evidenceClaims,
+      candidateEntities: strings(parsed.candidateEntities, 20),
+      ...(typeof parsed.candidateMechanism === "string" && parsed.candidateMechanism.trim()
+        ? { candidateMechanism: parsed.candidateMechanism.trim().slice(0, 1000) }
+        : {}),
+      suggestedFollowUps: strings(parsed.suggestedFollowUps, 10),
+      ...(typeof parsed.blockedOn === "string" && parsed.blockedOn.trim()
+        ? { blockedOn: parsed.blockedOn.trim().slice(0, 1000) }
+        : {}),
+    };
+
     return {
       sessionId,
       diagnostics: runtimeDiagnostics(
@@ -475,25 +439,7 @@ export class PiExpertRunner {
           ? { failureDetail: `initial parse repaired: ${parseFailureDetail.slice(0, 900)}` }
           : undefined,
       ),
-      finding: {
-        status: findingStatus(parsed.status),
-        strength: strength(parsed.strength),
-        verdict,
-        summary:
-          typeof parsed.summary === "string" && parsed.summary.trim()
-            ? parsed.summary.trim().slice(0, 1500)
-            : "Sub-agent completed without a concise summary.",
-        conclusions: strings(parsed.conclusions, 5),
-        evidenceClaims,
-        candidateEntities: strings(parsed.candidateEntities, 20),
-        ...(typeof parsed.candidateMechanism === "string" && parsed.candidateMechanism.trim()
-          ? { candidateMechanism: parsed.candidateMechanism.trim().slice(0, 1000) }
-          : {}),
-        suggestedFollowUps: strings(parsed.suggestedFollowUps, 10),
-        ...(typeof parsed.blockedOn === "string" && parsed.blockedOn.trim()
-          ? { blockedOn: parsed.blockedOn.trim().slice(0, 1000) }
-          : {}),
-      },
+      finding: normalizeFindingForProfile(profile, finding),
     };
   }
 }
