@@ -3,9 +3,9 @@ import { existsSync } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 
-import { Type } from "@earendil-works/pi-ai";
 import {
   getSupportedThinkingLevels,
+  Type,
   type ImageContent,
   type TextContent,
   type ThinkingLevel,
@@ -38,13 +38,19 @@ import { ConversationViewBuilder, extractImages, extractText, resultText } from 
 import { normalizePromptError, runDetached } from "./async-task";
 import { ConversationRepository } from "./repository";
 import { createRuntime } from "./runtime";
-import type { ConversationRecord, ManagedSession } from "./types";
+import {
+  ConversationTitleGenerator,
+  fallbackConversationTitle,
+  type TitleModelRef,
+} from "./title-generator";
+import type { ConversationRecord, ConversationTitleMeta, ManagedSession } from "./types";
 
 export class ConversationService {
   private globalConfig: GlobalConfig;
   private conversationRepository: ConversationRepository;
   private modelRuntime: ModelRuntime;
   private readonly rcaService: RcaService;
+  private readonly titleGenerator: ConversationTitleGenerator;
   readonly ttlMs: number = 30_000;
   private readonly channels = new Map<string, EventChannel>();
   private readonly managedSessions = new Map<string, ManagedSession>();
@@ -55,6 +61,7 @@ export class ConversationService {
     this.modelRuntime = modelRuntime;
     this.conversationRepository = new ConversationRepository(globalConfig);
     this.rcaService = rcaService;
+    this.titleGenerator = new ConversationTitleGenerator(modelRuntime);
   }
 
   async createConversation() {
@@ -74,6 +81,11 @@ export class ConversationService {
     const conversationRecord: ConversationRecord = {
       id: conversationId,
       title: "New Conversation",
+      titleMeta: {
+        source: "default",
+        locked: false,
+        generation: 0,
+      },
       workspaceDir: conversationWorkspaceDir,
       sessionId: sessionManager.getSessionId(),
       sessionFile: sessionManager.getSessionFile()!,
@@ -101,6 +113,17 @@ export class ConversationService {
 
     const managedSession = await this.ensureManagedSession(conversationId, validSelectedSkills);
     const session = managedSession.runtime.session;
+    const shouldGenerateTitle = await this.ensureFallbackTitle(conversationId, cleanedUserInput);
+    if (shouldGenerateTitle) {
+      const modelRef: TitleModelRef = {
+        provider: session.agent.state.model.provider,
+        id: session.agent.state.model.id,
+      };
+      runDetached(
+        () => this.generateInitialTitle(conversationId, cleanedUserInput, modelRef),
+        () => undefined,
+      );
+    }
     runDetached(
       () => session.prompt(cleanedUserInput),
       (cause) => {
@@ -232,9 +255,17 @@ export class ConversationService {
   public async rename(conversationId: string, title: string): Promise<ConversationSummary> {
     const cleanedTitle = title.trim();
     if (!cleanedTitle) throw Error("Title cannot be empty.");
+    const current = await this.conversationRepository.get(conversationId);
+    if (!current) throw new Error(`Conversation with ID ${conversationId} not found`);
     const newConversationRecord = await this.conversationRepository.update(conversationId, {
       title: cleanedTitle,
+      titleMeta: {
+        source: "user",
+        locked: true,
+        generation: this.titleMeta(current).generation,
+      },
     });
+    this.publishConversationTitle(newConversationRecord);
     return this.summary(
       newConversationRecord,
       this.managedSessions.get(conversationId)?.status ?? "cold",
@@ -543,6 +574,114 @@ export class ConversationService {
     );
   }
 
+  private titleMeta(record: ConversationRecord): ConversationTitleMeta {
+    if (record.titleMeta) return record.titleMeta;
+    if (record.title === "New Conversation" || record.title === "新会话") {
+      return { source: "default", locked: false, generation: 0 };
+    }
+    return { source: "user", locked: true, generation: 0 };
+  }
+
+  private publishConversationTitle(record: ConversationRecord): void {
+    this.getEventChannel(record.id).publish("conversation.updated", {
+      conversation: this.summary(
+        record,
+        this.managedSessions.get(record.id)?.status ?? "cold",
+      ),
+    });
+  }
+
+  private async ensureFallbackTitle(
+    conversationId: string,
+    userMessage: string,
+  ): Promise<boolean> {
+    const record = await this.conversationRepository.get(conversationId);
+    if (!record) throw new Error(`Conversation with ID ${conversationId} not found`);
+    const meta = this.titleMeta(record);
+    if (meta.locked || meta.generation > 0) return false;
+
+    const updated = await this.conversationRepository.update(conversationId, {
+      title: fallbackConversationTitle(userMessage),
+      titleMeta: {
+        source: "fallback",
+        locked: false,
+        generation: 1,
+        generatedAt: new Date().toISOString(),
+      },
+    });
+    this.publishConversationTitle(updated);
+    return true;
+  }
+
+  private async generateInitialTitle(
+    conversationId: string,
+    userMessage: string,
+    modelRef: TitleModelRef,
+  ): Promise<void> {
+    const generated = await this.titleGenerator.generate({ userMessage }, modelRef);
+    if (!generated) return;
+
+    const record = await this.conversationRepository.get(conversationId);
+    if (!record) return;
+    const meta = this.titleMeta(record);
+    if (meta.locked || meta.generation !== 1 || meta.source === "user") return;
+
+    const updated = await this.conversationRepository.update(conversationId, {
+      title: generated,
+      titleMeta: {
+        source: "llm",
+        locked: false,
+        generation: 1,
+        generatedAt: new Date().toISOString(),
+      },
+    });
+    this.publishConversationTitle(updated);
+  }
+
+  private async refineTitleAfterInvestigation(
+    conversationId: string,
+    input: {
+      caseId: string;
+      summary: string;
+      rootCauseEntities: string[];
+    },
+    modelRef: TitleModelRef,
+  ): Promise<void> {
+    const record = await this.conversationRepository.get(conversationId);
+    if (!record) return;
+    const meta = this.titleMeta(record);
+    if (meta.locked || meta.generation >= 2) return;
+
+    const generated = await this.titleGenerator.generate(
+      {
+        userMessage: record.title,
+        currentTitle: record.title,
+        intent: "rca",
+        caseId: input.caseId,
+        investigationSummary: input.summary,
+        rootCauseEntities: input.rootCauseEntities,
+      },
+      modelRef,
+    );
+    if (!generated) return;
+
+    const latest = await this.conversationRepository.get(conversationId);
+    if (!latest) return;
+    const latestMeta = this.titleMeta(latest);
+    if (latestMeta.locked || latestMeta.generation >= 2) return;
+
+    const updated = await this.conversationRepository.update(conversationId, {
+      title: generated,
+      titleMeta: {
+        source: "llm",
+        locked: false,
+        generation: 2,
+        generatedAt: new Date().toISOString(),
+      },
+    });
+    this.publishConversationTitle(updated);
+  }
+
   private createRcaInvestigationTool(conversationId: string): ToolDefinition {
     return defineTool({
       name: "investigate_rca_case",
@@ -573,6 +712,26 @@ export class ConversationService {
         await this.linkInvestigation(conversationId, handle.investigationId);
 
         const { investigation, report } = await handle.promise;
+        const managedSession = this.managedSessions.get(conversationId);
+        if (managedSession && investigation.rootCause) {
+          const modelRef: TitleModelRef = {
+            provider: managedSession.runtime.session.agent.state.model.provider,
+            id: managedSession.runtime.session.agent.state.model.id,
+          };
+          runDetached(
+            () =>
+              this.refineTitleAfterInvestigation(
+                conversationId,
+                {
+                  caseId: investigation.caseId,
+                  summary: investigation.rootCause?.summary ?? report,
+                  rootCauseEntities: investigation.rootCause?.rootCauseEntities ?? [],
+                },
+                modelRef,
+              ),
+            () => undefined,
+          );
+        }
         const result = {
           investigationId: investigation.id,
           caseId: investigation.caseId,
