@@ -5,7 +5,6 @@ import { serve } from "@hono/node-server";
 import { createApp } from "@server/app";
 import { ConversationService } from "@server/conversation/service";
 import { RCA100Adapter } from "@server/rca/adapter";
-import { InvestigationFollowUpService } from "@server/rca/follow-up";
 import { RcaOrchestrator } from "@server/rca/orchestrator";
 import { PiRcaPlanner } from "@server/rca/planner";
 import { InvestigationRepository } from "@server/rca/repository";
@@ -45,10 +44,9 @@ const rcaService = new RcaService(
   new RcaOrchestrator(rcaTools, investigationRepository, rcaPlanner),
   investigationRepository,
 );
-const followUpService = new InvestigationFollowUpService(investigationRepository);
-const service = new ConversationService(globalConfig, modelRuntime, rcaTools);
+const service = new ConversationService(globalConfig, modelRuntime, rcaService);
 
-const app = createApp(service, rcaService, followUpService, globalConfig.rcaDefaultCaseId);
+const app = createApp(service, rcaService);
 const host = process.env.PI_CHAT_HOST ?? "127.0.0.1";
 const port = Number(process.env.PI_CHAT_PORT ?? 4328);
 const server = serve(
