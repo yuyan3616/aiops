@@ -177,6 +177,24 @@ export function applyExternalStreamEvent(
     return { items, sequence };
   }
 
+  if (type === "agent.thinking.delta") {
+    const agentId = String(data.agentId ?? "");
+    const delta = String(data.delta ?? "");
+    if (!agentId || !delta) return { items, sequence };
+    items = updateItem(items, agentId, (item) =>
+      item.kind === "agent"
+        ? {
+            ...item,
+            agent: {
+              ...item.agent,
+              thinking: (item.agent.thinking ?? "") + delta,
+            },
+          }
+        : item,
+    );
+    return { items, sequence };
+  }
+
   if (type === "agent.tool.started" || type === "agent.tool.completed") {
     const agentId = String(data.agentId ?? "");
     const tool = data.tool as ToolRun | undefined;
