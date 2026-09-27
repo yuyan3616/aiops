@@ -76,10 +76,16 @@ export function createConversationRoutes(
 
   conversationApp.post("/:conversationId/abort", async (ctx) => {
     const { conversationId } = ctx.req.param();
-    rcaService.cancelConversation(conversationId);
+    const cancelledInvestigations = rcaService.cancelConversation(conversationId);
+    if (cancelledInvestigations > 0) {
+      conversationService.getEventChannel(conversationId).publish("runtime.status", {
+        status: "stopping",
+      });
+    }
     await conversationService.abort(conversationId);
     return ctx.json({
       aborted: true,
+      cancelledInvestigations,
     });
   });
 
@@ -159,8 +165,14 @@ export function createConversationRoutes(
           channel.publish("runtime.settled", {});
         },
         onFailed: (error) => {
+          if (error.name === "AbortError") {
+            channel.publish("runtime.status", { status: "ready" });
+            channel.publish("runtime.settled", {});
+            return;
+          }
           channel.publish("runtime.error", { error: error.message });
           channel.publish("runtime.status", { status: "error" });
+          channel.publish("runtime.settled", {});
         },
       });
       mapper = new RcaChatEventMapper(investigationId);
