@@ -168,6 +168,20 @@ export interface ExpertTask {
   completedAt?: string;
 }
 
+export interface RuntimeResourceSnapshot {
+  at: string;
+  rssMb: number;
+  heapUsedMb: number;
+  heapTotalMb: number;
+  externalMb: number;
+  arrayBuffersMb: number;
+  activeParquetScans: number;
+  maxConcurrentParquetScans: number;
+  totalParquetScans: number;
+  parquetBatchesRead: number;
+  parquetRowsScanned: number;
+}
+
 export interface ToolCallRecord {
   id: string;
   expertTaskId?: string;
@@ -178,6 +192,10 @@ export interface ToolCallRecord {
   rawRef?: string;
   startedAt: string;
   completedAt?: string;
+  runtime?: {
+    before: RuntimeResourceSnapshot;
+    after?: RuntimeResourceSnapshot;
+  };
   interruptions?: Array<{ at: string; reason: string }>;
   error?: string;
 }
