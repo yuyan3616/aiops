@@ -106,7 +106,11 @@ export class RcaOrchestrator {
       });
       let alertExecution: ToolExecution;
       try {
-        alertExecution = await this.tools.execute("get_alert_context", initialToolCall.query);
+        alertExecution = await this.tools.execute(
+          "get_alert_context",
+          initialToolCall.query,
+          options.signal,
+        );
         initialToolCall.status = "completed";
         initialToolCall.resultSummary = alertExecution.summary;
         initialToolCall.rawRef = alertExecution.rawRef;
@@ -383,7 +387,7 @@ export class RcaOrchestrator {
       toolCall: call,
     });
     try {
-      const execution = await this.tools.execute(tool, arguments_);
+      const execution = await this.tools.execute(tool, arguments_, signal);
       checkCancelled(signal);
       call.status = "completed";
       call.resultSummary = execution.summary;
@@ -395,10 +399,25 @@ export class RcaOrchestrator {
       });
       return { callId: call.id, execution };
     } catch (error) {
-      call.status = signal?.aborted ? "cancelled" : "failed";
+      const cancelled =
+        signal?.aborted || (error instanceof DOMException && error.name === "AbortError");
+      call.status = cancelled ? "cancelled" : "failed";
       call.error = error instanceof Error ? error.message : String(error);
       call.completedAt = now();
+      expertTask.status = cancelled ? "cancelled" : "failed";
+      expertTask.completedAt = now();
       await this.repository.appendToolCall(investigation.id, call);
+      await this.repository.save(investigation);
+      await bus.publish(
+        "tool.completed",
+        `${tool} ${cancelled ? "cancelled" : "failed"}: ${call.error}.`,
+        { toolCall: call },
+      );
+      await bus.publish(
+        "expert.completed",
+        `${this.expertLabel(expertTask.expert)} ${cancelled ? "cancelled" : "failed"}.`,
+        { expertTask },
+      );
       throw error;
     }
   }
