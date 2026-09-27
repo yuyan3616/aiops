@@ -81,6 +81,21 @@ function cleanRecord(value: Record<string, unknown>): Record<string, unknown> {
 export function createRcaMainAgentTools(options: RcaMainAgentToolsOptions): ToolDefinition[] {
   const { rcaService, conversationId } = options;
   const mappers = new Map<string, RcaChatEventMapper>();
+  let mutationQueue: Promise<void> = Promise.resolve();
+
+  const serializeMutation = async <T>(operation: () => Promise<T>): Promise<T> => {
+    const previous = mutationQueue;
+    let release!: () => void;
+    mutationQueue = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous.catch(() => undefined);
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  };
 
   const project = async (event: {
     investigationId: string;
@@ -152,12 +167,14 @@ export function createRcaMainAgentTools(options: RcaMainAgentToolsOptions): Tool
     }),
     execute: async (_toolCallId, parameters) => {
       const { investigationId, kind, ...query } = parameters;
-      const result = await rcaService.queryOverview(
-        investigationId,
-        kind as RcaOverviewKind,
-        cleanRecord(query),
-      );
-      return toolResult(result);
+      return serializeMutation(async () => {
+        const result = await rcaService.queryOverview(
+          investigationId,
+          kind as RcaOverviewKind,
+          cleanRecord(query),
+        );
+        return toolResult(result);
+      });
     },
   });
 
@@ -165,7 +182,7 @@ export function createRcaMainAgentTools(options: RcaMainAgentToolsOptions): Tool
     name: "update_hypotheses",
     label: "Update RCA hypotheses",
     description:
-      "Create or update competing RCA hypotheses based on evidence. The model owns hypothesis decisions; the server validates evidence references and persists the state.",
+      "Create or update competing RCA hypotheses based on evidence. Hypothesis statements are immutable once created; if the meaning changes, create a new hypothesis id instead of rewriting an old one. The model owns hypothesis decisions; the server validates evidence references and persists the state.",
     parameters: Type.Object({
       investigationId: Type.String(),
       hypotheses: Type.Array(
@@ -193,8 +210,10 @@ export function createRcaMainAgentTools(options: RcaMainAgentToolsOptions): Tool
     }),
     execute: async (_toolCallId, parameters) => {
       const hypotheses = parameters.hypotheses.map((item) => cleanRecord(item)) as HypothesisMutation[];
-      const result = await rcaService.updateHypotheses(parameters.investigationId, hypotheses);
-      return toolResult({ hypotheses: result });
+      return serializeMutation(async () => {
+        const result = await rcaService.updateHypotheses(parameters.investigationId, hypotheses);
+        return toolResult({ hypotheses: result });
+      });
     },
   });
 
@@ -266,10 +285,12 @@ export function createRcaMainAgentTools(options: RcaMainAgentToolsOptions): Tool
         expected: [...brief.expected],
         ...(brief.notInScope ? { notInScope: brief.notInScope } : {}),
       }));
-      const findings = await rcaService.dispatchAgentic(parameters.investigationId, briefs, {
-        model: options.getModelRef(),
+      return serializeMutation(async () => {
+        const findings = await rcaService.dispatchAgentic(parameters.investigationId, briefs, {
+          model: options.getModelRef(),
+        });
+        return toolResult({ findings });
       });
-      return toolResult({ findings });
     },
   });
 
@@ -319,11 +340,13 @@ export function createRcaMainAgentTools(options: RcaMainAgentToolsOptions): Tool
         confidence: input.confidence,
         ...(input.missingEvidence ? { missingEvidence: [...input.missingEvidence] } : {}),
       };
-      const concluded = await rcaService.concludeAgentic(investigationId, result);
-      await options.onConcluded?.(concluded.investigation, concluded.report);
-      return toolResult({
-        result: concluded.investigation.rootCause,
-        report: concluded.report,
+      return serializeMutation(async () => {
+        const concluded = await rcaService.concludeAgentic(investigationId, result);
+        await options.onConcluded?.(concluded.investigation, concluded.report);
+        return toolResult({
+          result: concluded.investigation.rootCause,
+          report: concluded.report,
+        });
       });
     },
   });
