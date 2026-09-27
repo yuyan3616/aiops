@@ -52,6 +52,7 @@ export type EventType =
   | "runtime.status"
   | "runtime.error"
   | "runtime.settled"
+  | "conversation.updated"
   | "message.delta"
   | "message.started"
   | "message.added"
