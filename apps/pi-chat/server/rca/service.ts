@@ -131,6 +131,15 @@ export interface AgenticDispatchOptions {
   model?: { provider: string; id: string };
 }
 
+export interface AgenticConclusionInput extends Omit<RCAResult, "investigationId"> {
+  selectedHypothesisIds: string[];
+  unresolvedHypotheses: Array<{
+    id: string;
+    reason: string;
+    missingEvidence?: string[];
+  }>;
+}
+
 export interface DispatchedFinding {
   taskRef: string;
   role: InvestigationBrief["role"];
@@ -875,7 +884,7 @@ export class RcaService {
 
   async concludeAgentic(
     investigationId: string,
-    result: Omit<RCAResult, "investigationId">,
+    result: AgenticConclusionInput,
   ): Promise<{ investigation: Investigation; report: string }> {
     const investigation = await this.repository.get(investigationId);
     this.assertConcludable(investigation);
@@ -893,6 +902,69 @@ export class RcaService {
         throw new Error(`Conclusion references unknown hypothesis ${hypothesisId}`);
       }
     }
+    for (const hypothesisId of result.selectedHypothesisIds) {
+      if (!hypothesisIds.has(hypothesisId)) {
+        throw new Error(`Conclusion selects unknown hypothesis ${hypothesisId}`);
+      }
+    }
+    for (const unresolved of result.unresolvedHypotheses) {
+      if (!hypothesisIds.has(unresolved.id)) {
+        throw new Error(`Conclusion marks unknown hypothesis ${unresolved.id} unresolved`);
+      }
+      if (!unresolved.reason.trim()) {
+        throw new Error(`Unresolved hypothesis ${unresolved.id} requires a reason`);
+      }
+    }
+
+    const selected = new Set(result.selectedHypothesisIds);
+    const rejected = new Set(result.rejectedHypotheses);
+    const unresolved = new Set(result.unresolvedHypotheses.map((item) => item.id));
+    const overlaps = [...hypothesisIds].filter(
+      (id) =>
+        Number(selected.has(id)) + Number(rejected.has(id)) + Number(unresolved.has(id)) > 1,
+    );
+    if (overlaps.length > 0) {
+      throw new Error(
+        `Hypotheses must appear in exactly one conclusion bucket: ${overlaps.join(", ")}`,
+      );
+    }
+    const unaccounted = [...hypothesisIds].filter(
+      (id) => !selected.has(id) && !rejected.has(id) && !unresolved.has(id),
+    );
+    if (unaccounted.length > 0) {
+      throw new Error(
+        `Conclusion leaves hypotheses unaccounted for: ${unaccounted.join(", ")}`,
+      );
+    }
+
+    for (const id of selected) {
+      const hypothesis = investigation.hypotheses.find((item) => item.id === id)!;
+      if (hypothesis.status !== "supported" && hypothesis.status !== "confirmed") {
+        throw new Error(
+          `Selected hypothesis ${id} must be supported or confirmed before conclusion`,
+        );
+      }
+    }
+    for (const id of rejected) {
+      const hypothesis = investigation.hypotheses.find((item) => item.id === id)!;
+      if (hypothesis.status !== "rejected") {
+        throw new Error(
+          `Rejected hypothesis ${id} must be marked rejected before conclusion`,
+        );
+      }
+    }
+    if (result.status !== "inconclusive" && selected.size === 0) {
+      throw new Error("A non-inconclusive conclusion must select at least one hypothesis");
+    }
+    if (
+      result.status === "confirmed" &&
+      ![...selected].some(
+        (id) => investigation.hypotheses.find((item) => item.id === id)?.status === "confirmed",
+      )
+    ) {
+      throw new Error("A confirmed conclusion must select at least one confirmed hypothesis");
+    }
+
     if (result.status !== "inconclusive" && result.evidenceIds.length === 0) {
       throw new Error("A non-inconclusive conclusion must cite evidence");
     }
