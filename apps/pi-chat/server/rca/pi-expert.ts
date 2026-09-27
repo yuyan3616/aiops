@@ -51,6 +51,18 @@ export interface PiExpertRunResult {
   diagnostics: AgentRunDiagnostics;
 }
 
+export class PiExpertRunError extends Error {
+  readonly diagnostics: AgentRunDiagnostics;
+  readonly sessionId?: string;
+
+  constructor(message: string, diagnostics: AgentRunDiagnostics, sessionId?: string) {
+    super(message);
+    this.name = "PiExpertRunError";
+    this.diagnostics = diagnostics;
+    this.sessionId = sessionId;
+  }
+}
+
 const ROLE_TOOLS: Record<ExpertKind, readonly ObservabilityToolName[]> = {
   trace: ["get_trace_fields", "get_service_dependencies", "query_traces"],
   metrics: ["get_metric_catalog", "query_metrics"],
@@ -263,6 +275,7 @@ export class PiExpertRunner {
 
     const sessionId = session.sessionManager.getSessionId();
     let output = "";
+    let totalOutputChars = 0;
     let thinkingChars = 0;
     let repairAttempted = false;
     let repairSucceeded = false;
@@ -272,6 +285,7 @@ export class PiExpertRunner {
       if (event.type !== "message_update") return;
       if (event.assistantMessageEvent.type === "text_delta") {
         output += event.assistantMessageEvent.delta;
+        totalOutputChars += event.assistantMessageEvent.delta.length;
       } else if (event.assistantMessageEvent.type === "thinking_delta") {
         thinkingChars += event.assistantMessageEvent.delta.length;
         void context.onThinking?.(event.assistantMessageEvent.delta);
@@ -302,26 +316,48 @@ export class PiExpertRunner {
 
     let parsed: Record<string, unknown>;
     try {
-      await session.prompt(
-        `Investigate this brief. Use tools only as needed, then return the required JSON finding.\n\n${JSON.stringify(
-          prompt,
-          null,
-          2,
-        )}`,
-      );
       try {
-        parsed = extractJson(output);
-      } catch (error) {
-        repairAttempted = true;
-        parseFailure =
-          error instanceof SyntaxError ? "json_invalid" : "json_missing";
-        parseFailureDetail = error instanceof Error ? error.message : String(error);
-        output = "";
         await session.prompt(
-          "Your investigation work is complete. Do not call more tools. Return ONLY the required JSON finding now, using the evidence and toolCallId values already collected. Negative/no-anomaly results are valid findings. Do not restart the investigation or broaden the search.",
+          `Investigate this brief. Use tools only as needed, then return the required JSON finding.\n\n${JSON.stringify(
+            prompt,
+            null,
+            2,
+          )}`,
         );
-        parsed = extractJson(output);
-        repairSucceeded = true;
+        try {
+          parsed = extractJson(output);
+        } catch (error) {
+          repairAttempted = true;
+          parseFailure =
+            error instanceof SyntaxError ? "json_invalid" : "json_missing";
+          parseFailureDetail = error instanceof Error ? error.message : String(error);
+          output = "";
+          await session.prompt(
+            "Your investigation work is complete. Do not call more tools. Return ONLY the required JSON finding now, using the evidence and toolCallId values already collected. Negative/no-anomaly results are valid findings. Do not restart the investigation or broaden the search.",
+          );
+          parsed = extractJson(output);
+          repairSucceeded = true;
+        }
+      } catch (error) {
+        const failureReason =
+          context.signal?.aborted
+            ? "aborted"
+            : parseFailure ??
+              (error instanceof SyntaxError ? "json_invalid" : "model_error");
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new PiExpertRunError(
+          detail,
+          {
+            toolCallCount,
+            thinkingChars,
+            outputChars: totalOutputChars,
+            repairAttempted,
+            repairSucceeded: false,
+            failureReason,
+            failureDetail: detail.slice(0, 1000),
+          },
+          sessionId,
+        );
       }
     } finally {
       context.signal?.removeEventListener("abort", abort);
@@ -366,11 +402,12 @@ export class PiExpertRunner {
       diagnostics: {
         toolCallCount,
         thinkingChars,
-        outputChars: output.length,
+        outputChars: totalOutputChars,
         repairAttempted,
         repairSucceeded,
-        ...(parseFailure ? { failureReason: parseFailure } : {}),
-        ...(parseFailureDetail ? { failureDetail: parseFailureDetail.slice(0, 1000) } : {}),
+        ...(repairAttempted && repairSucceeded && parseFailureDetail
+          ? { failureDetail: `initial parse repaired: ${parseFailureDetail.slice(0, 900)}` }
+          : {}),
       },
       finding: {
         status: findingStatus(parsed.status),
