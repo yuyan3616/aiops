@@ -3,15 +3,23 @@ import { existsSync } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 
+import { Type } from "@earendil-works/pi-ai";
 import {
   getSupportedThinkingLevels,
   type ImageContent,
   type TextContent,
   type ThinkingLevel,
 } from "@earendil-works/pi-ai";
-import { ModelRuntime, SessionManager, loadSkillsFromDir } from "@earendil-works/pi-coding-agent";
+import {
+  defineTool,
+  ModelRuntime,
+  SessionManager,
+  loadSkillsFromDir,
+  type ToolDefinition,
+} from "@earendil-works/pi-coding-agent";
 import type { GlobalConfig } from "@server/config";
-import type { ObservabilityToolRegistry } from "@server/rca/tools";
+import { RcaChatEventMapper } from "@server/rca/chat-events";
+import type { RcaService } from "@server/rca/service";
 import { hasSameStringItems } from "@server/utils";
 import type {
   ConversationConfig,
@@ -36,21 +44,17 @@ export class ConversationService {
   private globalConfig: GlobalConfig;
   private conversationRepository: ConversationRepository;
   private modelRuntime: ModelRuntime;
-  private readonly rcaTools?: ObservabilityToolRegistry;
+  private readonly rcaService: RcaService;
   readonly ttlMs: number = 30_000;
   private readonly channels = new Map<string, EventChannel>();
   private readonly managedSessions = new Map<string, ManagedSession>();
   private readonly recordWriteQueues = new Map<string, Promise<void>>();
 
-  constructor(
-    globalConfig: GlobalConfig,
-    modelRuntime: ModelRuntime,
-    rcaTools?: ObservabilityToolRegistry,
-  ) {
+  constructor(globalConfig: GlobalConfig, modelRuntime: ModelRuntime, rcaService: RcaService) {
     this.globalConfig = globalConfig;
     this.modelRuntime = modelRuntime;
     this.conversationRepository = new ConversationRepository(globalConfig);
-    this.rcaTools = rcaTools;
+    this.rcaService = rcaService;
   }
 
   async createConversation() {
@@ -359,7 +363,7 @@ export class ConversationService {
       sessionManager,
       modelRuntime: this.modelRuntime,
       selectedSkills,
-      rcaTools: this.rcaTools,
+      customTools: [this.createRcaInvestigationTool(conversationRecord.id)],
     });
 
     const managedSession: ManagedSession = {
@@ -537,6 +541,78 @@ export class ConversationService {
       sessionManager,
       conversationRecord.selectedSkills,
     );
+  }
+
+  private createRcaInvestigationTool(conversationId: string): ToolDefinition {
+    return defineTool({
+      name: "investigate_rca_case",
+      label: "RCA investigation",
+      description:
+        "Run the full auditable RCA workflow for a concrete RCA100 case such as t039. Use this when the user asks to investigate, diagnose, troubleshoot, or find the root cause of that case. The workflow streams child expert tasks and evidence into the conversation and returns the final structured investigation result.",
+      parameters: Type.Object({
+        caseId: Type.String({ description: "RCA100 case id, for example t039" }),
+      }),
+      execute: async (_toolCallId: string, parameters: Record<string, unknown>) => {
+        const caseId = String(parameters.caseId ?? "")
+          .trim()
+          .toLowerCase();
+        if (!/^t\d+$/i.test(caseId)) {
+          throw new Error("caseId must look like t039");
+        }
+
+        let mapper: RcaChatEventMapper;
+        const handle = this.rcaService.run(caseId, {
+          conversationId,
+          onEvent: async (event) => {
+            for (const projection of mapper.map(event)) {
+              await this.publishExternalEvent(conversationId, projection.type, projection.payload);
+            }
+          },
+        });
+        mapper = new RcaChatEventMapper(handle.investigationId);
+        await this.linkInvestigation(conversationId, handle.investigationId);
+
+        const { investigation, report } = await handle.promise;
+        const result = {
+          investigationId: investigation.id,
+          caseId: investigation.caseId,
+          status: investigation.status,
+          rootCause: investigation.rootCause,
+          hypotheses: investigation.hypotheses.map((hypothesis) => ({
+            id: hypothesis.id,
+            statement: hypothesis.statement,
+            status: hypothesis.status,
+            confidence: hypothesis.confidence,
+            supportingEvidenceIds: hypothesis.supportingEvidenceIds,
+            contradictingEvidenceIds: hypothesis.contradictingEvidenceIds,
+          })),
+          evidence: investigation.evidence.map((evidence) => ({
+            id: evidence.id,
+            modality: evidence.modality,
+            entity: evidence.entity,
+            summary: evidence.summary,
+            supports: evidence.supports,
+            contradicts: evidence.contradicts,
+            rawRef: evidence.rawRef,
+          })),
+          report,
+        };
+
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
+          details: result,
+        };
+      },
+    });
+  }
+
+  private async publishExternalEvent(
+    conversationId: string,
+    type: EventType,
+    payload: unknown,
+  ): Promise<void> {
+    this.getEventChannel(conversationId).publish(type, payload);
+    await this.persistExternalEvent(conversationId, type, payload);
   }
 
   private enqueueRecordWrite(conversationId: string, write: () => Promise<void>): Promise<void> {
