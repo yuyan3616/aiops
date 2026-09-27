@@ -9,6 +9,7 @@ import {
   RcaOrchestrator,
   type InvestigationRunResult,
 } from "./orchestrator";
+import { getParquetRuntimeDiagnostics } from "./parquet";
 import {
   PiExpertRunError,
   PiExpertRunner,
@@ -34,6 +35,7 @@ import type {
   Observation,
   RCAResult,
   RcaTask,
+  RuntimeResourceSnapshot,
   ToolCallRecord,
 } from "./types";
 
@@ -165,6 +167,28 @@ function isAbortError(error: unknown): boolean {
 function clampConfidence(value: number | undefined, fallback = 0.3): number {
   if (typeof value !== "number" || Number.isNaN(value)) return fallback;
   return Math.max(0, Math.min(1, value));
+}
+
+function bytesToMb(bytes: number): number {
+  return Math.round((bytes / 1024 / 1024) * 100) / 100;
+}
+
+function runtimeResourceSnapshot(): RuntimeResourceSnapshot {
+  const memory = process.memoryUsage();
+  const parquet = getParquetRuntimeDiagnostics();
+  return {
+    at: now(),
+    rssMb: bytesToMb(memory.rss),
+    heapUsedMb: bytesToMb(memory.heapUsed),
+    heapTotalMb: bytesToMb(memory.heapTotal),
+    externalMb: bytesToMb(memory.external),
+    arrayBuffersMb: bytesToMb(memory.arrayBuffers),
+    activeParquetScans: parquet.activeScans,
+    maxConcurrentParquetScans: parquet.maxConcurrentScans,
+    totalParquetScans: parquet.totalScans,
+    parquetBatchesRead: parquet.batchesRead,
+    parquetRowsScanned: parquet.rowsScanned,
+  };
 }
 
 function toolModality(tool: ObservabilityToolName): EvidenceModality {
@@ -1151,6 +1175,9 @@ export class RcaService {
       query: arguments_,
       status: "running",
       startedAt: now(),
+      runtime: {
+        before: runtimeResourceSnapshot(),
+      },
     };
     investigation.toolCalls.push(call);
     expertTask?.toolCallIds.push(call.id);
@@ -1166,6 +1193,7 @@ export class RcaService {
       call.resultSummary = execution.summary;
       call.rawRef = execution.rawRef;
       call.completedAt = now();
+      if (call.runtime) call.runtime.after = runtimeResourceSnapshot();
       const observation: Observation = {
         id: this.nextObservationId(investigation),
         caseId: investigation.caseId,
@@ -1201,6 +1229,7 @@ export class RcaService {
       call.status = cancelled ? "cancelled" : "failed";
       call.error = error instanceof Error ? error.message : String(error);
       call.completedAt = now();
+      if (call.runtime) call.runtime.after = runtimeResourceSnapshot();
       await this.repository.appendToolCall(investigation.id, call);
       await this.saveInvestigation(investigation);
       await bus.publish(
