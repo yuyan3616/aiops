@@ -43,6 +43,8 @@ const rcaPlanner =
 const rcaService = new RcaService(
   new RcaOrchestrator(rcaTools, investigationRepository, rcaPlanner),
   investigationRepository,
+  modelRuntime,
+  rcaTools,
 );
 const service = new ConversationService(globalConfig, modelRuntime, rcaService);
 
