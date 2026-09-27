@@ -1,6 +1,6 @@
 import { writeFile } from "node:fs/promises";
 
-import { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { serve } from "@hono/node-server";
 import { createApp } from "@server/app";
 import { ConversationService } from "@server/conversation/service";
@@ -13,6 +13,7 @@ import { RcaService } from "@server/rca/service";
 import { ObservabilityToolRegistry } from "@server/rca/tools";
 
 import { ensureDir, getGlobalConfig } from "./config";
+import { ensurePackyModelsConfig } from "./model-provider";
 
 const globalConfig = getGlobalConfig();
 await ensureDir([globalConfig.rootDir, globalConfig.skillsDir, globalConfig.rcaInvestigationsDir]);
@@ -21,6 +22,14 @@ await writeFile(globalConfig.mcpConfigPath, JSON.stringify({ mcpServers: {} }, n
 }).catch((error: NodeJS.ErrnoException) => {
   if (error.code !== "EEXIST") throw error;
 });
+const packyProvider = await ensurePackyModelsConfig(getAgentDir());
+if (packyProvider) {
+  process.env.RCA_MODEL_PROVIDER ??= packyProvider.providerId;
+  process.env.RCA_MODEL_ID ??= packyProvider.modelId;
+  process.stdout.write(
+    `PackyAPI provider enabled: ${packyProvider.providerId}/${packyProvider.modelId} via ${packyProvider.baseUrl}\n`,
+  );
+}
 const modelRuntime = await ModelRuntime.create();
 const rcaTools = new ObservabilityToolRegistry(new RCA100Adapter(globalConfig.rcaCasesDir));
 const investigationRepository = new InvestigationRepository(globalConfig.rcaInvestigationsDir);
