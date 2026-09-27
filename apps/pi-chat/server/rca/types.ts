@@ -207,6 +207,7 @@ export interface Investigation {
   rounds: number;
   startedAt: string;
   completedAt?: string;
+  interruptions?: Array<{ at: string; reason: string }>;
   error?: string;
 }
 
