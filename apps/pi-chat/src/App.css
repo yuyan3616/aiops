@@ -2130,3 +2130,83 @@ button {
     display: none;
   }
 }
+
+
+.hypothesis-board {
+  width: calc(100% - 33px);
+  margin: 8px 0 10px 33px;
+  padding: 11px 12px;
+  border: 1px solid #e5e6e8;
+  border-radius: 9px;
+  background: #fbfbfc;
+}
+
+.hypothesis-board-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 8px;
+  color: #4e5358;
+  font-size: 11px;
+}
+
+.hypothesis-board-title span {
+  color: #9aa0a6;
+  font-size: 10px;
+}
+
+.hypothesis-board-list {
+  display: grid;
+  gap: 7px;
+}
+
+.hypothesis-row {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  color: #555a60;
+  font-size: 11px;
+}
+
+.hypothesis-row code {
+  color: #8b9095;
+  font-size: 10px;
+}
+
+.hypothesis-statement {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hypothesis-status {
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: #f1f2f3;
+  color: #74797e;
+  font-size: 9.5px;
+}
+
+.hypothesis-status.supported,
+.hypothesis-status.confirmed {
+  background: #effaf5;
+  color: #07865a;
+}
+
+.hypothesis-status.investigating {
+  background: #fff8ec;
+  color: #b86800;
+}
+
+.hypothesis-status.rejected {
+  background: #f2f3f4;
+  color: #8b9095;
+}
+
+@media (max-width: 640px) {
+  .hypothesis-board {
+    width: 100%;
+    margin-left: 0;
+  }
+}
