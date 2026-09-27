@@ -85,7 +85,7 @@ export class RcaChatEventMapper {
               status: "running",
               tools: [],
               evidence: [],
-              implementation: "deterministic",
+              implementation: task.implementation ?? "deterministic",
             },
           },
         }];
