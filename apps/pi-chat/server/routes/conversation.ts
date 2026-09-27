@@ -1,27 +1,11 @@
-import { randomUUID } from "node:crypto";
-
 import type { ConversationService } from "@server/conversation/service";
-import {
-  formatRcaFinalAnswer,
-  RcaChatEventMapper,
-  resolveRcaCaseId,
-  type ChatStreamProjection,
-} from "@server/rca/chat-events";
-import {
-  extractInvestigationId,
-  type InvestigationFollowUpService,
-  isInvestigationFollowUp,
-  requestsFreshInvestigation,
-} from "@server/rca/follow-up";
 import type { RcaService } from "@server/rca/service";
 import { jsonBody } from "@server/utils";
-import type { ConversationConfigUpdate, EventType, StreamEvent } from "@shared/types";
+import type { ConversationConfigUpdate, StreamEvent } from "@shared/types";
 import { Hono } from "hono";
 export function createConversationRoutes(
   conversationService: ConversationService,
   rcaService: RcaService,
-  followUpService: InvestigationFollowUpService,
-  rcaDefaultCaseId: string,
 ) {
   const conversationApp = new Hono();
 
@@ -116,123 +100,7 @@ export function createConversationRoutes(
         // ignore malformed skills
       }
     }
-    const publishPersisted = async (
-      channel: ReturnType<ConversationService["getEventChannel"]>,
-      type: EventType,
-      payload: unknown,
-    ) => {
-      channel.publish(type, payload);
-      await conversationService.persistExternalEvent(conversationId, type, payload);
-    };
-    const publishUserMessage = async () => {
-      const channel = conversationService.getEventChannel(conversationId);
-      const message = {
-        id: randomUUID(),
-        role: "user" as const,
-        text: userInput.trim(),
-        images: [],
-        timestamp: Date.now(),
-      };
-      await publishPersisted(channel, "message.added", message);
-      channel.publish("runtime.status", { status: "running" });
-      return channel;
-    };
-    const startInvestigation = async (caseId: string) => {
-      const channel = await publishUserMessage();
-      const publish = async (events: ChatStreamProjection[]) => {
-        for (const event of events) {
-          await publishPersisted(channel, event.type, event.payload);
-        }
-      };
-      let mapper: RcaChatEventMapper;
-      const investigationId = rcaService.start(caseId, {
-        conversationId,
-        onEvent: async (event) => {
-          await publish(mapper.map(event));
-        },
-        onCompleted: async (investigation) => {
-          const payload = {
-            message: {
-              id: randomUUID(),
-              role: "assistant" as const,
-              text: formatRcaFinalAnswer(investigation),
-              images: [],
-              timestamp: investigation.completedAt,
-            },
-          };
-          await publishPersisted(channel, "message.completed", payload);
-          channel.publish("runtime.status", { status: "ready" });
-          channel.publish("runtime.settled", {});
-        },
-        onFailed: (error) => {
-          if (error.name === "AbortError") {
-            channel.publish("runtime.status", { status: "ready" });
-            channel.publish("runtime.settled", {});
-            return;
-          }
-          channel.publish("runtime.error", { error: error.message });
-          channel.publish("runtime.status", { status: "error" });
-          channel.publish("runtime.settled", {});
-        },
-      });
-      mapper = new RcaChatEventMapper(investigationId);
-      await publish(mapper.begin());
-      await conversationService.linkInvestigation(conversationId, investigationId);
-      return ctx.json({ accepted: true, investigationId }, 202);
-    };
 
-    const caseId = resolveRcaCaseId(userInput, rcaDefaultCaseId);
-    if (caseId) return startInvestigation(caseId);
-
-    const requestedInvestigationId = extractInvestigationId(userInput);
-    const investigationId = await conversationService.resolveInvestigation(
-      conversationId,
-      requestedInvestigationId,
-    );
-    if (investigationId && isInvestigationFollowUp(userInput)) {
-      if (requestsFreshInvestigation(userInput)) {
-        const previous = await rcaService.get(investigationId);
-        return startInvestigation(previous.caseId);
-      }
-      const channel = await publishUserMessage();
-      try {
-        const answer = await followUpService.answer(investigationId, userInput);
-        const thinkingId = `${investigationId}:follow-up:${randomUUID()}:thinking`;
-        await publishPersisted(channel, "thinking.started", { id: thinkingId });
-        await publishPersisted(channel, "thinking.delta", {
-          id: thinkingId,
-          delta: answer.thinking,
-        });
-        await publishPersisted(channel, "thinking.completed", { id: thinkingId });
-        await publishPersisted(channel, "message.completed", {
-          message: {
-            id: randomUUID(),
-            role: "assistant" as const,
-            text: answer.answer,
-            images: [],
-            timestamp: Date.now(),
-          },
-        });
-        channel.publish("runtime.status", { status: "ready" });
-        channel.publish("runtime.settled", {});
-        return ctx.json(
-          {
-            accepted: true,
-            investigationId,
-            followUp: true,
-            evidenceIds: answer.evidenceIds,
-            toolCallIds: answer.toolCallIds,
-            usedNewTools: answer.usedNewTools,
-          },
-          202,
-        );
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        channel.publish("runtime.error", { error: message });
-        channel.publish("runtime.status", { status: "error" });
-        throw error;
-      }
-    }
     await conversationService.send(conversationId, userInput, skills);
     return ctx.json({ accepted: true }, 202);
   });
