@@ -69,6 +69,46 @@ export interface Evidence {
   createdAt: string;
 }
 
+export type ExpertFindingStatus = "succeeded" | "failed" | "inconclusive" | "blocked";
+export type FindingStrength = "strong" | "moderate" | "weak" | "inconclusive";
+
+export interface InvestigationBrief {
+  role: ExpertKind;
+  question: string;
+  hypothesisIds: string[];
+  context: {
+    alertSummary: string;
+    service?: string;
+    mainWindow: TimeRange;
+    baselineWindow?: TimeRange;
+    knownFacts: string[];
+    refs?: Record<string, string[]>;
+  };
+  expected: string[];
+  notInScope?: string;
+}
+
+export interface AgentEvidenceClaim {
+  toolCallId: string;
+  modality: EvidenceModality;
+  entity?: string;
+  summary: string;
+  supports: string[];
+  contradicts: string[];
+}
+
+export interface AgentExpertFinding {
+  status: ExpertFindingStatus;
+  strength: FindingStrength;
+  summary: string;
+  conclusions: string[];
+  evidenceClaims: AgentEvidenceClaim[];
+  candidateEntities: string[];
+  candidateMechanism?: string;
+  suggestedFollowUps: string[];
+  blockedOn?: string;
+}
+
 export interface ExpertTask {
   id: string;
   expert: ExpertKind;
@@ -77,6 +117,9 @@ export interface ExpertTask {
   hypothesisIds: string[];
   toolCallIds: string[];
   evidenceIds: string[];
+  brief?: InvestigationBrief;
+  implementation?: "deterministic" | "pi-session";
+  sessionId?: string;
   createdAt: string;
   completedAt?: string;
 }
@@ -136,6 +179,7 @@ export type InvestigationEventType =
   | "hypothesis.created"
   | "hypothesis.updated"
   | "expert.started"
+  | "expert.thinking.delta"
   | "expert.completed"
   | "tool.started"
   | "tool.completed"
