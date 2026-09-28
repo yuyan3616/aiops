@@ -82,12 +82,75 @@ test("Main Agent RCA tools expose explicit investigation controls instead of a b
     "start_rca_investigation",
     "resume_rca_investigation",
     "query_rca_overview",
+    "screen_rca_candidates",
     "update_hypotheses",
     "dispatch_investigations",
     "get_investigation_state",
     "conclude_investigation",
   ]);
   assert.equal(names.includes("investigate_rca_case"), false);
+});
+
+test("screen_rca_candidates delegates a bounded candidate set to the RCA service", async () => {
+  let received:
+    | { investigationId: string; candidates: string[]; topNPerCandidate: number }
+    | undefined;
+  const fakeService = {
+    async queryCandidateCoverage(
+      investigationId: string,
+      candidates: string[],
+      topNPerCandidate: number,
+    ) {
+      received = { investigationId, candidates, topNPerCandidate };
+      return {
+        candidates: candidates.map((candidate, index) => ({
+          candidate,
+          evidenceId: `E0${index + 1}`,
+          toolCallId: `C0${index + 1}`,
+          summary: `${candidate} screened`,
+          result: {},
+        })),
+      };
+    },
+  } as unknown as RcaService;
+
+  const definitions = createRcaMainAgentTools({
+    rcaService: fakeService,
+    conversationId: "conversation-candidate-coverage",
+    getModelRef: () => ({ provider: "packy", id: "deepseek-flash" }),
+    onProjection: () => {},
+    onLinkInvestigation: () => {},
+  });
+  const tool = definitions.find((item) => item.name === "screen_rca_candidates");
+  assert.ok(tool);
+
+  const execute = tool.execute as unknown as (
+    toolCallId: string,
+    parameters: {
+      investigationId: string;
+      candidates: string[];
+      topNPerCandidate?: number;
+    },
+  ) => Promise<{ content: Array<{ type: string; text: string }> }>;
+
+  const response = await execute("call-screen", {
+    investigationId: "INV-screen",
+    candidates: ["checkout", "shipping", "email"],
+    topNPerCandidate: 4,
+  });
+  const payload = JSON.parse(response.content[0]?.text ?? "{}") as {
+    candidates?: Array<{ candidate?: string }>;
+  };
+
+  assert.deepEqual(received, {
+    investigationId: "INV-screen",
+    candidates: ["checkout", "shipping", "email"],
+    topNPerCandidate: 4,
+  });
+  assert.deepEqual(
+    payload.candidates?.map((item) => item.candidate),
+    ["checkout", "shipping", "email"],
+  );
 });
 
 test("start_rca_investigation does not implicitly replace a linked investigation", async () => {
