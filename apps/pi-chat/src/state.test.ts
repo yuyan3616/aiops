@@ -79,6 +79,7 @@ test("conversationReducer keeps expert tools nested in an agent thread", () => {
           status: "running",
           tools: [],
           evidence: [],
+          steps: [],
           implementation: "deterministic",
         },
       },
@@ -88,6 +89,18 @@ test("conversationReducer keeps expert tools nested in an agent thread", () => {
     type: "event",
     event: {
       id: 2,
+      streamId: "s1",
+      type: "agent.thinking.delta",
+      payload: {
+        agentId: "agent-1",
+        delta: "先检查 trace。",
+      },
+    },
+  });
+  items = conversationReducer(items, {
+    type: "event",
+    event: {
+      id: 3,
       streamId: "s1",
       type: "agent.tool.completed",
       payload: {
@@ -105,7 +118,19 @@ test("conversationReducer keeps expert tools nested in an agent thread", () => {
   items = conversationReducer(items, {
     type: "event",
     event: {
-      id: 3,
+      id: 4,
+      streamId: "s1",
+      type: "agent.thinking.delta",
+      payload: {
+        agentId: "agent-1",
+        delta: "根据 trace 继续收敛。",
+      },
+    },
+  });
+  items = conversationReducer(items, {
+    type: "event",
+    event: {
+      id: 5,
       streamId: "s1",
       type: "agent.completed",
       payload: {
@@ -121,6 +146,11 @@ test("conversationReducer keeps expert tools nested in an agent thread", () => {
   if (items[0]?.kind !== "agent") return;
   assert.equal(items[0].agent.tools[0]?.name, "query_traces");
   assert.equal(items[0].agent.status, "completed");
+  assert.deepEqual(items[0].agent.steps?.map((step) => step.type), [
+    "reasoning",
+    "tool",
+    "reasoning",
+  ]);
   assert.equal(items[0].agent.summary, "shipping localized");
 });
 

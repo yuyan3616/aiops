@@ -2264,21 +2264,83 @@ button {
   margin: 18px 0 8px;
 }
 
-.agent-thread-thinking {
-  max-height: 260px;
-  overflow: auto;
-  padding: 10px 12px;
-  border-left: 2px solid #e5e6e8;
-  color: #70757a;
+.agent-thread-timeline {
+  position: relative;
+  display: grid;
+  gap: 10px;
+  padding-left: 2px;
+}
+
+.agent-thread-timeline::before {
+  position: absolute;
+  top: 9px;
+  bottom: 9px;
+  left: 11px;
+  width: 1px;
+  background: #e2e4e7;
+  content: "";
+}
+
+.agent-thread-timeline-step {
+  position: relative;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+
+.agent-thread-timeline-marker {
+  position: relative;
+  z-index: 1;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border: 1px solid #e1e3e6;
+  border-radius: 50%;
+  background: #fff;
+  color: #7f858b;
+}
+
+.agent-thread-timeline-marker.tool-marker {
+  width: 7px;
+  height: 7px;
+  margin: 7px 0 0 7px;
+  border: 0;
+  background: #a9afb5;
+}
+
+.agent-thread-reasoning {
+  padding: 7px 9px 8px;
+  border-radius: 7px;
+  background: #f7f8f9;
+  color: #686e74;
   font-size: 11px;
   line-height: 1.65;
 }
 
-.agent-thread-thinking .markdown > * {
+.agent-thread-reasoning small {
+  display: block;
+  margin-bottom: 3px;
+  color: #999fa5;
+  font-size: 9px;
+  font-weight: 650;
+}
+
+.agent-thread-reasoning .markdown > * {
   margin: 4px 0;
   color: inherit;
   font-size: inherit;
   line-height: inherit;
+}
+
+.agent-thread-timeline-tool {
+  min-width: 0;
+}
+
+.agent-thread-timeline-tool .tool-card {
+  margin: 0;
+  width: 100%;
 }
 
 .agent-thread-section-title span {

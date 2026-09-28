@@ -1,3 +1,4 @@
+import { appendAgentReasoning, upsertAgentTool } from "@shared/agent-timeline";
 import type {
   AgentThreadEvidence,
   AgentThreadRun,
@@ -183,13 +184,7 @@ export function applyExternalStreamEvent(
     if (!agentId || !delta) return { items, sequence };
     items = updateItem(items, agentId, (item) =>
       item.kind === "agent"
-        ? {
-            ...item,
-            agent: {
-              ...item.agent,
-              thinking: (item.agent.thinking ?? "") + delta,
-            },
-          }
+        ? { ...item, agent: appendAgentReasoning(item.agent, delta) }
         : item,
     );
     return { items, sequence };
@@ -199,17 +194,11 @@ export function applyExternalStreamEvent(
     const agentId = String(data.agentId ?? "");
     const tool = data.tool as ToolRun | undefined;
     if (!agentId || !tool?.id) return { items, sequence };
-    items = updateItem(items, agentId, (item) => {
-      if (item.kind !== "agent") return item;
-      const existingIndex = item.agent.tools.findIndex((entry) => entry.id === tool.id);
-      const tools =
-        existingIndex < 0
-          ? [...item.agent.tools, tool]
-          : item.agent.tools.map((entry, index) =>
-              index === existingIndex ? { ...entry, ...tool } : entry,
-            );
-      return { ...item, agent: { ...item.agent, tools } };
-    });
+    items = updateItem(items, agentId, (item) =>
+      item.kind === "agent"
+        ? { ...item, agent: upsertAgentTool(item.agent, tool) }
+        : item,
+    );
     return { items, sequence };
   }
 

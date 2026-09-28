@@ -1,3 +1,4 @@
+import { appendAgentReasoning, upsertAgentTool } from "@shared/agent-timeline";
 import type {
   AgentThreadEvidence,
   AgentThreadRun,
@@ -340,13 +341,7 @@ export function conversationReducer(
       if (!agentId || !delta) return items;
       return updateItem(items, agentId, (item) =>
         item.kind === "agent"
-          ? {
-              ...item,
-              agent: {
-                ...item.agent,
-                thinking: (item.agent.thinking ?? "") + delta,
-              },
-            }
+          ? { ...item, agent: appendAgentReasoning(item.agent, delta) }
           : item,
       );
     }
@@ -355,17 +350,11 @@ export function conversationReducer(
       const agentId = String(payload.agentId ?? "");
       const tool = payload.tool as ToolRun | undefined;
       if (!agentId || !tool?.id) return items;
-      return updateItem(items, agentId, (item) => {
-        if (item.kind !== "agent") return item;
-        const index = item.agent.tools.findIndex((entry) => entry.id === tool.id);
-        const tools =
-          index < 0
-            ? [...item.agent.tools, tool]
-            : item.agent.tools.map((entry, toolIndex) =>
-                toolIndex === index ? { ...entry, ...tool } : entry,
-              );
-        return { ...item, agent: { ...item.agent, tools } };
-      });
+      return updateItem(items, agentId, (item) =>
+        item.kind === "agent"
+          ? { ...item, agent: upsertAgentTool(item.agent, tool) }
+          : item,
+      );
     }
     case "agent.evidence.added": {
       const agentId = String(payload.agentId ?? "");

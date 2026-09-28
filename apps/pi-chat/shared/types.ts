@@ -134,6 +134,20 @@ export interface AgentThreadEvidence {
   summary: string;
 }
 
+export interface AgentReasoningStep {
+  id: string;
+  type: "reasoning";
+  text: string;
+}
+
+export interface AgentToolStep {
+  id: string;
+  type: "tool";
+  tool: ToolRun;
+}
+
+export type AgentStep = AgentReasoningStep | AgentToolStep;
+
 export interface AgentThreadRun {
   id: string;
   taskId: string;
@@ -143,6 +157,11 @@ export interface AgentThreadRun {
   status: "running" | "completed" | "failed" | "cancelled";
   tools: ToolRun[];
   evidence: AgentThreadEvidence[];
+  /**
+   * Ordered child-agent execution timeline. Older persisted conversations may
+   * not have this field and fall back to thinking + tools.
+   */
+  steps?: AgentStep[];
   thinking?: string;
   summary?: string;
   interruptedByRestart?: boolean;

@@ -1,4 +1,5 @@
 import type { Investigation, ToolCallRecord } from "@server/rca/types";
+import { reconcileAgentToolSteps } from "@shared/agent-timeline";
 import type { MessageListItem, ToolRun } from "@shared/types";
 
 const restartMessage = "执行已因服务重启而中断。";
@@ -113,12 +114,11 @@ export function reconcileRcaExecutionItems(
       investigation,
       task.interruptedByRestart,
     );
-    return {
-      ...item,
-      agent: {
+    const tools = reconcileAgentTools(investigation, task.id, item.agent.tools);
+    const reconciledAgent = reconcileAgentToolSteps(
+      {
         ...item.agent,
         status,
-        tools: reconcileAgentTools(investigation, task.id, item.agent.tools),
         evidence: mergedEvidence,
         ...(interruptedByRestart
           ? {
@@ -127,6 +127,11 @@ export function reconcileRcaExecutionItems(
             }
           : {}),
       },
+      tools,
+    );
+    return {
+      ...item,
+      agent: reconciledAgent,
     };
   });
 }

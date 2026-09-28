@@ -1,6 +1,6 @@
 import { Markdown } from "@components/Markdown";
 import { ToolCard } from "@components/ToolCard";
-import type { AgentThreadRun } from "@shared/types";
+import type { AgentStep, AgentThreadRun } from "@shared/types";
 import {
   Brain,
   CheckCircle2,
@@ -29,8 +29,29 @@ function stateLabel(agent: AgentThreadRun): string {
   }[agent.status];
 }
 
+function timelineSteps(agent: AgentThreadRun): AgentStep[] {
+  if (agent.steps?.length) return agent.steps;
+  const legacy: AgentStep[] = [];
+  if (agent.thinking) {
+    legacy.push({
+      id: `${agent.id}:legacy-reasoning`,
+      type: "reasoning",
+      text: agent.thinking,
+    });
+  }
+  for (const tool of agent.tools) {
+    legacy.push({
+      id: `${agent.id}:legacy-tool:${tool.id}`,
+      type: "tool",
+      tool,
+    });
+  }
+  return legacy;
+}
+
 export function AgentThreadCard({ agent }: { agent: AgentThreadRun }) {
   const [open, setOpen] = useState(false);
+  const steps = timelineSteps(agent);
 
   useEffect(() => {
     if (!open) return;
@@ -101,27 +122,42 @@ export function AgentThreadCard({ agent }: { agent: AgentThreadRun }) {
                 <p>{agent.objective}</p>
               </section>
 
-              {agent.thinking && (
-                <section>
-                  <div className="agent-thread-section-title">
-                    <Brain size={14} />
-                    思考过程
-                  </div>
-                  <div className="agent-thread-thinking">
-                    <Markdown content={agent.thinking} />
-                  </div>
-                </section>
-              )}
-
               <section>
                 <div className="agent-thread-section-title">
-                  执行过程 <span>{agent.tools.length}</span>
+                  <Brain size={14} />
+                  调查过程
+                  <span>{agent.tools.length} 次工具调用</span>
                 </div>
-                <div className="agent-thread-tools">
-                  {agent.tools.length > 0 ? (
-                    agent.tools.map((tool) => <ToolCard key={tool.id} tool={tool} />)
+                <div className="agent-thread-timeline">
+                  {steps.length > 0 ? (
+                    steps.map((step) =>
+                      step.type === "reasoning" ? (
+                        <div
+                          className="agent-thread-timeline-step reasoning"
+                          key={step.id}
+                        >
+                          <div className="agent-thread-timeline-marker">
+                            <Brain size={12} />
+                          </div>
+                          <div className="agent-thread-reasoning">
+                            <small>分析</small>
+                            <Markdown content={step.text} />
+                          </div>
+                        </div>
+                      ) : (
+                        <div
+                          className="agent-thread-timeline-step tool"
+                          key={step.id}
+                        >
+                          <div className="agent-thread-timeline-marker tool-marker" />
+                          <div className="agent-thread-timeline-tool">
+                            <ToolCard tool={step.tool} />
+                          </div>
+                        </div>
+                      ),
+                    )
                   ) : (
-                    <p className="agent-thread-empty">等待工具调用…</p>
+                    <p className="agent-thread-empty">等待调查过程…</p>
                   )}
                 </div>
               </section>

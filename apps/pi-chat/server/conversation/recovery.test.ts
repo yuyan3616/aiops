@@ -99,6 +99,23 @@ test("reconciles stale running RCA agent and nested tools from persisted investi
         status: "running",
       }],
       evidence: [],
+      steps: [
+        {
+          id: "reasoning-1",
+          type: "reasoning",
+          text: "先检查 trace。",
+        },
+        {
+          id: "tool-step-1",
+          type: "tool",
+          tool: {
+            id: "INV-test:C01",
+            name: "query_traces",
+            args: { service: "checkout" },
+            status: "running",
+          },
+        },
+      ],
       implementation: "pi-session",
     },
   }];
@@ -119,6 +136,16 @@ test("reconciles stale running RCA agent and nested tools from persisted investi
     true,
   );
   assert.equal(reconciled[0].agent.evidence[0]?.id, "E01");
+  assert.deepEqual(reconciled[0].agent.steps?.map((step) => step.type), [
+    "reasoning",
+    "tool",
+  ]);
+  assert.equal(
+    reconciled[0].agent.steps?.[1]?.type === "tool"
+      ? reconciled[0].agent.steps[1].tool.status
+      : "",
+    "error",
+  );
 });
 
 test("settles an orphaned RCA main-agent tool after a process restart", () => {
