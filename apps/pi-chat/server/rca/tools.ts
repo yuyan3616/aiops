@@ -122,6 +122,7 @@ export function compactToolResultForAgent(
             spanId: item.spanId,
             parentSpanId: item.parentSpanId,
             statusCode: item.statusCode,
+            queryWindowRelation: item.queryWindowRelation,
           }))
       : [];
 
@@ -147,6 +148,7 @@ export function compactToolResultForAgent(
                     spanId: node.spanId,
                     parentSpanId: node.parentSpanId,
                     statusCode: node.statusCode,
+                    queryWindowRelation: node.queryWindowRelation,
                   }))
               : [],
             pathNodesOmitted:
@@ -202,6 +204,7 @@ export function compactToolResultForAgent(
         .slice(0, 12)
         .map((item) => ({
           entitySet: item.entitySet,
+          entityId: item.entityId,
           entity: item.entity,
           service: item.service,
           metric: item.metric,
@@ -225,7 +228,9 @@ export function compactToolResultForAgent(
         .slice(0, 8)
         .map((item) => ({
           entitySet: item.entitySet,
+          entityId: item.entityId,
           entity: item.entity,
+          service: item.service,
           metric: item.metric,
           incidentMedian: item.incidentMedian,
           peerMedian: item.peerMedian,
@@ -406,7 +411,7 @@ export class ObservabilityToolRegistry {
         name: "query_metrics",
         label: "查询 Metrics",
         description:
-          "在有边界的时间范围内查询并聚合 metrics。只返回 top anomaly summary，不返回整个 parquet 文件。",
+          "在有边界的时间范围内查询并聚合 metrics。只返回 top anomaly summary，不返回整个 parquet 文件。异常幅度只表示候选线索；使用 baseline、peer 与时间关系判断它是否与当前 incident 相关。",
         parameters: Type.Object({
           ...rangeParameters,
           baselineFrom: Type.Optional(Type.String()),
@@ -437,7 +442,7 @@ export class ObservabilityToolRegistry {
         name: "query_traces",
         label: "查询 Traces",
         description:
-          "分析有边界的 traces，返回 latency baseline、critical path、propagation candidate 和 top span。",
+          "分析有边界的 traces，返回 latency baseline、critical path、propagation candidate 和 top span。overlap 只表示 span 与查询窗口相交；返回的 queryWindowRelation 用于区分窗口前已开始和窗口内新开始的 span。",
         parameters: Type.Object({
           ...rangeParameters,
           baselineFrom: Type.Optional(Type.String()),
