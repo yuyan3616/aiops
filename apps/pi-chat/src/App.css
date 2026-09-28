@@ -90,8 +90,30 @@ button {
   margin-left: 0;
 }
 
-.sidebar-brand-searching {
+.sidebar-brand-searching,
+.sidebar-brand-selecting {
   gap: 0;
+}
+
+.conversation-selection-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-left: 4px;
+}
+
+.conversation-selection-header strong {
+  font-size: 13px;
+}
+
+.conversation-selection-close {
+  width: 30px !important;
+  height: 30px !important;
+  min-height: 30px !important;
+  padding: 0 !important;
+  color: #777 !important;
 }
 
 .conversation-search {
@@ -208,6 +230,25 @@ button {
   font-weight: 550;
 }
 
+.conversation-group-label > span {
+  min-width: 0;
+}
+
+.conversation-multi-select-trigger {
+  width: 26px !important;
+  height: 26px !important;
+  min-height: 26px !important;
+  margin: -4px -5px -1px auto;
+  padding: 0 !important;
+  border-radius: 50% !important;
+  color: #858a90 !important;
+}
+
+.conversation-multi-select-trigger:hover {
+  background: #eceef0 !important;
+  color: #34383d !important;
+}
+
 .conversation-search-results-label {
   justify-content: space-between;
 }
@@ -231,6 +272,11 @@ button {
 
 .conversation-item-row:hover {
   background: #f1f1f1;
+}
+
+.conversation-item-row-selected,
+.conversation-item-row-selected:hover {
+  background: #eceff2;
 }
 
 .conversation-item-row-active {
@@ -264,6 +310,28 @@ button {
 .conversation-item-active {
   background: transparent !important;
   color: #202124 !important;
+}
+
+.conversation-item-selecting {
+  gap: 9px !important;
+  padding-right: 10px !important;
+}
+
+.conversation-selection-check {
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 18px;
+  border: 1.5px solid #c5c9cd;
+  border-radius: 50%;
+  background: #fff;
+  color: #fff;
+}
+
+.conversation-selection-check-active {
+  border-color: #30343a;
+  background: #30343a;
 }
 
 .conversation-item-copy {
@@ -375,6 +443,31 @@ button {
   color: #aaa;
   font-size: 11px;
   text-align: center;
+}
+
+.conversation-bulk-actions {
+  flex: 0 0 auto;
+  margin-top: 8px;
+  padding: 9px 2px 1px;
+  border-top: 1px solid #e5e6e8;
+}
+
+.conversation-bulk-delete {
+  width: 100%;
+  min-height: 34px !important;
+  justify-content: center !important;
+  color: #c52c25 !important;
+}
+
+.conversation-bulk-delete:hover,
+.conversation-bulk-delete:focus-visible {
+  background: #fff0ef !important;
+  color: #b42318 !important;
+}
+
+.conversation-bulk-delete:disabled {
+  color: #aaa !important;
+  opacity: 1 !important;
 }
 
 .conversation-menu {
