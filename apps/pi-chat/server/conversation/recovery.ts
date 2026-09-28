@@ -1,5 +1,5 @@
 import type { Investigation, ToolCallRecord } from "@server/rca/types";
-import { reconcileAgentToolSteps } from "@shared/agent-timeline";
+import { reconcileAgentToolSteps } from "../../shared/agent-timeline";
 import type { MessageListItem, ToolRun } from "@shared/types";
 
 const restartMessage = "执行已因服务重启而中断。";

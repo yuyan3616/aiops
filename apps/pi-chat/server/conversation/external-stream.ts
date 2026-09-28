@@ -1,4 +1,4 @@
-import { appendAgentReasoning, upsertAgentTool } from "@shared/agent-timeline";
+import { appendAgentReasoning, upsertAgentTool } from "../../shared/agent-timeline";
 import type {
   AgentThreadEvidence,
   AgentThreadRun,
