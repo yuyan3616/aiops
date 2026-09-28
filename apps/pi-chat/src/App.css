@@ -888,11 +888,11 @@ button {
 
 .tool-summary {
   width: 100%;
-  min-height: 38px;
+  min-height: 36px;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 11px;
+  gap: 7px;
+  padding: 0 10px;
   border: 0;
   background: transparent;
   text-align: left;
@@ -909,6 +909,10 @@ button {
 
 .tool-summary:focus-visible {
   box-shadow: inset 0 0 0 1px #bdbdbd;
+}
+
+.tool-type-icon {
+  color: #73787d;
 }
 
 .tool-summary strong {
