@@ -4,7 +4,7 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronRight,
-  FileText,
+  Wrench,
   LoaderCircle,
   XCircle,
 } from "lucide-react";
@@ -55,7 +55,7 @@ export function ToolCard({ tool }: { tool: ToolRun }) {
   return (
     <div className="tool-card">
       <Button variant="ghost" className="tool-summary" onClick={() => setOpen(!open)}>
-        <FileText size={16} />
+        <Wrench className="tool-type-icon" size={15} strokeWidth={1.8} />
         <strong title={label}>{label}</strong>
         {statusIcon}
         {open ? <ChevronDown size={17} /> : <ChevronRight size={17} />}
