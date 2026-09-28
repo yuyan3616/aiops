@@ -17,7 +17,6 @@ import {
   type RcaOverviewKind,
   type RcaService,
 } from "./service";
-import type { PendingHumanRequest } from "@shared/types";
 import type {
   Investigation,
   InvestigationBrief,
@@ -31,9 +30,6 @@ export interface RcaMainAgentToolsOptions {
   onProjection: (projection: ChatStreamProjection) => void | Promise<void>;
   onLinkInvestigation: (investigationId: string) => void | Promise<void>;
   getRcaContext?: () => ConversationRcaContext | Promise<ConversationRcaContext>;
-  onHumanInputRequested?: (
-    request: Omit<PendingHumanRequest, "id" | "createdAt">,
-  ) => PendingHumanRequest | Promise<PendingHumanRequest>;
   onConcluded?: (investigation: Investigation, report: string) => void | Promise<void>;
 }
 
@@ -133,35 +129,6 @@ export function createRcaMainAgentTools(options: RcaMainAgentToolsOptions): Tool
       await options.onProjection(projection);
     }
   };
-
-  const discoveryTool = defineTool({
-    name: "find_incident_candidates",
-    label: "发现故障候选",
-    description:
-      "在启动 RCA Investigation 前，根据用户提供的 service、环境、症状或时间范围，从用户可见的告警 metadata 中寻找可能对应的 case。它只用于定位调查入口，不读取或返回 benchmark ground truth。若唯一候选足够明确，可直接使用其 caseId；若存在多个会实质改变调查范围的候选，再使用 request_user_input 向用户澄清。",
-    parameters: Type.Object({
-      service: Type.Optional(Type.String()),
-      environment: Type.Optional(Type.String()),
-      symptom: Type.Optional(Type.String()),
-      from: Type.Optional(Type.String({ description: "可选 ISO-8601 起始时间" })),
-      to: Type.Optional(Type.String({ description: "可选 ISO-8601 结束时间" })),
-      limit: Type.Optional(Type.Number({ minimum: 1, maximum: 20 })),
-    }),
-    execute: async (_toolCallId, parameters) => {
-      const query = cleanRecord(parameters as Record<string, unknown>);
-      const candidates = await rcaService.findIncidentCandidates(query);
-      return toolResult({
-        candidates,
-        count: candidates.length,
-        guidance:
-          candidates.length === 1
-            ? "存在唯一候选；若与用户描述一致，可直接启动该 case。"
-            : candidates.length > 1
-              ? "存在多个候选；只有歧义会影响调查范围时才向用户询问。"
-              : "没有找到匹配候选；请缩小范围或向用户询问当前最关键的缺失信息。",
-      });
-    },
-  });
 
   const startTool = defineTool({
     name: "start_rca_investigation",
@@ -429,56 +396,6 @@ export function createRcaMainAgentTools(options: RcaMainAgentToolsOptions): Tool
     },
   });
 
-  const requestHumanInputTool = defineTool({
-    name: "request_user_input",
-    label: "请求用户补充",
-    description:
-      "只有当缺失或歧义信息已经阻碍可靠调查，且无法通过已有会话上下文或低成本工具自行消除时才使用。每次只询问当前最关键的一个问题。调用后停止继续调查并结束当前回合，等待用户回答。",
-    parameters: Type.Object({
-      question: Type.String({ minLength: 1, maxLength: 600 }),
-      reason: Type.Union([
-        Type.Literal("missing_context"),
-        Type.Literal("ambiguous_scope"),
-        Type.Literal("need_confirmation"),
-      ]),
-      inputType: Type.Union([
-        Type.Literal("text"),
-        Type.Literal("select"),
-        Type.Literal("confirm"),
-      ]),
-      options: Type.Optional(Type.Array(Type.Object({
-        value: Type.String({ minLength: 1, maxLength: 200 }),
-        label: Type.String({ minLength: 1, maxLength: 200 }),
-      }), { maxItems: 8 })),
-      allowFreeText: Type.Optional(Type.Boolean()),
-    }),
-    execute: async (_toolCallId, parameters) =>
-      serializeMutation(async () => {
-        if (!options.onHumanInputRequested) {
-          throw new Error("Human input requests are not configured for this conversation");
-        }
-        const rcaContext = (await options.getRcaContext?.()) ?? idleConversationRcaContext();
-        const investigationId = rcaContext.state === "running" ? rcaContext.investigationId : undefined;
-        const normalizedOptions =
-          parameters.inputType === "confirm" && (!parameters.options || parameters.options.length === 0)
-            ? [{ value: "yes", label: "是" }, { value: "no", label: "否" }]
-            : parameters.options;
-        const request = await options.onHumanInputRequested({
-          question: parameters.question.trim(),
-          reason: parameters.reason,
-          inputType: parameters.inputType,
-          ...(normalizedOptions?.length ? { options: normalizedOptions } : {}),
-          ...(parameters.allowFreeText !== undefined ? { allowFreeText: parameters.allowFreeText } : {}),
-          ...(investigationId ? { investigationId } : {}),
-        });
-        return toolResult({
-          waitingForHuman: true,
-          request,
-          instruction: "停止当前回合，等待用户回答后再继续。不要继续调用其他调查工具。",
-        });
-      }),
-  });
-
   const stateTool = defineTool({
     name: "get_investigation_state",
     label: "读取 RCA 调查状态",
@@ -580,14 +497,12 @@ export function createRcaMainAgentTools(options: RcaMainAgentToolsOptions): Tool
   });
 
   return [
-    discoveryTool,
     startTool,
     resumeTool,
     overviewTool,
     candidateCoverageTool,
     updateHypothesesTool,
     dispatchTool,
-    requestHumanInputTool,
     stateTool,
     concludeTool,
   ];

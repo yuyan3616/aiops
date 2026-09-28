@@ -79,115 +79,16 @@ test("Main Agent RCA tools expose explicit investigation controls instead of a b
   });
   const names = tools.map((tool) => tool.name);
   assert.deepEqual(names, [
-    "find_incident_candidates",
     "start_rca_investigation",
     "resume_rca_investigation",
     "query_rca_overview",
     "screen_rca_candidates",
     "update_hypotheses",
     "dispatch_investigations",
-    "request_user_input",
     "get_investigation_state",
     "conclude_investigation",
   ]);
   assert.equal(names.includes("investigate_rca_case"), false);
-});
-
-test("find_incident_candidates delegates pre-investigation filters to RCA service", async () => {
-  let received: Record<string, unknown> | undefined;
-  const fakeService = {
-    async findIncidentCandidates(query: Record<string, unknown>) {
-      received = query;
-      return [{
-        caseId: "t039",
-        title: "checkout latency",
-        triggerTime: "2026-01-01T00:10:00.000Z",
-        window: {
-          from: "2026-01-01T00:00:00.000Z",
-          to: "2026-01-01T00:10:00.000Z",
-        },
-        entity: { id: "checkout", name: "checkout", type: "service", domain: "apm" },
-        service: "checkout",
-      }];
-    },
-  } as unknown as RcaService;
-  const definitions = createRcaMainAgentTools({
-    rcaService: fakeService,
-    conversationId: "conversation-discovery",
-    getModelRef: () => ({ provider: "packy", id: "deepseek-flash" }),
-    onProjection: () => {},
-    onLinkInvestigation: () => {},
-  });
-  const tool = definitions.find((item) => item.name === "find_incident_candidates");
-  assert.ok(tool);
-  const execute = tool.execute as unknown as (
-    toolCallId: string,
-    parameters: { service?: string; environment?: string; limit?: number },
-  ) => Promise<{ content: Array<{ type: string; text: string }> }>;
-  const response = await execute("call-discovery", {
-    service: "checkout",
-    environment: "prod",
-    limit: 5,
-  });
-  const payload = JSON.parse(response.content[0]?.text ?? "{}") as {
-    count?: number;
-    candidates?: Array<{ caseId?: string }>;
-  };
-  assert.deepEqual(received, { service: "checkout", environment: "prod", limit: 5 });
-  assert.equal(payload.count, 1);
-  assert.equal(payload.candidates?.[0]?.caseId, "t039");
-});
-
-test("request_user_input forwards one blocking clarification with active investigation context", async () => {
-  let received: unknown;
-  const definitions = createRcaMainAgentTools({
-    rcaService: {} as RcaService,
-    conversationId: "conversation-human-input",
-    getModelRef: () => ({ provider: "packy", id: "deepseek-flash" }),
-    onProjection: () => {},
-    onLinkInvestigation: () => {},
-    getRcaContext: () => ({ state: "running", investigationId: "INV-human", caseId: "t039" }),
-    onHumanInputRequested: (request) => {
-      received = request;
-      return { id: "HREQ-test", createdAt: "2026-09-28T00:00:00.000Z", ...request };
-    },
-  });
-  const tool = definitions.find((item) => item.name === "request_user_input");
-  assert.ok(tool);
-  const execute = tool.execute as unknown as (
-    toolCallId: string,
-    parameters: {
-      question: string;
-      reason: "ambiguous_scope";
-      inputType: "select";
-      options: Array<{ value: string; label: string }>;
-    },
-  ) => Promise<{ content: Array<{ type: string; text: string }> }>;
-  const result = await execute("call-human", {
-    question: "要排查哪个环境？",
-    reason: "ambiguous_scope",
-    inputType: "select",
-    options: [
-      { value: "prod", label: "Production" },
-      { value: "staging", label: "Staging" },
-    ],
-  });
-  const payload = JSON.parse(result.content[0]?.text ?? "{}") as {
-    waitingForHuman?: boolean;
-    request?: { investigationId?: string };
-  };
-  assert.equal(payload.waitingForHuman, true);
-  assert.equal(payload.request?.investigationId, "INV-human");
-  assert.deepEqual(received, {
-    question: "要排查哪个环境？",
-    reason: "ambiguous_scope",
-    inputType: "select",
-    options: [
-      { value: "prod", label: "Production" },
-      { value: "staging", label: "Staging" },
-    ],
-    investigationId: "INV-human",
-  });
 });
 
 test("screen_rca_candidates delegates a bounded candidate set to the RCA service", async () => {
@@ -420,51 +321,10 @@ test("user steering interrupts only the active dispatch and keeps the investigat
     const persisted = await repository.get(current.id);
     assert.equal(persisted.status, "running");
     assert.equal(persisted.expertTasks[0]?.status, "cancelled");
-    assert.equal(persisted.expertTasks[0]?.cancellationReason, "superseded_by_user");
     assert.equal(
       persisted.userInterventions?.[0]?.content,
       "14:02 checkout 做过一次手工发布",
     );
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
-});
-
-test("waiting for human survives recovery and resumes the same investigation", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "pi-chat-agentic-human-wait-"));
-  try {
-    const repository = new InvestigationRepository(directory);
-    const service = new RcaService(repository);
-    const current = investigation("INV-human-wait");
-    await repository.save(current);
-
-    await service.waitForHuman(current.id, "HREQ-test");
-    let persisted = await repository.get(current.id);
-    assert.equal(persisted.status, "waiting_for_human");
-
-    const recovered = await repository.recoverInterrupted();
-    assert.deepEqual(recovered, []);
-    persisted = await repository.get(current.id);
-    assert.equal(persisted.status, "waiting_for_human");
-
-    const response = await service.recordHumanResponse(current.id, {
-      requestId: "HREQ-test",
-      question: "要排查哪个环境？",
-      answer: "production",
-    });
-    assert.equal(response.kind, "clarification_response");
-    assert.equal(response.question, "要排查哪个环境？");
-    assert.equal(response.content, "production");
-
-    persisted = await repository.get(current.id);
-    assert.equal(persisted.status, "waiting_for_human");
-    assert.equal(persisted.userInterventions?.at(-1)?.requestId, "HREQ-test");
-
-    const resumed = await service.resumeAgentic(current.id, {
-      conversationId: "conversation-human-wait",
-    });
-    assert.equal(resumed.status, "running");
-    assert.equal((await repository.get(current.id)).status, "running");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

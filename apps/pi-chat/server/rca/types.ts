@@ -1,6 +1,5 @@
 export type InvestigationStatus =
   | "running"
-  | "waiting_for_human"
   | "interrupted"
   | "completed"
   | "inconclusive"
@@ -168,7 +167,6 @@ export interface ExpertTask {
   finding?: AgentExpertFinding;
   diagnostics?: AgentRunDiagnostics;
   interruptedByRestart?: boolean;
-  cancellationReason?: "investigation_cancelled" | "superseded_by_user";
   createdAt: string;
   completedAt?: string;
 }
@@ -250,9 +248,6 @@ export interface InvestigationScope {
 export interface InvestigationUserIntervention {
   id: string;
   content: string;
-  kind?: "steering" | "clarification_response";
-  requestId?: string;
-  question?: string;
   createdAt: string;
 }
 
@@ -280,8 +275,6 @@ export interface Investigation {
 export type InvestigationEventType =
   | "investigation.started"
   | "user.intervention"
-  | "human.input.received"
-  | "investigation.waiting_for_human"
   | "hypothesis.created"
   | "hypothesis.updated"
   | "expert.started"

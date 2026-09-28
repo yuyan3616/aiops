@@ -1,7 +1,6 @@
 import { Composer } from "@components/Composer";
 import { ConversationSidebar } from "@components/ConversationSidebar";
 import { EmptyConversation } from "@components/EmptyConversation";
-import { HumanInputRequestCard } from "@components/HumanInputRequestCard";
 import { LoadingIndicator } from "@components/LoadingIndicator";
 import { MessageItem } from "@components/MessageItem";
 import { Button } from "@components/ui/button";
@@ -54,16 +53,16 @@ export default function App() {
     abort,
     selectedSkills,
     setSelectedSkills,
-    pendingHumanRequest,
     conversationTitle: streamedConversationTitle,
   } = useConversationStream(conversationId);
   const { draftConfig, model, models, thinkingLevel, thinkingLevels, changeModel, changeThinking } =
     useConversationConfig(conversationId, bootstrap.models);
 
-  const activeBusy =
-    status === "running" || status === "stopping" || status === "compacting";
-  const waitingForHuman = status === "waiting_for_human";
-  const busy = activeBusy || waitingForHuman;
+  const busy =
+    status === "running" ||
+    status === "stopping" ||
+    status === "compacting" ||
+    status === "waiting_for_human";
   const streamedContentLength = messageItems.reduce((total, item) => {
     if (item.kind === "message") return total + item.message.text.length;
     if (item.kind === "thinking") return total + item.thinking.text.length;
@@ -228,10 +227,7 @@ export default function App() {
                   showMainAgentIdentity={shouldShowMainAgentIdentity(messageItems, index)}
                 />
               ))}
-              {pendingHumanRequest && (
-                <HumanInputRequestCard request={pendingHumanRequest} onSelect={submit} />
-              )}
-              {(loading || activeBusy) && <LoadingIndicator />}
+              {(loading || busy) && <LoadingIndicator />}
               <div className="message-bottom-spacer" ref={messageBottomRef} aria-hidden />
             </div>
           )}
@@ -239,7 +235,6 @@ export default function App() {
         </main>
         <Composer
           busy={busy}
-          waitingForHuman={waitingForHuman}
           model={model}
           models={models}
           thinkingLevel={thinkingLevel}

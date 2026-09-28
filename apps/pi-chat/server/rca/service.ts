@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
-import type { IncidentCandidateQuery } from "./adapter";
 import {
   InvestigationEventBus,
   type InvestigationEventListener,
@@ -362,11 +361,7 @@ export class RcaService {
     options: AgenticResumeOptions = {},
   ): Promise<Investigation> {
     const investigation = await this.repository.get(investigationId);
-    if (
-      investigation.status !== "interrupted" &&
-      investigation.status !== "waiting_for_human" &&
-      investigation.status !== "running"
-    ) {
+    if (investigation.status !== "interrupted" && investigation.status !== "running") {
       throw new Error(
         `Investigation ${investigation.id} is ${investigation.status} and cannot be resumed`,
       );
@@ -384,21 +379,14 @@ export class RcaService {
       activeOperations: 0,
     });
 
-    if (investigation.status === "interrupted" || investigation.status === "waiting_for_human") {
-      const previousStatus = investigation.status;
+    if (investigation.status === "interrupted") {
       investigation.status = "running";
       investigation.error = undefined;
       await this.saveInvestigation(investigation);
-      await bus.publish(
-        "investigation.resumed",
-        previousStatus === "waiting_for_human"
-          ? "Investigation resumed after human input."
-          : "Investigation resumed after interruption.",
-        {
-          interruptionCount: investigation.interruptions?.length ?? 0,
-          source: previousStatus === "waiting_for_human" ? "human" : "main-agent",
-        },
-      );
+      await bus.publish("investigation.resumed", "Investigation resumed after interruption.", {
+        interruptionCount: investigation.interruptions?.length ?? 0,
+        source: "main-agent",
+      });
     }
     return investigation;
   }
@@ -802,16 +790,11 @@ export class RcaService {
         .map((task) => task.expert),
     );
     const effectiveExistingTasks = investigation.expertTasks.filter(
-      (task) =>
-        task.cancellationReason !== "superseded_by_user" &&
-        !(task.status === "failed" && task.evidenceIds.length === 0),
+      (task) => !(task.status === "failed" && task.evidenceIds.length === 0),
     ).length;
     const recoveryBriefs = briefs.filter((brief) => failedNoEvidenceRoles.has(brief.role)).length;
     const effectiveNewTasks = briefs.length - recoveryBriefs;
-    const retainedTaskCount = investigation.expertTasks.filter(
-      (task) => task.cancellationReason !== "superseded_by_user",
-    ).length;
-    const totalAfterDispatch = retainedTaskCount + briefs.length;
+    const totalAfterDispatch = investigation.expertTasks.length + briefs.length;
     if (effectiveExistingTasks + effectiveNewTasks > 4 || totalAfterDispatch > 6) {
       throw new Error(
         "Sub-investigation budget exceeded (4 evidence-producing tasks plus up to 2 recovery tasks for failed/no-evidence roles)",
@@ -965,7 +948,6 @@ export class RcaService {
             throw error;
           }
           task.status = cancelled ? "cancelled" : "failed";
-          if (softInterrupted) task.cancellationReason = "superseded_by_user";
           task.completedAt = now();
           const finding: AgentExpertFinding = {
             status: cancelled ? "failed" : "failed",
@@ -1273,7 +1255,6 @@ export class RcaService {
     const intervention: InvestigationUserIntervention = {
       id: this.nextUserInterventionId(investigation),
       content: cleanedContent,
-      kind: "steering",
       createdAt: now(),
     };
     investigation.userInterventions ??= [];
@@ -1288,61 +1269,12 @@ export class RcaService {
     return intervention;
   }
 
-  async waitForHuman(investigationId: string, requestId: string): Promise<Investigation> {
-    const investigation = await this.liveInvestigation(investigationId);
-    this.assertRunning(investigation);
-    investigation.status = "waiting_for_human";
-    await this.saveInvestigation(investigation);
-    const bus = await this.busFor(investigationId);
-    await bus.publish(
-      "investigation.waiting_for_human",
-      "Investigation is waiting for human input.",
-      { requestId, source: "main-agent" },
-    );
-    return investigation;
-  }
-
-  async recordHumanResponse(
-    investigationId: string,
-    input: { requestId: string; question: string; answer: string },
-  ): Promise<InvestigationUserIntervention> {
-    const investigation = await this.liveInvestigation(investigationId);
-    if (investigation.status !== "waiting_for_human") {
-      throw new Error(
-        `Investigation ${investigation.id} is ${investigation.status}, not waiting for human input`,
-      );
-    }
-    const answer = input.answer.trim().slice(0, 4000);
-    if (!answer) throw new Error("Human response cannot be empty");
-    const intervention: InvestigationUserIntervention = {
-      id: this.nextUserInterventionId(investigation),
-      content: answer,
-      kind: "clarification_response",
-      requestId: input.requestId,
-      question: input.question.trim().slice(0, 600),
-      createdAt: now(),
-    };
-    investigation.userInterventions ??= [];
-    investigation.userInterventions.push(intervention);
-    await this.saveInvestigation(investigation);
-    const bus = await this.busFor(investigationId);
-    await bus.publish("human.input.received", "Human supplied requested investigation context.", {
-      intervention,
-      source: "human",
-    });
-    return intervention;
-  }
-
   interruptActiveDispatch(investigationId: string): boolean {
     const running = this.agenticRunning.get(investigationId);
     const controller = running?.activeDispatchController;
     if (!controller || controller.signal.aborted) return false;
     controller.abort();
     return true;
-  }
-
-  findIncidentCandidates(query: IncidentCandidateQuery = {}) {
-    return this.requireAgenticTools().adapter.findIncidentCandidates(query);
   }
 
   get(investigationId: string): Promise<Investigation> {
@@ -1769,10 +1701,7 @@ export class RcaService {
         throw error;
       }
     }
-    if (
-      investigation.status !== "running" &&
-      investigation.status !== "waiting_for_human"
-    ) return;
+    if (investigation.status !== "running") return;
 
     const cancelledAt = now();
     const cancellationMessage = "Investigation cancelled";
@@ -1794,7 +1723,6 @@ export class RcaService {
     for (const task of investigation.expertTasks) {
       if (task.status !== "running" && task.status !== "pending") continue;
       task.status = "cancelled";
-      task.cancellationReason = "investigation_cancelled";
       task.completedAt = cancelledAt;
       cancelledTasks.push(task);
     }
