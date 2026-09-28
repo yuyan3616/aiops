@@ -228,6 +228,8 @@ export class RcaChatEventMapper {
       }
       case "investigation.started":
       case "user.intervention":
+      case "human.input.received":
+      case "investigation.waiting_for_human":
       case "investigation.interrupted":
       case "investigation.resumed":
       case "observation.created":

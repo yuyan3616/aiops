@@ -22,6 +22,8 @@ export type EventType =
   | "thinking.started"
   | "thinking.delta"
   | "thinking.completed"
+  | "human.input.requested"
+  | "human.input.received"
   | "hypothesis.updated"
   | "report.ready"
   | "agent.started"
@@ -39,6 +41,26 @@ export interface StreamEvent<T = unknown> {
   streamId: string;
   type: EventType;
   payload: T;
+}
+
+export type HumanInputReason = "missing_context" | "ambiguous_scope" | "need_confirmation";
+
+export type HumanInputType = "text" | "select" | "confirm";
+
+export interface HumanInputOption {
+  value: string;
+  label: string;
+}
+
+export interface PendingHumanRequest {
+  id: string;
+  question: string;
+  reason: HumanInputReason;
+  inputType: HumanInputType;
+  options?: HumanInputOption[];
+  allowFreeText?: boolean;
+  investigationId?: string;
+  createdAt: string;
 }
 
 export interface ChatImage {
@@ -174,6 +196,7 @@ export interface ConversationSnapshot {
   error?: string;
   stream: { id: string; lastEventId: number };
   diagnostics: string[];
+  pendingHumanRequest?: PendingHumanRequest;
 }
 
 export interface CreateConversationResponse {

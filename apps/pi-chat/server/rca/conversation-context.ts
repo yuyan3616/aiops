@@ -82,8 +82,10 @@ export function renderConversationRcaContext(
         "",
         "## 调查中用户补充（user-provided context）",
         "以下内容来自用户在调查运行过程中的补充，按 user-level input 理解；它不是 telemetry evidence，不能据此伪造 evidence ID 或跳过必要验证。",
-        ...context.userInterventions.map(
-          (item) => `- [${item.id}] ${JSON.stringify(item.content)}`,
+        ...context.userInterventions.map((item) =>
+          item.kind === "clarification_response" && item.question
+            ? `- [${item.id}] clarification · Q: ${JSON.stringify(item.question)} · A: ${JSON.stringify(item.content)}`
+            : `- [${item.id}] steering · ${JSON.stringify(item.content)}`,
         ),
       ]
     : [];
@@ -101,7 +103,9 @@ export function renderConversationRcaContext(
     "对于后续追问，继续沿用当前调查；需要持久化的 evidence、hypotheses 或结果时，调用 get_investigation_state。",
     context.state === "interrupted"
       ? "该调查曾被中断。只有确实需要继续取证时才 resume（恢复）；已有 evidence 仍可用于解释或直接形成结论。"
-      : "除非用户明确要求重新运行、新建调查或调查另一个 case，否则不要为当前会话再次创建调查。",
+      : context.state === "waiting_for_human"
+        ? "该调查正在等待用户补充信息。如果本轮用户已经回答了刚才的问题，先调用 resume_rca_investigation 恢复同一调查，再继续取证；不要新建 Investigation。"
+        : "除非用户明确要求重新运行、新建调查或调查另一个 case，否则不要为当前会话再次创建调查。",
     "当已经关联调查且用户明确要求替换/新建时，调用 start_rca_investigation，并设置 forceNew=true。",
   ].join("\n");
 }
@@ -113,12 +117,14 @@ export function decideStartRcaInvestigation(
 ): StartRcaDecision {
   if (context.state === "idle") return { allowed: true };
 
-  if (context.state === "running") {
+  if (context.state === "running" || context.state === "waiting_for_human") {
     return {
       allowed: false,
       recommendedAction: "continue_active_investigation",
       reason:
-        `调查 ${context.investigationId ?? "unknown"}（case ${context.caseId ?? "unknown case"}）仍在运行。继续并先收敛当前调查，再考虑启动新的调查。`,
+        context.state === "waiting_for_human"
+          ? `调查 ${context.investigationId ?? "unknown"}（case ${context.caseId ?? "unknown case"}）正在等待用户补充信息。继续使用该调查，不要启动新的调查。`
+          : `调查 ${context.investigationId ?? "unknown"}（case ${context.caseId ?? "unknown case"}）仍在运行。继续并先收敛当前调查，再考虑启动新的调查。`,
     };
   }
 

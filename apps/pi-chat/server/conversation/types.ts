@@ -1,5 +1,5 @@
 import type { AgentSessionRuntime } from "@earendil-works/pi-coding-agent";
-import type { MessageListItem, RuntimeStatus } from "@shared/types";
+import type { MessageListItem, PendingHumanRequest, RuntimeStatus } from "@shared/types";
 
 import type { EventChannel } from "./channel";
 
@@ -24,6 +24,7 @@ export interface ConversationRecord {
   investigationIds?: string[];
   externalMessageList?: MessageListItem[];
   externalSequence?: number;
+  pendingHumanRequest?: PendingHumanRequest;
 }
 
 export interface ManagedSession {
@@ -37,4 +38,5 @@ export interface ManagedSession {
   streamMessageId?: string;
   streamThinkingId?: string;
   activeSkillNames: string[];
+  pendingHumanRequest?: PendingHumanRequest;
 }
