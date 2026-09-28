@@ -761,6 +761,11 @@ test("interrupted investigation may still conclude from persisted evidence", asy
       unresolvedHypotheses: [],
       confidence: 0.65,
       missingEvidence: ["additional metric confirmation after restart"],
+      causalAssessment: {
+        temporalFit: "aligned",
+        propagationFit: "uncertain",
+        unresolvedContradictions: [],
+      },
     });
     assert.equal(concluded.investigation.status, "completed");
     assert.equal(concluded.investigation.rootCause?.status, "probable");
@@ -921,6 +926,11 @@ test("conclusion rejects any hypothesis left outside selected rejected or unreso
         rejectedHypotheses: [],
         unresolvedHypotheses: [],
         confidence: 0.75,
+        causalAssessment: {
+          temporalFit: "aligned",
+          propagationFit: "uncertain",
+          unresolvedContradictions: [],
+        },
       }),
       /leaves hypotheses unaccounted for: H02/,
     );
@@ -940,6 +950,11 @@ test("conclusion rejects any hypothesis left outside selected rejected or unreso
         },
       ],
       confidence: 0.75,
+      causalAssessment: {
+        temporalFit: "aligned",
+        propagationFit: "uncertain",
+        unresolvedContradictions: [],
+      },
     });
     assert.equal(concluded.investigation.rootCause?.unresolvedHypotheses?.[0]?.id, "H02");
   } finally {
