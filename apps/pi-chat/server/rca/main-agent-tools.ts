@@ -238,6 +238,27 @@ export function createRcaMainAgentTools(options: RcaMainAgentToolsOptions): Tool
     },
   });
 
+  const candidateCoverageTool = defineTool({
+    name: "screen_rca_candidates",
+    label: "筛查 RCA 候选",
+    description:
+      "对 2-8 个已经有结构或症状依据的候选做低成本 incident-window metrics coverage。它不是根因排名器，而是用于在进入单一候选深挖前检查是否有其他候选出现更贴近 alert window 的 throughput/request_count、latency、error/availability 等变化，避免被第一个极端 anomaly 劫持。不要把整个拓扑都塞进来；先用 dependencies/topology 选出少量合理候选。",
+    parameters: Type.Object({
+      investigationId: Type.String(),
+      candidates: Type.Array(Type.String({ minLength: 1 }), { minItems: 2, maxItems: 8 }),
+      topNPerCandidate: Type.Optional(Type.Number({ minimum: 1, maximum: 10 })),
+    }),
+    execute: async (_toolCallId, parameters) =>
+      serializeMutation(async () => {
+        const result = await rcaService.queryCandidateCoverage(
+          parameters.investigationId,
+          [...parameters.candidates],
+          parameters.topNPerCandidate ?? 6,
+        );
+        return toolResult(result);
+      }),
+  });
+
   const hypothesisStatusSchema = Type.Optional(
     Type.Union([
       Type.Literal("possible"),
@@ -479,6 +500,7 @@ export function createRcaMainAgentTools(options: RcaMainAgentToolsOptions): Tool
     startTool,
     resumeTool,
     overviewTool,
+    candidateCoverageTool,
     updateHypothesesTool,
     dispatchTool,
     stateTool,
