@@ -67,6 +67,7 @@ export interface LogQuery {
   to: string;
   service?: string;
   pod?: string;
+  mode?: "anomaly" | "all" | "custom";
   keywords?: string[];
   limit?: number;
 }
@@ -750,6 +751,10 @@ export class RCA100Adapter {
     signal?: AbortSignal,
   ): Promise<
     QueryEnvelope<{
+      filter: {
+        mode: "anomaly" | "all" | "custom";
+        effectiveKeywords: string[];
+      };
       serviceCounts: Record<string, number>;
       keywordCounts: Record<string, number>;
       samples: Array<Record<string, unknown>>;
@@ -759,7 +764,7 @@ export class RCA100Adapter {
   > {
     const range = ensureValidRange(query);
     const limit = clampLimit(query.limit, 30, 200);
-    const keywords = query.keywords ?? [
+    const defaultKeywords = [
       "error",
       "exception",
       "timeout",
@@ -773,6 +778,14 @@ export class RCA100Adapter {
       "fatal",
       "reset",
     ];
+    const mode =
+      query.mode ??
+      (query.keywords ? (query.keywords.length > 0 ? "custom" : "all") : "anomaly");
+    if (mode === "custom" && (!query.keywords || query.keywords.length === 0)) {
+      throw new Error("query_logs mode=custom requires at least one keyword");
+    }
+    const keywords =
+      mode === "all" ? [] : mode === "custom" ? [...(query.keywords ?? [])] : defaultKeywords;
     const serviceCounts: Record<string, number> = {};
     const keywordCounts: Record<string, number> = {};
     const samples: Array<Record<string, unknown>> = [];
@@ -845,6 +858,10 @@ export class RCA100Adapter {
       truncated: matchedRows > limit,
       rawRef,
       data: {
+        filter: {
+          mode,
+          effectiveKeywords: [...keywords],
+        },
         serviceCounts,
         keywordCounts,
         samples: jsonSafe(samples) as Array<Record<string, unknown>>,
