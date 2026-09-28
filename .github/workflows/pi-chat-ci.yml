@@ -3,7 +3,7 @@ name: pi-chat-ci
 on:
   push:
     branches:
-      - feat/pi-chat-rca
+      - main
   pull_request:
     paths:
       - "apps/pi-chat/**"
