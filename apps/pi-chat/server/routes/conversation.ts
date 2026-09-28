@@ -73,20 +73,6 @@ export function createConversationRoutes(
     });
   });
 
-  conversationApp.post("/:conversationId/browser/open", async (ctx) => ctx.json({}));
-
-  const browserActions = {
-    close: (_id: string) => {},
-    save: (_id: string) => {},
-    load: (_id: string) => {},
-  };
-  for (const [name, run] of Object.entries(browserActions)) {
-    conversationApp.post(`/:conversationId/browser/${name}`, async (ctx) => {
-      await run(ctx.req.param("conversationId"));
-      return ctx.json({ accepted: true });
-    });
-  }
-
   conversationApp.post("/:conversationId/messages", async (ctx) => {
     const formData = await ctx.req.formData();
     const { conversationId } = ctx.req.param();
