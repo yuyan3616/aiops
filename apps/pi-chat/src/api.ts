@@ -82,6 +82,16 @@ export function deleteConversation(id: string): Promise<{ deleted: true }> {
   );
 }
 
+export function deleteConversations(ids: string[]): Promise<{ deletedIds: string[] }> {
+  return readResponse(
+    fetch("/api/conversation/batch-delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids }),
+    }),
+  );
+}
+
 export function renameConversation(id: string, title: string): Promise<ConversationSummary> {
   return readResponse(
     fetch("/api/conversation/" + encodeURIComponent(id), {

@@ -2,7 +2,9 @@ import { PiLogo } from "@components/PiLogo";
 import { Button } from "@components/ui/button";
 import type { ConversationSummary } from "@shared/types";
 import {
+  Check,
   Copy,
+  ListChecks,
   MoreHorizontal,
   PanelLeftClose,
   Pencil,
@@ -96,6 +98,7 @@ export function ConversationSidebar({
   onSelect,
   onRename,
   onDelete,
+  onDeleteMany,
 }: {
   conversations: ConversationSummary[];
   selectedId?: string;
@@ -107,11 +110,15 @@ export function ConversationSidebar({
   onSelect(id: string): void | Promise<void>;
   onRename(id: string, title: string): Promise<void>;
   onDelete(id: string): Promise<void>;
+  onDeleteMany(ids: string[]): Promise<void>;
 }) {
   const [editingId, setEditingId] = useState<string>();
   const [editingTitle, setEditingTitle] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<ConversationSummary>();
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
 
@@ -145,105 +152,152 @@ export function ConversationSidebar({
     setSearchQuery("");
   };
 
+  const enterSelectionMode = () => {
+    closeSearch();
+    setEditingId(undefined);
+    setErrorMessage("");
+    setSelectedIds(new Set());
+    setSelectionMode(true);
+  };
+
+  const exitSelectionMode = () => {
+    setBulkDeleteOpen(false);
+    setSelectedIds(new Set());
+    setSelectionMode(false);
+  };
+
+  const toggleSelected = (id: string) => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
   const beginRename = (item: ConversationSummary) => {
     setEditingId(item.id);
     setEditingTitle(item.title);
   };
 
-  const conversationRow = (item: ConversationSummary, searchMode = false) => (
-    <div
-      className={
-        "conversation-item-row " +
-        (searchMode ? "conversation-search-item-row " : "") +
-        (item.id === selectedId ? "conversation-item-row-active" : "")
-      }
-      key={item.id}
-    >
-      {editingId === item.id ? (
-        <input
-          className="conversation-title-input"
-          value={editingTitle}
-          maxLength={120}
-          autoFocus
-          aria-label="会话名称"
-          onChange={(event) => setEditingTitle(event.target.value)}
-          onBlur={() => void saveTitle(item)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") event.currentTarget.blur();
-            if (event.key === "Escape") setEditingId(undefined);
-          }}
-        />
-      ) : (
-        <>
-          <Button
-            variant="ghost"
-            className={
-              "conversation-item " +
-              (item.id === selectedId ? "conversation-item-active" : "")
-            }
-            onClick={() => void onSelect(item.id)}
-            title={item.title}
-            aria-current={item.id === selectedId ? "page" : undefined}
-          >
-            <span className="conversation-item-copy">
-              <span className="conversation-item-title">{item.title}</span>
-              {searchMode && (
-                <small className="conversation-search-date">
-                  {searchDateLabel(item)}
-                </small>
+  const conversationRow = (item: ConversationSummary, searchMode = false) => {
+    const checked = selectedIds.has(item.id);
+    const isCurrent = !selectionMode && item.id === selectedId;
+    return (
+      <div
+        className={
+          "conversation-item-row " +
+          (searchMode ? "conversation-search-item-row " : "") +
+          (isCurrent ? "conversation-item-row-active " : "") +
+          (checked ? "conversation-item-row-selected" : "")
+        }
+        key={item.id}
+      >
+        {editingId === item.id && !selectionMode ? (
+          <input
+            className="conversation-title-input"
+            value={editingTitle}
+            maxLength={120}
+            autoFocus
+            aria-label="会话名称"
+            onChange={(event) => setEditingTitle(event.target.value)}
+            onBlur={() => void saveTitle(item)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") event.currentTarget.blur();
+              if (event.key === "Escape") setEditingId(undefined);
+            }}
+          />
+        ) : (
+          <>
+            <Button
+              variant="ghost"
+              className={
+                "conversation-item " +
+                (selectionMode ? "conversation-item-selecting " : "") +
+                (isCurrent ? "conversation-item-active" : "")
+              }
+              onClick={() =>
+                selectionMode ? toggleSelected(item.id) : void onSelect(item.id)
+              }
+              title={item.title}
+              aria-current={isCurrent ? "page" : undefined}
+              aria-pressed={selectionMode ? checked : undefined}
+            >
+              {selectionMode && (
+                <span
+                  className={
+                    "conversation-selection-check " +
+                    (checked ? "conversation-selection-check-active" : "")
+                  }
+                  aria-hidden
+                >
+                  {checked && <Check size={13} strokeWidth={2.5} />}
+                </span>
               )}
-            </span>
-          </Button>
-          <span className="conversation-item-actions">
-            <DropdownMenuPrimitive.Root>
-              <DropdownMenuPrimitive.Trigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="conversation-more-trigger"
-                  title="更多"
-                  aria-label={`${item.title} 更多操作`}
-                >
-                  <MoreHorizontal size={16} />
-                </Button>
-              </DropdownMenuPrimitive.Trigger>
-              <DropdownMenuPrimitive.Portal>
-                <DropdownMenuPrimitive.Content
-                  className="conversation-menu"
-                  sideOffset={5}
-                  align="end"
-                >
-                  <DropdownMenuPrimitive.Item
-                    className="conversation-menu-item"
-                    onSelect={() => beginRename(item)}
-                  >
-                    <Pencil size={14} />
-                    重命名
-                  </DropdownMenuPrimitive.Item>
-                  <DropdownMenuPrimitive.Item
-                    className="conversation-menu-item"
-                    onSelect={() => {
-                      void navigator.clipboard?.writeText(item.title).catch(() => undefined);
-                    }}
-                  >
-                    <Copy size={14} />
-                    复制标题
-                  </DropdownMenuPrimitive.Item>
-                  <DropdownMenuPrimitive.Item
-                    className="conversation-menu-item conversation-menu-danger"
-                    onSelect={() => setDeleteTarget(item)}
-                  >
-                    <Trash2 size={14} />
-                    删除
-                  </DropdownMenuPrimitive.Item>
-                </DropdownMenuPrimitive.Content>
-              </DropdownMenuPrimitive.Portal>
-            </DropdownMenuPrimitive.Root>
-          </span>
-        </>
-      )}
-    </div>
-  );
+              <span className="conversation-item-copy">
+                <span className="conversation-item-title">{item.title}</span>
+                {searchMode && (
+                  <small className="conversation-search-date">
+                    {searchDateLabel(item)}
+                  </small>
+                )}
+              </span>
+            </Button>
+            {!selectionMode && (
+              <span className="conversation-item-actions">
+                <DropdownMenuPrimitive.Root>
+                  <DropdownMenuPrimitive.Trigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="conversation-more-trigger"
+                      title="更多"
+                      aria-label={`${item.title} 更多操作`}
+                    >
+                      <MoreHorizontal size={16} />
+                    </Button>
+                  </DropdownMenuPrimitive.Trigger>
+                  <DropdownMenuPrimitive.Portal>
+                    <DropdownMenuPrimitive.Content
+                      className="conversation-menu"
+                      sideOffset={5}
+                      align="end"
+                    >
+                      <DropdownMenuPrimitive.Item
+                        className="conversation-menu-item"
+                        onSelect={() => beginRename(item)}
+                      >
+                        <Pencil size={14} />
+                        重命名
+                      </DropdownMenuPrimitive.Item>
+                      <DropdownMenuPrimitive.Item
+                        className="conversation-menu-item"
+                        onSelect={() => {
+                          void navigator.clipboard
+                            ?.writeText(item.title)
+                            .catch(() => undefined);
+                        }}
+                      >
+                        <Copy size={14} />
+                        复制标题
+                      </DropdownMenuPrimitive.Item>
+                      <DropdownMenuPrimitive.Item
+                        className="conversation-menu-item conversation-menu-danger"
+                        onSelect={() => setDeleteTarget(item)}
+                      >
+                        <Trash2 size={14} />
+                        删除
+                      </DropdownMenuPrimitive.Item>
+                    </DropdownMenuPrimitive.Content>
+                  </DropdownMenuPrimitive.Portal>
+                </DropdownMenuPrimitive.Root>
+              </span>
+            )}
+          </>
+        )}
+      </div>
+    );
+  };
 
   return (
     <>
@@ -263,8 +317,27 @@ export function ConversationSidebar({
         }
       >
         <div className="sidebar-content">
-          <div className={"sidebar-brand " + (searchOpen ? "sidebar-brand-searching" : "")}>
-            {searchOpen ? (
+          <div
+            className={
+              "sidebar-brand " +
+              (searchOpen ? "sidebar-brand-searching " : "") +
+              (selectionMode ? "sidebar-brand-selecting" : "")
+            }
+          >
+            {selectionMode ? (
+              <div className="conversation-selection-header">
+                <strong>已选择 {selectedIds.size} 个对话</strong>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="conversation-selection-close"
+                  onClick={exitSelectionMode}
+                  aria-label="退出多选"
+                >
+                  <X size={17} />
+                </Button>
+              </div>
+            ) : searchOpen ? (
               <div className="conversation-search">
                 <Search size={15} aria-hidden />
                 <input
@@ -324,10 +397,12 @@ export function ConversationSidebar({
             )}
           </div>
 
-          <Button className="new-chat" onClick={() => void onNew()}>
-            <Plus />
-            新会话
-          </Button>
+          {!selectionMode && (
+            <Button className="new-chat" onClick={() => void onNew()}>
+              <Plus />
+              新会话
+            </Button>
+          )}
 
           <div className="conversation-list">
             {errorMessage && (
@@ -354,9 +429,23 @@ export function ConversationSidebar({
               </>
             ) : (
               <>
-                {groups.map((group) => (
+                {groups.map((group, index) => (
                   <section className="conversation-group" key={group.key}>
-                    <div className="conversation-group-label">{group.label}</div>
+                    <div className="conversation-group-label">
+                      <span>{group.label}</span>
+                      {!selectionMode && index === 0 && conversations.length > 0 && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="conversation-multi-select-trigger"
+                          onClick={enterSelectionMode}
+                          title="多选"
+                          aria-label="批量管理会话"
+                        >
+                          <ListChecks size={15} />
+                        </Button>
+                      )}
+                    </div>
                     <div className="conversation-items">
                       {group.conversations.map((item) => conversationRow(item))}
                     </div>
@@ -368,6 +457,20 @@ export function ConversationSidebar({
               </>
             )}
           </div>
+
+          {selectionMode && (
+            <div className="conversation-bulk-actions">
+              <Button
+                variant="ghost"
+                className="conversation-bulk-delete"
+                disabled={selectedIds.size === 0}
+                onClick={() => setBulkDeleteOpen(true)}
+              >
+                <Trash2 size={16} />
+                {selectedIds.size > 0 ? `删除 ${selectedIds.size} 个` : "删除"}
+              </Button>
+            </div>
+          )}
         </div>
       </aside>
 
@@ -403,6 +506,48 @@ export function ConversationSidebar({
                         error instanceof Error ? error.message : "删除会话失败",
                       );
                     });
+                  }}
+                >
+                  删除
+                </Button>
+              </AlertDialogPrimitive.Action>
+            </div>
+          </AlertDialogPrimitive.Content>
+        </AlertDialogPrimitive.Portal>
+      </AlertDialogPrimitive.Root>
+
+      <AlertDialogPrimitive.Root
+        open={bulkDeleteOpen}
+        onOpenChange={setBulkDeleteOpen}
+      >
+        <AlertDialogPrimitive.Portal>
+          <AlertDialogPrimitive.Overlay className="alert-dialog-overlay" />
+          <AlertDialogPrimitive.Content className="alert-dialog-content">
+            <AlertDialogPrimitive.Title className="alert-dialog-title">
+              删除 {selectedIds.size} 个会话？
+            </AlertDialogPrimitive.Title>
+            <AlertDialogPrimitive.Description className="alert-dialog-description">
+              所选会话及其消息记录将被永久删除。关联的 RCA 调查数据和报告会继续保留。
+            </AlertDialogPrimitive.Description>
+            <div className="alert-dialog-actions">
+              <AlertDialogPrimitive.Cancel asChild>
+                <Button variant="outline">取消</Button>
+              </AlertDialogPrimitive.Cancel>
+              <AlertDialogPrimitive.Action asChild>
+                <Button
+                  className="alert-dialog-delete"
+                  onClick={() => {
+                    const ids = [...selectedIds];
+                    setBulkDeleteOpen(false);
+                    if (ids.length === 0) return;
+                    setErrorMessage("");
+                    void onDeleteMany(ids)
+                      .then(exitSelectionMode)
+                      .catch((error) => {
+                        setErrorMessage(
+                          error instanceof Error ? error.message : "批量删除会话失败",
+                        );
+                      });
                   }}
                 >
                   删除

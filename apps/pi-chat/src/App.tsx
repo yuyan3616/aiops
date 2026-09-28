@@ -22,6 +22,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import {
   createConversation,
   deleteConversation,
+  deleteConversations,
   getBootstrap,
   getConversationConfig,
   listConversations,
@@ -157,7 +158,18 @@ export default function App() {
           await deleteConversation(id);
           const remaining = conversations.filter((item) => item.id !== id);
           setConversations(remaining);
-          navigate(remaining[0] ? "/conversation/" + remaining[0].id : "/");
+          if (conversationId === id) {
+            navigate(remaining[0] ? "/conversation/" + remaining[0].id : "/");
+          }
+        }}
+        onDeleteMany={async (ids) => {
+          const { deletedIds } = await deleteConversations(ids);
+          const deleted = new Set(deletedIds);
+          const remaining = conversations.filter((item) => !deleted.has(item.id));
+          setConversations(remaining);
+          if (conversationId && deleted.has(conversationId)) {
+            navigate(remaining[0] ? "/conversation/" + remaining[0].id : "/");
+          }
         }}
       />
       <section className="chat-shell">

@@ -1,3 +1,4 @@
+import { normalizeConversationIds } from "@server/conversation/batch-delete";
 import type { ConversationService } from "@server/conversation/service";
 import type { RcaService } from "@server/rca/service";
 import { jsonBody } from "@server/utils";
@@ -18,6 +19,14 @@ export function createConversationRoutes(
   conversationApp.get("/", async (ctx) => {
     const conversationList = await conversationService.list();
     return ctx.json(conversationList);
+  });
+
+  conversationApp.post("/batch-delete", async (ctx) => {
+    const body = await jsonBody<{ ids?: unknown }>(ctx.req.raw);
+    const deletedIds = await conversationService.deleteMany(
+      normalizeConversationIds(body.ids),
+    );
+    return ctx.json({ deletedIds });
   });
 
   conversationApp.get("/:conversationId", async (ctx) => {
