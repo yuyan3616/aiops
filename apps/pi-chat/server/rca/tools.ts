@@ -428,11 +428,18 @@ export class ObservabilityToolRegistry {
         name: "query_logs",
         label: "查询 Logs",
         description:
-          "按有边界的时间、service、pod 和 keyword 搜索 logs。返回计数、top sample 和 slow access-log signal。",
+          "按有边界的时间、service、pod 搜索 logs。mode=anomaly 使用默认 error/timeout/retry 等异常关键词；mode=all 明确返回窗口内全部日志样本；mode=custom 仅匹配显式 keywords。若省略 mode 且省略 keywords，默认是 anomaly，不等于“无关键词/全部日志”。返回结果会回显 filter.mode 和 effectiveKeywords。",
         parameters: Type.Object({
           ...rangeParameters,
           service: Type.Optional(Type.String()),
           pod: Type.Optional(Type.String()),
+          mode: Type.Optional(
+            Type.Union([
+              Type.Literal("anomaly"),
+              Type.Literal("all"),
+              Type.Literal("custom"),
+            ]),
+          ),
           keywords: Type.Optional(Type.Array(Type.String(), { maxItems: 20 })),
           limit: Type.Optional(Type.Number({ minimum: 1, maximum: 200 })),
         }),
