@@ -1,3 +1,5 @@
+import type { BudgetClass, BudgetLedgerEvent } from "./budget";
+
 export type InvestigationStatus =
   | "running"
   | "interrupted"
@@ -94,6 +96,7 @@ export type FindingStrength = "strong" | "moderate" | "weak" | "inconclusive";
 
 export interface InvestigationBrief {
   role: ExpertKind;
+  recoveryOfTaskId?: string;
   question: string;
   hypothesisIds: string[];
   context: {
@@ -167,6 +170,13 @@ export interface ExpertTask {
   finding?: AgentExpertFinding;
   diagnostics?: AgentRunDiagnostics;
   interruptedByRestart?: boolean;
+  budgetClass?: BudgetClass;
+  budgetReservationId?: string;
+  dispatchOperationId?: string;
+  taskGeneration?: number;
+  recoveryOfTaskId?: string;
+  terminationReason?: string;
+  recoveryEligible?: boolean;
   createdAt: string;
   completedAt?: string;
 }
@@ -270,6 +280,8 @@ export interface Investigation {
   completedAt?: string;
   interruptions?: Array<{ at: string; reason: string }>;
   error?: string;
+  schemaVersion?: 2;
+  budgetLedger?: BudgetLedgerEvent[];
 }
 
 export type InvestigationEventType =

@@ -59,13 +59,40 @@ export interface PiExpertRunResult {
 export class PiExpertRunError extends Error {
   readonly diagnostics: AgentRunDiagnostics;
   readonly sessionId?: string;
+  readonly providerTransient: boolean;
 
-  constructor(message: string, diagnostics: AgentRunDiagnostics, sessionId?: string) {
+  constructor(
+    message: string,
+    diagnostics: AgentRunDiagnostics,
+    sessionId?: string,
+    providerTransient = false,
+  ) {
     super(message);
     this.name = "PiExpertRunError";
     this.diagnostics = diagnostics;
     this.sessionId = sessionId;
+    this.providerTransient = providerTransient;
   }
+}
+
+function isProviderTransientFailure(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const value = error as {
+    status?: unknown;
+    statusCode?: unknown;
+    code?: unknown;
+    retryable?: unknown;
+  };
+  const status = value.status ?? value.statusCode;
+  return (
+    value.retryable === true ||
+    status === 429 ||
+    status === 502 ||
+    status === 503 ||
+    status === 504 ||
+    value.code === "ECONNRESET" ||
+    value.code === "ETIMEDOUT"
+  );
 }
 
 function extractJson(output: string): Record<string, unknown> {
@@ -97,10 +124,7 @@ function findingStatus(value: unknown): AgentExpertFinding["status"] {
 }
 
 function strength(value: unknown): AgentExpertFinding["strength"] {
-  return value === "strong" ||
-    value === "moderate" ||
-    value === "weak" ||
-    value === "inconclusive"
+  return value === "strong" || value === "moderate" || value === "weak" || value === "inconclusive"
     ? value
     : "inconclusive";
 }
@@ -108,7 +132,6 @@ function strength(value: unknown): AgentExpertFinding["strength"] {
 function mb(bytes: number): number {
   return Math.round((bytes / 1024 / 1024) * 100) / 100;
 }
-
 
 export class PiExpertRunner {
   private readonly modelRuntime: ModelRuntime;
@@ -221,18 +244,12 @@ export class PiExpertRunner {
           name === "query_metrics"
             ? {
                 ...parameters,
-                topN: Math.min(
-                  typeof parameters.topN === "number" ? parameters.topN : 12,
-                  12,
-                ),
+                topN: Math.min(typeof parameters.topN === "number" ? parameters.topN : 12, 12),
               }
             : name === "query_traces"
               ? {
                   ...parameters,
-                  topN: Math.min(
-                    typeof parameters.topN === "number" ? parameters.topN : 20,
-                    20,
-                  ),
+                  topN: Math.min(typeof parameters.topN === "number" ? parameters.topN : 20, 20),
                 }
               : parameters;
         const recorded = await context.invoke(name, {
@@ -334,8 +351,7 @@ export class PiExpertRunner {
           parsed = extractJson(output);
         } catch (error) {
           repairAttempted = true;
-          parseFailure =
-            error instanceof SyntaxError ? "json_invalid" : "json_missing";
+          parseFailure = error instanceof SyntaxError ? "json_invalid" : "json_missing";
           parseFailureDetail = error instanceof Error ? error.message : String(error);
           output = "";
           await session.prompt(
@@ -346,11 +362,9 @@ export class PiExpertRunner {
           repairSucceeded = true;
         }
       } catch (error) {
-        const failureReason =
-          context.signal?.aborted
-            ? "aborted"
-            : parseFailure ??
-              (error instanceof SyntaxError ? "json_invalid" : "model_error");
+        const failureReason = context.signal?.aborted
+          ? "aborted"
+          : (parseFailure ?? (error instanceof SyntaxError ? "json_invalid" : "model_error"));
         const detail = error instanceof Error ? error.message : String(error);
         throw new PiExpertRunError(
           detail,
@@ -366,6 +380,7 @@ export class PiExpertRunner {
             },
           ),
           sessionId,
+          parseFailure === undefined && isProviderTransientFailure(error),
         );
       }
     } finally {
@@ -391,11 +406,7 @@ export class PiExpertRunner {
         supports: strings(item.supports).filter((id) => validHypotheses.has(id)),
         contradicts: strings(item.contradicts).filter((id) => validHypotheses.has(id)),
       }))
-      .filter(
-        (claim) =>
-          claim.toolCallId.length > 0 &&
-          validModalities.has(claim.modality),
-      );
+      .filter((claim) => claim.toolCallId.length > 0 && validModalities.has(claim.modality));
 
     const verdict =
       parsed.verdict === "supports" ||

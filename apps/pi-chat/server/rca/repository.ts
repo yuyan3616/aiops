@@ -1,6 +1,17 @@
-import { appendFile, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import {
+  appendFile,
+  mkdir,
+  open,
+  readFile,
+  readdir,
+  rename,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 
+import { appendLedgerEvent, assertBudgetConsistency, foldBudget, nextLedgerEvent } from "./budget";
 import type { Investigation, InvestigationEvent, RCAResult, ToolCallRecord } from "./types";
 
 const terminalInvestigationStatuses = new Set<Investigation["status"]>([
@@ -28,10 +39,7 @@ function replaceObject<T extends object>(target: T, source: T): void {
 }
 
 function preserveTerminalState(current: Investigation, incoming: Investigation): void {
-  if (
-    terminalInvestigationStatuses.has(current.status) &&
-    current.status !== incoming.status
-  ) {
+  if (terminalInvestigationStatuses.has(current.status) && current.status !== incoming.status) {
     replaceObject(incoming, current);
     return;
   }
@@ -72,23 +80,56 @@ export class InvestigationRepository {
   }
 
   async save(investigation: Investigation): Promise<void> {
+    // Queue an immutable version. A running Agent may mutate its live object before
+    // an earlier queued write starts; serializing that object later loses decisions.
+    const snapshot = structuredClone(investigation);
     const previous = this.saveQueues.get(investigation.id) ?? Promise.resolve();
-    const next = previous.catch(() => undefined).then(async () => {
-      try {
-        const current = await this.get(investigation.id);
-        preserveTerminalState(current, investigation);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      }
+    const next = previous
+      .catch(() => undefined)
+      .then(async () => {
+        try {
+          const current = await this.get(investigation.id);
+          if (snapshot.schemaVersion === 2) {
+            assertBudgetConsistency(snapshot);
+            if (
+              current.schemaVersion === 2 &&
+              terminalInvestigationStatuses.has(current.status) &&
+              JSON.stringify(current) !== JSON.stringify(snapshot)
+            ) {
+              throw new Error(`Terminal investigation ${snapshot.id} is immutable`);
+            }
+          } else {
+            preserveTerminalState(current, snapshot);
+          }
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
 
-      const directory = this.directory(investigation.id);
-      await mkdir(directory, { recursive: true });
-      await writeFile(
-        join(directory, "investigation.json"),
-        JSON.stringify(investigation, null, 2),
-        "utf8",
-      );
-    });
+        const directory = this.directory(investigation.id);
+        await mkdir(directory, { recursive: true });
+        const target = join(directory, "investigation.json");
+        const temporary = join(directory, `.investigation-${randomUUID()}.tmp`);
+        try {
+          const handle = await open(temporary, "wx");
+          try {
+            await handle.writeFile(JSON.stringify(snapshot, null, 2), "utf8");
+            await handle.sync();
+          } finally {
+            await handle.close();
+          }
+          await rename(temporary, target);
+        } catch (error) {
+          await unlink(temporary).catch(() => undefined);
+          throw error;
+        }
+        // On a filesystem supporting directory fsync, make the rename durable too.
+        const directoryHandle = await open(directory, "r");
+        try {
+          await directoryHandle.sync();
+        } finally {
+          await directoryHandle.close();
+        }
+      });
     const tracked = next.finally(() => {
       if (this.saveQueues.get(investigation.id) === tracked) {
         this.saveQueues.delete(investigation.id);
@@ -105,11 +146,30 @@ export class InvestigationRepository {
 
   async listEvents(investigationId: string): Promise<InvestigationEvent[]> {
     try {
-      const raw = await readFile(join(this.directory(investigationId), "events.jsonl"), "utf8");
-      return raw
-        .split("\n")
-        .filter(Boolean)
-        .map((line) => JSON.parse(line) as InvestigationEvent);
+      const file = join(this.directory(investigationId), "events.jsonl");
+      const raw = await readFile(file, "utf8");
+      const lines = raw.split("\n");
+      if (lines.at(-1) === "") lines.pop();
+      const events: InvestigationEvent[] = [];
+      for (const [index, line] of lines.entries()) {
+        try {
+          const event = JSON.parse(line) as InvestigationEvent;
+          if (event.id !== events.length + 1) throw new Error("UI event sequence gap");
+          events.push(event);
+        } catch (error) {
+          if (index !== lines.length - 1 || raw.endsWith("\n")) throw error;
+          const quarantine = `${file}.corrupt-${Date.now()}-${randomUUID()}`;
+          await writeFile(quarantine, line, "utf8");
+          const prefix = `${lines.slice(0, -1).join("\n")}${index ? "\n" : ""}`;
+          const temporary = `${file}.${randomUUID()}.tmp`;
+          await writeFile(temporary, prefix, "utf8");
+          await rename(temporary, file);
+          process.stderr.write(`Quarantined damaged RCA event tail: ${quarantine}\n`);
+          return events;
+        }
+      }
+      if (raw && !raw.endsWith("\n")) await appendFile(file, "\n", "utf8");
+      return events;
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code === "ENOENT") return [];
@@ -171,7 +231,6 @@ export class InvestigationRepository {
     );
   }
 
-
   async recoverInterrupted(): Promise<string[]> {
     const recovered: string[] = [];
     let entries;
@@ -220,6 +279,35 @@ export class InvestigationRepository {
         task.status = "failed";
         task.completedAt = interruptedAt;
         task.interruptedByRestart = true;
+        if (investigation.schemaVersion === 2 && task.budgetReservationId) {
+          const ledger = foldBudget(investigation);
+          const reservation = ledger.reservations.get(task.budgetReservationId);
+          if (reservation && !reservation.terminal) {
+            const hadWork =
+              investigation.toolCalls.some(
+                (call) => call.expertTaskId === task.id && call.status === "completed",
+              ) || (investigation.observations ?? []).some((item) => item.expertTaskId === task.id);
+            const started = (investigation.budgetLedger ?? []).some(
+              (event) =>
+                event.type === "safety.consumed" &&
+                event.resource === "started_task" &&
+                event.executionId === task.id,
+            );
+            const committed = task.budgetClass === "recovery" ? started : hadWork;
+            task.terminationReason = "service_restart";
+            task.recoveryEligible = task.budgetClass === "primary" && started && !hadWork;
+            appendLedgerEvent(
+              investigation,
+              nextLedgerEvent(investigation, {
+                type: committed ? "budget.committed" : "budget.released",
+                reservationId: task.budgetReservationId,
+                taskId: task.id,
+                budgetClass: task.budgetClass ?? "primary",
+                reason: "service_restart",
+              }),
+            );
+          }
+        }
         if (wasRunning) interruptedExpertTasks.push(task);
       }
 
@@ -259,5 +347,4 @@ export class InvestigationRepository {
     }
     return recovered;
   }
-
 }

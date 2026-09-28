@@ -10,11 +10,7 @@ export class InvestigationEventBus {
   private readonly repository: InvestigationRepository;
   private readonly listeners = new Set<InvestigationEventListener>();
 
-  constructor(
-    investigationId: string,
-    repository: InvestigationRepository,
-    startSequence = 1,
-  ) {
+  constructor(investigationId: string, repository: InvestigationRepository, startSequence = 1) {
     this.investigationId = investigationId;
     this.repository = repository;
     this.sequence = startSequence;
@@ -30,20 +26,39 @@ export class InvestigationEventBus {
     summary: string,
     payload: Record<string, unknown> = {},
   ): Promise<InvestigationEvent> {
-    const event: InvestigationEvent = {
-      id: this.sequence++,
-      investigationId: this.investigationId,
-      type,
-      at: new Date().toISOString(),
-      summary,
-      payload,
-    };
+    const immutablePayload = structuredClone(payload);
     const run = async () => {
-      await this.repository.appendEvent(event);
-      for (const listener of this.listeners) await listener(event);
+      const event: InvestigationEvent = {
+        id: this.sequence,
+        investigationId: this.investigationId,
+        type,
+        at: new Date().toISOString(),
+        summary,
+        payload: immutablePayload,
+      };
+      try {
+        await this.repository.appendEvent(event);
+        this.sequence++;
+      } catch (error) {
+        process.stderr.write(
+          `RCA UI event append failed for ${this.investigationId}: ${String(error)}\n`,
+        );
+        return event;
+      }
+      for (const listener of this.listeners) {
+        try {
+          await listener(event);
+        } catch (error) {
+          process.stderr.write(`RCA UI event listener failed: ${String(error)}\n`);
+        }
+      }
+      return event;
     };
     const completion = this.publishQueue.then(run);
-    this.publishQueue = completion.catch(() => undefined);
-    return completion.then(() => event);
+    this.publishQueue = completion.then(
+      () => undefined,
+      () => undefined,
+    );
+    return completion;
   }
 }

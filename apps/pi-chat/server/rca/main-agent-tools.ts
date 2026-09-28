@@ -1,9 +1,7 @@
 import { Type } from "@earendil-works/pi-ai";
-import {
-  defineTool,
-  type ToolDefinition,
-} from "@earendil-works/pi-coding-agent";
+import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 
+import { foldBudget } from "./budget";
 import { RcaChatEventMapper, type ChatStreamProjection } from "./chat-events";
 import {
   decideStartRcaInvestigation,
@@ -17,11 +15,7 @@ import {
   type RcaOverviewKind,
   type RcaService,
 } from "./service";
-import type {
-  Investigation,
-  InvestigationBrief,
-  TimeRange,
-} from "./types";
+import type { Investigation, InvestigationBrief, TimeRange } from "./types";
 
 export interface RcaMainAgentToolsOptions {
   rcaService: RcaService;
@@ -40,7 +34,10 @@ function toolResult(result: unknown) {
   };
 }
 
-function compactInvestigation(investigation: Investigation) {
+function compactInvestigation(
+  investigation: Investigation,
+  budget?: ReturnType<RcaService["getBudgetProjection"]>,
+) {
   return {
     investigationId: investigation.id,
     caseId: investigation.caseId,
@@ -78,7 +75,13 @@ function compactInvestigation(investigation: Investigation) {
       evidenceIds: item.evidenceIds,
       finding: item.finding,
       diagnostics: item.diagnostics,
+      budgetClass: item.budgetClass,
+      recoveryOfTaskId: item.recoveryOfTaskId,
+      recoveryEligible: item.recoveryEligible,
     })),
+    ...(investigation.schemaVersion === 2
+      ? { budget: budget ?? foldBudget(investigation).projection }
+      : {}),
     rootCause: investigation.rootCause,
   };
 }
@@ -89,7 +92,9 @@ function parseRange(value: { from: string; to: string }): TimeRange {
 
 function cleanRecord(value: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(
-    Object.entries(value).filter(([, entry]) => entry !== undefined && entry !== null && entry !== ""),
+    Object.entries(value).filter(
+      ([, entry]) => entry !== undefined && entry !== null && entry !== "",
+    ),
   );
 }
 
@@ -149,8 +154,7 @@ export function createRcaMainAgentTools(options: RcaMainAgentToolsOptions): Tool
         const caseId = parameters.caseId.trim().toLowerCase();
         if (!/^t\d+$/i.test(caseId)) throw new Error("caseId must look like t039");
 
-        const rcaContext =
-          (await options.getRcaContext?.()) ?? idleConversationRcaContext();
+        const rcaContext = (await options.getRcaContext?.()) ?? idleConversationRcaContext();
         const decision = decideStartRcaInvestigation(
           rcaContext,
           caseId,
@@ -339,6 +343,9 @@ export function createRcaMainAgentTools(options: RcaMainAgentToolsOptions): Tool
             Type.Literal("log"),
             Type.Literal("event-topology"),
           ]),
+          recoveryOfTaskId: Type.Optional(
+            Type.String({ description: "仅 Recovery 填写，必须是明确的失败 Primary Task ID" }),
+          ),
           question: Type.String({ minLength: 1 }),
           hypothesisIds: Type.Array(Type.String(), { minItems: 1, maxItems: 8 }),
           context: Type.Object({
@@ -366,6 +373,7 @@ export function createRcaMainAgentTools(options: RcaMainAgentToolsOptions): Tool
     execute: async (_toolCallId, parameters) => {
       const briefs: InvestigationBrief[] = parameters.briefs.map((brief) => ({
         role: brief.role,
+        ...(brief.recoveryOfTaskId ? { recoveryOfTaskId: brief.recoveryOfTaskId } : {}),
         question: brief.question,
         hypothesisIds: [...brief.hypothesisIds],
         context: {
@@ -390,6 +398,7 @@ export function createRcaMainAgentTools(options: RcaMainAgentToolsOptions): Tool
       return serializeMutation(async () => {
         const dispatch = await rcaService.dispatchAgentic(parameters.investigationId, briefs, {
           model: options.getModelRef(),
+          dispatchOperationId: `${conversationId}:${_toolCallId}`,
         });
         return toolResult(dispatch);
       });
@@ -406,7 +415,14 @@ export function createRcaMainAgentTools(options: RcaMainAgentToolsOptions): Tool
     }),
     execute: async (_toolCallId, parameters) => {
       const investigation = await rcaService.get(parameters.investigationId);
-      return toolResult(compactInvestigation(investigation));
+      return toolResult(
+        compactInvestigation(
+          investigation,
+          investigation.schemaVersion === 2
+            ? rcaService.getBudgetProjection(investigation)
+            : undefined,
+        ),
+      );
     },
   });
 
