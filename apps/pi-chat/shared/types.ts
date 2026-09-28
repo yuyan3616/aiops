@@ -25,7 +25,7 @@ export const BrowserPhase = {
   Loading: "loading",
   /** The browser is ready for operations. */
   Ready: "ready",
-  /** Exporting and persisting browser state. */
+  /** Exporting and persisting the browser state. */
   Saving: "saving",
   /** Terminating the sandbox and clearing its record. */
   Releasing: "releasing",
@@ -188,7 +188,6 @@ export interface ConversationSummary {
   createdAt: string;
   updatedAt: string;
   workspaceDir: string;
-  parentId?: string;
   status: RuntimeStatus;
 }
 
@@ -230,15 +229,9 @@ export interface SkillOption {
   description: string;
 }
 
-export interface RepositoryInfo {
-  branch: string;
-  commit: string;
-}
-
 export interface BootstrapData {
   browser?: { enabled: true };
   models: ModelOption[];
-  repository?: RepositoryInfo;
   skills: SkillOption[];
 }
 
