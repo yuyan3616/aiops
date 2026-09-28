@@ -6,6 +6,7 @@ import type {
   ChatMessage,
   ConversationSnapshot,
   HypothesisView,
+  InvestigationReportArtifact,
   MessageListItem,
   RuntimeStatus,
   StreamEvent,
@@ -289,6 +290,16 @@ export function conversationReducer(
           : [...item.board.hypotheses, hypothesis];
         return { ...item, board: { ...item.board, hypotheses } };
       });
+    }
+    case "report.ready": {
+      const report = payload as unknown as InvestigationReportArtifact;
+      if (!report.investigationId || !report.filename) return items;
+      const reportId = `${report.investigationId}:report`;
+      const existing = items.find((item) => item.kind === "report" && item.id === reportId);
+      if (!existing) return [...items, { kind: "report", id: reportId, report }];
+      return updateItem(items, reportId, (item) =>
+        item.kind === "report" ? { ...item, report } : item,
+      );
     }
     case "agent.started": {
       const agent = payload.agent as AgentThreadRun | undefined;
