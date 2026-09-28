@@ -273,6 +273,11 @@ test("agentic conclusion requires real evidence and complete hypothesis accounti
         rejectedHypotheses: [],
         unresolvedHypotheses: [],
         confidence: 0.9,
+        causalAssessment: {
+          temporalFit: "aligned",
+          propagationFit: "supported",
+          unresolvedContradictions: [],
+        },
       }),
       /at least two evidence items/,
     );
@@ -287,10 +292,161 @@ test("agentic conclusion requires real evidence and complete hypothesis accounti
       unresolvedHypotheses: [],
       confidence: 0.8,
       missingEvidence: ["independent log or metric confirmation"],
+      causalAssessment: {
+        temporalFit: "aligned",
+        propagationFit: "supported",
+        unresolvedContradictions: [],
+      },
     });
     assert.equal(concluded.investigation.status, "completed");
     assert.equal(concluded.investigation.rootCause?.status, "probable");
     assert.match(concluded.report, /E01/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+
+test("causal assessment blocks confident conclusions with unresolved temporal or propagation gaps", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-chat-agentic-causal-"));
+  try {
+    const repository = new InvestigationRepository(directory);
+    const service = new RcaService(repository);
+
+    const probable = investigation("INV-agentic-causal-probable");
+    probable.hypotheses.push({
+      id: "H01",
+      statement: "a dependency anomaly caused checkout latency",
+      status: "supported",
+      confidence: 0.7,
+      supportingEvidenceIds: ["E01"],
+      contradictingEvidenceIds: [],
+      nextChecks: [],
+    });
+    await repository.save(probable);
+
+    await assert.rejects(
+      service.concludeAgentic(probable.id, {
+        status: "probable",
+        rootCauseEntities: ["dependency"],
+        summary: "candidate remains temporally unresolved",
+        evidenceIds: ["E01"],
+        selectedHypothesisIds: ["H01"],
+        rejectedHypotheses: [],
+        unresolvedHypotheses: [],
+        confidence: 0.7,
+        causalAssessment: {
+          temporalFit: "uncertain",
+          propagationFit: "supported",
+          unresolvedContradictions: [],
+        },
+      }),
+      /non-uncertain temporal fit/,
+    );
+
+    const confirmed = investigation("INV-agentic-causal-confirmed");
+    confirmed.evidence.push({
+      ...confirmed.evidence[0]!,
+      id: "E02",
+      modality: "metric",
+      summary: "independent metric evidence",
+      toolCallId: "C02",
+    });
+    confirmed.hypotheses.push({
+      id: "H01",
+      statement: "a dependency failure propagated to checkout",
+      status: "confirmed",
+      confidence: 0.95,
+      supportingEvidenceIds: ["E01", "E02"],
+      contradictingEvidenceIds: [],
+      nextChecks: [],
+    });
+    await repository.save(confirmed);
+
+    await assert.rejects(
+      service.concludeAgentic(confirmed.id, {
+        status: "confirmed",
+        rootCauseEntities: ["dependency"],
+        summary: "propagation is still uncertain",
+        evidenceIds: ["E01", "E02"],
+        selectedHypothesisIds: ["H01"],
+        rejectedHypotheses: [],
+        unresolvedHypotheses: [],
+        confidence: 0.95,
+        causalAssessment: {
+          temporalFit: "aligned",
+          propagationFit: "uncertain",
+          unresolvedContradictions: [],
+        },
+      }),
+      /requires supported propagation/,
+    );
+
+    await assert.rejects(
+      service.concludeAgentic(confirmed.id, {
+        status: "confirmed",
+        rootCauseEntities: ["dependency"],
+        summary: "a key contradiction remains",
+        evidenceIds: ["E01", "E02"],
+        selectedHypothesisIds: ["H01"],
+        rejectedHypotheses: [],
+        unresolvedHypotheses: [],
+        confidence: 0.95,
+        causalAssessment: {
+          temporalFit: "aligned",
+          propagationFit: "supported",
+          unresolvedContradictions: ["candidate was already degraded before the alert window"],
+        },
+      }),
+      /cannot retain unresolved contradictions/,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("inconclusive RCA accepts uncertain causal assessment", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-chat-agentic-causal-inconclusive-"));
+  try {
+    const repository = new InvestigationRepository(directory);
+    const service = new RcaService(repository);
+    const current = investigation("INV-agentic-causal-inconclusive");
+    current.hypotheses.push({
+      id: "H01",
+      statement: "the available telemetry cannot distinguish two mechanisms",
+      status: "investigating",
+      confidence: 0.4,
+      supportingEvidenceIds: ["E01"],
+      contradictingEvidenceIds: [],
+      nextChecks: [],
+    });
+    await repository.save(current);
+
+    const concluded = await service.concludeAgentic(current.id, {
+      status: "inconclusive",
+      rootCauseEntities: [],
+      summary: "available evidence cannot establish incident-specific causality",
+      evidenceIds: ["E01"],
+      selectedHypothesisIds: [],
+      rejectedHypotheses: [],
+      unresolvedHypotheses: [
+        {
+          id: "H01",
+          reason: "temporal and propagation evidence remain incomplete",
+          missingEvidence: ["change history or an independent propagation signal"],
+        },
+      ],
+      confidence: 0.35,
+      causalAssessment: {
+        temporalFit: "uncertain",
+        propagationFit: "uncertain",
+        unresolvedContradictions: ["the candidate anomaly may predate the alert window"],
+      },
+    });
+
+    assert.equal(concluded.investigation.status, "inconclusive");
+    assert.equal(concluded.investigation.rootCause?.causalAssessment?.temporalFit, "uncertain");
+    assert.match(concluded.report, /Causal Assessment/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -605,6 +761,11 @@ test("interrupted investigation may still conclude from persisted evidence", asy
       unresolvedHypotheses: [],
       confidence: 0.65,
       missingEvidence: ["additional metric confirmation after restart"],
+      causalAssessment: {
+        temporalFit: "aligned",
+        propagationFit: "uncertain",
+        unresolvedContradictions: [],
+      },
     });
     assert.equal(concluded.investigation.status, "completed");
     assert.equal(concluded.investigation.rootCause?.status, "probable");
@@ -765,6 +926,11 @@ test("conclusion rejects any hypothesis left outside selected rejected or unreso
         rejectedHypotheses: [],
         unresolvedHypotheses: [],
         confidence: 0.75,
+        causalAssessment: {
+          temporalFit: "aligned",
+          propagationFit: "uncertain",
+          unresolvedContradictions: [],
+        },
       }),
       /leaves hypotheses unaccounted for: H02/,
     );
@@ -784,6 +950,11 @@ test("conclusion rejects any hypothesis left outside selected rejected or unreso
         },
       ],
       confidence: 0.75,
+      causalAssessment: {
+        temporalFit: "aligned",
+        propagationFit: "uncertain",
+        unresolvedContradictions: [],
+      },
     });
     assert.equal(concluded.investigation.rootCause?.unresolvedHypotheses?.[0]?.id, "H02");
   } finally {

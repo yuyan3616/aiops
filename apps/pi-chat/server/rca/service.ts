@@ -22,6 +22,7 @@ import {
 import type {
   AgentExpertFinding,
   AgentRunDiagnostics,
+  CausalAssessment,
   Evidence,
   EvidenceModality,
   ExpertTask,
@@ -115,13 +116,15 @@ export interface AgenticDispatchOptions {
   model?: { provider: string; id: string };
 }
 
-export interface AgenticConclusionInput extends Omit<RCAResult, "investigationId"> {
+export interface AgenticConclusionInput
+  extends Omit<RCAResult, "investigationId" | "causalAssessment"> {
   selectedHypothesisIds: string[];
   unresolvedHypotheses: Array<{
     id: string;
     reason: string;
     missingEvidence?: string[];
   }>;
+  causalAssessment: CausalAssessment;
 }
 
 export interface DispatchedFinding {
@@ -995,6 +998,24 @@ export class RcaService {
       throw new Error("A non-inconclusive conclusion must name at least one root-cause entity");
     }
 
+    const contradictions = result.causalAssessment.unresolvedContradictions
+      .map((item) => item.trim())
+      .filter(Boolean);
+    if (result.status === "probable" && result.causalAssessment.temporalFit === "uncertain") {
+      throw new Error("A probable conclusion requires a non-uncertain temporal fit");
+    }
+    if (result.status === "confirmed") {
+      if (result.causalAssessment.temporalFit === "uncertain") {
+        throw new Error("A confirmed conclusion requires a non-uncertain temporal fit");
+      }
+      if (result.causalAssessment.propagationFit !== "supported") {
+        throw new Error("A confirmed conclusion requires supported propagation");
+      }
+      if (contradictions.length > 0) {
+        throw new Error("A confirmed conclusion cannot retain unresolved contradictions");
+      }
+    }
+
     investigation.rootCause = {
       investigationId,
       ...result,
@@ -1002,6 +1023,10 @@ export class RcaService {
       rejectedHypotheses: [...new Set(result.rejectedHypotheses)],
       rootCauseEntities: [...new Set(result.rootCauseEntities)],
       confidence: clampConfidence(result.confidence, 0),
+      causalAssessment: {
+        ...result.causalAssessment,
+        unresolvedContradictions: [...new Set(contradictions)],
+      },
     };
     investigation.status =
       investigation.rootCause.status === "inconclusive" ? "inconclusive" : "completed";
@@ -1376,6 +1401,19 @@ export class RcaService {
       "## Conclusion",
       result.summary,
       ...(result.mechanism ? ["", "## Mechanism", result.mechanism] : []),
+      ...(result.causalAssessment
+        ? [
+            "",
+            "## Causal Assessment",
+            `- Temporal fit: ${result.causalAssessment.temporalFit}`,
+            `- Propagation fit: ${result.causalAssessment.propagationFit}`,
+            `- Unresolved contradictions: ${
+              result.causalAssessment.unresolvedContradictions.length
+                ? result.causalAssessment.unresolvedContradictions.join("; ")
+                : "none"
+            }`,
+          ]
+        : []),
       "",
       "## Key Evidence",
       ...(evidence.length

@@ -17,6 +17,14 @@
 - 遵守 notInScope。超出当前范围的线索只能通过 suggestedFollowUps 提出。
 - 只能引用当前专家 Session 内真实工具调用返回的 toolCallId。
 
+## Incident relevance
+- 异常强度与 incident causality 必须分开判断。一个指标、日志或 span “非常异常”，只说明它值得调查，不自动说明它触发了当前 incident。
+- brief 中给出的 mainWindow/alert window 是当前正式的 observation window；不要把 alert trigger time 或最早可见样本擅自当成真实故障 onset。
+- 如果直接 evidence 表明异常在 mainWindow 之前已经存在，应明确标记为 pre-existing；除非有额外 evidence 解释它如何在本次 incident 中成为触发或必要条件，否则不要把它描述为 incident-specific root cause。
+- 如果最早可见数据点已经异常、查询窗口左边界就是首次命中，或可观测数据覆盖不足，应写明 onset uncertain，而不是声称异常从该时间开始。
+- baseline 已经异常时，既不能把 baseline≈incident 当成“没有异常”，也不能默认 baseline 是健康真值。优先使用 peer、更早窗口或周边趋势说明可确认到什么程度。
+- 若工具只证明“候选异常存在”，但无法验证时间或传播关系，finding 应保持相应的不确定性，并把需要的独立验证留给 Main Agent。
+
 ## Evidence strength
 - strong：直接、由工具支撑的 evidence 几乎无歧义地建立了当前专家 claim。
 - moderate：evidence 支持 claim，但仍存在合理替代解释或缺少其他 modality。

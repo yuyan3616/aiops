@@ -22,6 +22,7 @@ import type {
   TimeRange,
   TraceAnomaly,
   TracePathNode,
+  TraceQueryWindowRelation,
 } from "./types";
 
 const PARQUET_MODALITIES = ["metrics", "logs", "traces", "events", "alerts"] as const;
@@ -179,6 +180,19 @@ function ensureValidRange(query: { from: string; to: string }): { from: number; 
     throw new Error(`Invalid time range: ${query.from} - ${query.to}`);
   }
   return { from, to };
+}
+
+export function traceQueryWindowRelation(
+  startMs: number,
+  endMs: number,
+  window: { from: number; to: number },
+): TraceQueryWindowRelation {
+  return {
+    startedBeforeWindow: startMs < window.from,
+    startedInWindow: startMs >= window.from && startMs <= window.to,
+    endedInWindow: endMs >= window.from && endMs <= window.to,
+    spansEntireWindow: startMs < window.from && endMs > window.to,
+  };
 }
 
 export class RCA100Adapter {
@@ -343,7 +357,9 @@ export class RCA100Adapter {
       anomalies: MetricAnomaly[];
       peerOutliers: Array<{
         entitySet: string;
+        entityId?: string;
         entity: string;
+        service?: string;
         metric: string;
         incidentMedian: number;
         peerMedian: number;
@@ -443,6 +459,7 @@ export class RCA100Adapter {
       };
       anomalies.push({
         entitySet: String(group.row.entity_set ?? ""),
+        ...(group.row.entity_id ? { entityId: String(group.row.entity_id) } : {}),
         entity: String(group.row.entity_name ?? ""),
         ...(group.row.service ? { service: String(group.row.service) } : {}),
         metric: String(group.row.metric ?? ""),
@@ -479,7 +496,9 @@ export class RCA100Adapter {
 
     const peerOutliers: Array<{
       entitySet: string;
+      entityId?: string;
       entity: string;
+      service?: string;
       metric: string;
       incidentMedian: number;
       peerMedian: number;
@@ -494,7 +513,9 @@ export class RCA100Adapter {
         if (ratio < 2 && ratio > 0.5) continue;
         peerOutliers.push({
           entitySet: String(item.row.entity_set ?? ""),
+          ...(item.row.entity_id ? { entityId: String(item.row.entity_id) } : {}),
           entity: item.entity,
+          ...(item.row.service ? { service: String(item.row.service) } : {}),
           metric: String(item.row.metric ?? ""),
           incidentMedian: item.incidentMedian,
           peerMedian,
@@ -676,7 +697,7 @@ export class RCA100Adapter {
       return {
         traceId: root.traceId,
         totalDurationMs: root.durationMs,
-        path: path.map((row) => this.tracePathNode(row)),
+        path: path.map((row) => this.tracePathNode(row, incident)),
         rawRef: sourceRef(caseId, "traces.parquet", {
           traceId: root.traceId,
           spanId: root.spanId,
@@ -716,7 +737,7 @@ export class RCA100Adapter {
       rawRef,
       data: {
         anomalies: anomalies.slice(0, topN),
-        topSpans: topFocus.map((row) => this.tracePathNode(row)),
+        topSpans: topFocus.map((row) => this.tracePathNode(row, incident)),
         criticalPaths: paths,
         propagationCandidates,
       },
@@ -1095,7 +1116,10 @@ export class RCA100Adapter {
     return path;
   }
 
-  private tracePathNode(row: TraceRow): TracePathNode {
+  private tracePathNode(
+    row: TraceRow,
+    queryWindow?: { from: number; to: number },
+  ): TracePathNode {
     return {
       service: row.service,
       operation: row.operation,
@@ -1106,6 +1130,9 @@ export class RCA100Adapter {
       spanId: row.spanId,
       ...(row.parentSpanId ? { parentSpanId: row.parentSpanId } : {}),
       ...(row.statusCode ? { statusCode: row.statusCode } : {}),
+      ...(queryWindow
+        ? { queryWindowRelation: traceQueryWindowRelation(row.startMs, row.endMs, queryWindow) }
+        : {}),
     };
   }
 }
