@@ -23,6 +23,7 @@ export type EventType =
   | "thinking.delta"
   | "thinking.completed"
   | "hypothesis.updated"
+  | "report.ready"
   | "agent.started"
   | "agent.thinking.delta"
   | "agent.tool.started"
@@ -90,6 +91,14 @@ export interface HypothesisBoard {
   hypotheses: HypothesisView[];
 }
 
+export interface InvestigationReportArtifact {
+  investigationId: string;
+  filename: string;
+  status: "confirmed" | "probable" | "inconclusive";
+  summary: string;
+  confidence: number;
+}
+
 export interface AgentThreadEvidence {
   id: string;
   modality: string;
@@ -141,6 +150,7 @@ export type MessageListItem =
   | { kind: "message"; id: string; message: ChatMessage; seqId?: number }
   | { kind: "thinking"; id: string; thinking: ThinkingBlock; seqId?: number }
   | { kind: "hypotheses"; id: string; board: HypothesisBoard; seqId?: number }
+  | { kind: "report"; id: string; report: InvestigationReportArtifact; seqId?: number }
   | { kind: "agent"; id: string; agent: AgentThreadRun; seqId?: number }
   | MessageListToolItem;
 
