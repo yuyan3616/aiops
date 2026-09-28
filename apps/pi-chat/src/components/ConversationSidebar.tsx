@@ -365,7 +365,7 @@ export function ConversationSidebar({
                 <span className="brand-mark">
                   <PiLogo size={18} />
                 </span>
-                <strong>Pi Chat</strong>
+                <strong>Pi Ops</strong>
                 <Button
                   className="sidebar-search-trigger"
                   variant="ghost"
