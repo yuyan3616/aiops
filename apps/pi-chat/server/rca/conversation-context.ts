@@ -51,7 +51,7 @@ export function renderConversationRcaContext(
 ): string {
   if (context.state === "idle") {
     return [
-      "## 当前 RCA 上下文（服务端权威状态）",
+      "## 当前 RCA 上下文（服务端权威状态 / server-authoritative）",
       "- state: idle",
       "- active investigation: none（无）",
       "",
@@ -61,7 +61,7 @@ export function renderConversationRcaContext(
 
   if (context.state === "unavailable") {
     return [
-      "## 当前 RCA 上下文（服务端权威状态）",
+      "## 当前 RCA 上下文（服务端权威状态 / server-authoritative）",
       "- state: unavailable",
       `- active investigation: ${context.investigationId ?? "unknown"}`,
       "",
@@ -70,7 +70,7 @@ export function renderConversationRcaContext(
   }
 
   return [
-    "## 当前 RCA 上下文（服务端权威状态）",
+    "## 当前 RCA 上下文（服务端权威状态 / server-authoritative）",
     `- state: ${context.state}`,
     `- active investigation: ${context.investigationId}`,
     `- case: ${context.caseId}`,
