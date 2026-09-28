@@ -13,5 +13,6 @@
 8. 优先使用聚合 anomaly summary 和有边界的 comparison，不要无必要展开大量 raw sample。
 9. 数值异常幅度与 incident causality 分开描述。若最早可见数据点已经异常，只能说明真实 onset 未知或可能早于当前窗口；不要仅凭巨大 ratio/robustZ 把它升级成当前 incident 的触发原因。
 10. 当 traffic、latency、error 或 saturation 的时间行为能区分 competing hypotheses 时，优先比较“何时变化”和“是否与 mainWindow 对齐”，而不是只比较哪个值最大。
+11. 如果 brief 用于 candidate coverage，不要只汇报最极端 latency anomaly；优先寻找能区分主要结构相关候选的 incident-window 变化，尤其是 throughput/request_count、latency、error/availability 的同步变化。coverage 目标是避免漏掉合理候选，不是扫描所有 metric。
 
 你的任务是确认假设中的 metric 行为是否真实、是否为 incident-specific，以及它是否具有实质相关性。
