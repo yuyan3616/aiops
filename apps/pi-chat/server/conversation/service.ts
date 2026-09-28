@@ -53,6 +53,28 @@ import {
 } from "./title-generator";
 import type { ConversationRecord, ConversationTitleMeta, ManagedSession } from "./types";
 
+type PromptPerformancePurpose = "main_chat" | "steer";
+
+interface PromptPerformanceTrace {
+  id: string;
+  purpose: PromptPerformancePurpose;
+  startedAt: number;
+  model: string;
+  agentStarted: boolean;
+  assistantStarted: boolean;
+  firstModelDelta: boolean;
+  firstTextDelta: boolean;
+}
+
+interface PendingTitleRefinement {
+  input: {
+    caseId: string;
+    summary: string;
+    rootCauseEntities: string[];
+  };
+  modelRef: TitleModelRef;
+}
+
 export class ConversationService {
   private globalConfig: GlobalConfig;
   private conversationRepository: ConversationRepository;
@@ -63,6 +85,8 @@ export class ConversationService {
   private readonly channels = new Map<string, EventChannel>();
   private readonly managedSessions = new Map<string, ManagedSession>();
   private readonly recordWriteQueues = new Map<string, Promise<void>>();
+  private readonly promptPerformance = new Map<string, PromptPerformanceTrace>();
+  private readonly pendingTitleRefinements = new Map<string, PendingTitleRefinement>();
 
   constructor(globalConfig: GlobalConfig, modelRuntime: ModelRuntime, rcaService: RcaService) {
     this.globalConfig = globalConfig;
@@ -106,6 +130,7 @@ export class ConversationService {
   }
 
   async send(conversationId: string, userInput: string, skills?: string[]) {
+    const requestStartedAt = Date.now();
     const cleanedUserInput = userInput.trim();
     if (!cleanedUserInput || cleanedUserInput.length === 0) {
       throw new Error("User input cannot be empty.");
@@ -121,17 +146,13 @@ export class ConversationService {
 
     const managedSession = await this.ensureManagedSession(conversationId, validSelectedSkills);
     const session = managedSession.runtime.session;
-    const shouldGenerateTitle = await this.ensureFallbackTitle(conversationId, cleanedUserInput);
-    if (shouldGenerateTitle) {
-      const modelRef: TitleModelRef = {
-        provider: session.agent.state.model.provider,
-        id: session.agent.state.model.id,
-      };
-      runDetached(
-        () => this.generateInitialTitle(conversationId, cleanedUserInput, modelRef),
-        () => undefined,
-      );
-    }
+
+    // Keep the first-turn title deterministic. Starting a second LLM call here competes
+    // with the user-facing prompt for the same provider and hurts time-to-first-token.
+    await this.ensureFallbackTitle(conversationId, cleanedUserInput);
+
+    const purpose: PromptPerformancePurpose = session.isStreaming ? "steer" : "main_chat";
+    this.beginPromptPerformance(managedSession, purpose, requestStartedAt);
 
     if (session.isStreaming) {
       const investigationId = await this.resolveInvestigation(conversationId);
@@ -154,6 +175,7 @@ export class ConversationService {
       () => session.prompt(cleanedUserInput),
       (cause) => {
         const message = normalizePromptError(cause);
+        this.finishPromptPerformance(managedSession.id, "error", { error: message });
         managedSession.error = message;
         managedSession.streamMessageId = undefined;
         managedSession.streamThinkingId = undefined;
@@ -499,23 +521,17 @@ export class ConversationService {
       onConcluded: (investigation, report) => {
         const managed = this.managedSessions.get(conversationRecord.id);
         if (!managed || !investigation.rootCause) return;
-        const modelRef: TitleModelRef = {
-          provider: managed.runtime.session.agent.state.model.provider,
-          id: managed.runtime.session.agent.state.model.id,
-        };
-        runDetached(
-          () =>
-            this.refineTitleAfterInvestigation(
-              conversationRecord.id,
-              {
-                caseId: investigation.caseId,
-                summary: investigation.rootCause?.summary ?? report,
-                rootCauseEntities: investigation.rootCause?.rootCauseEntities ?? [],
-              },
-              modelRef,
-            ),
-          () => undefined,
-        );
+        this.pendingTitleRefinements.set(conversationRecord.id, {
+          input: {
+            caseId: investigation.caseId,
+            summary: investigation.rootCause.summary ?? report,
+            rootCauseEntities: investigation.rootCause.rootCauseEntities ?? [],
+          },
+          modelRef: {
+            provider: managed.runtime.session.agent.state.model.provider,
+            id: managed.runtime.session.agent.state.model.id,
+          },
+        });
       },
     });
 
@@ -557,11 +573,13 @@ export class ConversationService {
       // Handle the event here
       switch (event.type) {
         case "agent_start":
+          this.markPromptPerformance(managedSession.id, "agent_start");
           this.setStatus(managedSession, "running");
           break;
         case "message_start":
           const message = event.message;
           if (message.role === "assistant") {
+            this.markPromptPerformance(managedSession.id, "assistant_message_start");
             managedSession.streamMessageId = randomUUID();
             managedSession.streamThinkingId = undefined;
             managedSession.channel.publish("message.started", {
@@ -585,6 +603,8 @@ export class ConversationService {
           break;
         case "message_update":
           if (event.assistantMessageEvent.type === "text_delta") {
+            this.markPromptPerformance(managedSession.id, "first_model_delta");
+            this.markPromptPerformance(managedSession.id, "first_text_delta");
             managedSession.channel.publish("message.delta", {
               id: managedSession.streamMessageId,
               delta: event.assistantMessageEvent.delta,
@@ -596,6 +616,7 @@ export class ConversationService {
               id: managedSession.streamThinkingId,
             });
           } else if (event.assistantMessageEvent.type === "thinking_delta") {
+            this.markPromptPerformance(managedSession.id, "first_model_delta");
             managedSession.channel.publish("thinking.delta", {
               id: managedSession.streamThinkingId,
               delta: event.assistantMessageEvent.delta,
@@ -638,8 +659,10 @@ export class ConversationService {
         case "agent_settled":
           managedSession.streamMessageId = undefined;
           managedSession.streamThinkingId = undefined;
+          this.finishPromptPerformance(managedSession.id, "agent_settled");
           this.setStatus(managedSession, "ready");
           managedSession.channel.publish("runtime.settled", {});
+          this.flushPendingTitleRefinement(managedSession);
           break;
         default:
           break;
@@ -726,11 +749,11 @@ export class ConversationService {
   private async ensureFallbackTitle(
     conversationId: string,
     userMessage: string,
-  ): Promise<boolean> {
+  ): Promise<void> {
     const record = await this.conversationRepository.get(conversationId);
     if (!record) throw new Error(`Conversation with ID ${conversationId} not found`);
     const meta = this.titleMeta(record);
-    if (meta.locked || meta.generation > 0) return false;
+    if (meta.locked || meta.generation > 0) return;
 
     const updated = await this.conversationRepository.update(conversationId, {
       title: fallbackConversationTitle(userMessage),
@@ -742,32 +765,132 @@ export class ConversationService {
       },
     });
     this.publishConversationTitle(updated);
-    return true;
   }
 
-  private async generateInitialTitle(
-    conversationId: string,
-    userMessage: string,
-    modelRef: TitleModelRef,
-  ): Promise<void> {
-    const generated = await this.titleGenerator.generate({ userMessage }, modelRef);
-    if (!generated) return;
-
-    const record = await this.conversationRepository.get(conversationId);
-    if (!record) return;
-    const meta = this.titleMeta(record);
-    if (meta.locked || meta.generation !== 1 || meta.source === "user") return;
-
-    const updated = await this.conversationRepository.update(conversationId, {
-      title: generated,
-      titleMeta: {
-        source: "llm",
-        locked: false,
-        generation: 1,
-        generatedAt: new Date().toISOString(),
-      },
+  private beginPromptPerformance(
+    managedSession: ManagedSession,
+    purpose: PromptPerformancePurpose,
+    startedAt: number,
+  ): void {
+    const trace: PromptPerformanceTrace = {
+      id: randomUUID(),
+      purpose,
+      startedAt,
+      model: `${managedSession.runtime.session.agent.state.model.provider}/${managedSession.runtime.session.agent.state.model.id}`,
+      agentStarted: false,
+      assistantStarted: false,
+      firstModelDelta: false,
+      firstTextDelta: false,
+    };
+    this.promptPerformance.set(managedSession.id, trace);
+    this.writePerformanceLog({
+      conversationId: managedSession.id,
+      traceId: trace.id,
+      purpose,
+      stage: "request_received",
+      elapsedMs: 0,
+      model: trace.model,
     });
-    this.publishConversationTitle(updated);
+  }
+
+  private markPromptPerformance(
+    conversationId: string,
+    stage:
+      | "agent_start"
+      | "assistant_message_start"
+      | "first_model_delta"
+      | "first_text_delta",
+  ): void {
+    const trace = this.promptPerformance.get(conversationId);
+    if (!trace) return;
+
+    const alreadyMarked =
+      (stage === "agent_start" && trace.agentStarted) ||
+      (stage === "assistant_message_start" && trace.assistantStarted) ||
+      (stage === "first_model_delta" && trace.firstModelDelta) ||
+      (stage === "first_text_delta" && trace.firstTextDelta);
+    if (alreadyMarked) return;
+
+    if (stage === "agent_start") trace.agentStarted = true;
+    if (stage === "assistant_message_start") trace.assistantStarted = true;
+    if (stage === "first_model_delta") trace.firstModelDelta = true;
+    if (stage === "first_text_delta") trace.firstTextDelta = true;
+
+    this.writePerformanceLog({
+      conversationId,
+      traceId: trace.id,
+      purpose: trace.purpose,
+      stage,
+      elapsedMs: Date.now() - trace.startedAt,
+      model: trace.model,
+    });
+  }
+
+  private finishPromptPerformance(
+    conversationId: string,
+    stage: "agent_settled" | "error",
+    extra: Record<string, unknown> = {},
+  ): void {
+    const trace = this.promptPerformance.get(conversationId);
+    if (!trace) return;
+    this.promptPerformance.delete(conversationId);
+    this.writePerformanceLog({
+      conversationId,
+      traceId: trace.id,
+      purpose: trace.purpose,
+      stage,
+      elapsedMs: Date.now() - trace.startedAt,
+      model: trace.model,
+      ...extra,
+    });
+  }
+
+  private writePerformanceLog(payload: Record<string, unknown>): void {
+    process.stdout.write(`[chat.perf] ${JSON.stringify(payload)}\n`);
+  }
+
+  private flushPendingTitleRefinement(managedSession: ManagedSession): void {
+    const pending = this.pendingTitleRefinements.get(managedSession.id);
+    if (!pending) return;
+    this.pendingTitleRefinements.delete(managedSession.id);
+
+    runDetached(
+      async () => {
+        const startedAt = Date.now();
+        this.writePerformanceLog({
+          conversationId: managedSession.id,
+          purpose: "title_generation",
+          stage: "start",
+          elapsedMs: 0,
+          model: `${pending.modelRef.provider}/${pending.modelRef.id}`,
+        });
+        try {
+          await this.refineTitleAfterInvestigation(
+            managedSession.id,
+            pending.input,
+            pending.modelRef,
+          );
+          this.writePerformanceLog({
+            conversationId: managedSession.id,
+            purpose: "title_generation",
+            stage: "settled",
+            elapsedMs: Date.now() - startedAt,
+            model: `${pending.modelRef.provider}/${pending.modelRef.id}`,
+          });
+        } catch (error) {
+          this.writePerformanceLog({
+            conversationId: managedSession.id,
+            purpose: "title_generation",
+            stage: "error",
+            elapsedMs: Date.now() - startedAt,
+            model: `${pending.modelRef.provider}/${pending.modelRef.id}`,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          throw error;
+        }
+      },
+      () => undefined,
+    );
   }
 
   private async refineTitleAfterInvestigation(
@@ -853,6 +976,8 @@ export class ConversationService {
     if (!managedSession) return;
     managedSession.unsubscribe?.();
     managedSession.runtime.session.dispose();
+    this.promptPerformance.delete(id);
+    this.pendingTitleRefinements.delete(id);
     if (options.dropChannel ?? true) {
       this.channels.delete(id);
     }
