@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { ConversationService } from "./service";
-import type { RcaService } from "@server/rca/service";
-import { createConversationRoutes } from "@server/routes/conversation";
+import type { RcaService } from "../rca/service";
+import { createConversationRoutes } from "../routes/conversation";
 
 test("batch delete validates ids and forwards unique conversation ids", async () => {
   const calls: string[][] = [];
