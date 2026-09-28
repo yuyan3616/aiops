@@ -202,7 +202,7 @@ export function createRcaMainAgentTools(options: RcaMainAgentToolsOptions): Tool
     name: "query_rca_overview",
     label: "查询 RCA 概览",
     description:
-      "在活动 RCA 调查中执行一次有边界的 overview/统计检查。overview 用于发现候选和减少不确定性，Top anomaly 只是线索而不是 root cause 排名。只选择能减少当前关键不确定性的 overview；raw log 阅读交给专家子 Agent。",
+      "在活动 RCA 调查中执行一次有边界的 overview/统计检查。overview 用于发现候选和减少不确定性，Top anomaly 只是线索而不是 root cause 排名。进入单一候选深挖前，可用 dependencies + 针对候选 service 的 incident-window metrics 做低成本 candidate coverage，避免真正候选在早期被漏掉；不要机械扫描全部模态。raw log 阅读交给专家子 Agent。",
     parameters: Type.Object({
       investigationId: Type.String(),
       kind: Type.Union([
@@ -393,7 +393,7 @@ export function createRcaMainAgentTools(options: RcaMainAgentToolsOptions): Tool
     name: "conclude_investigation",
     label: "收敛 RCA 调查",
     description:
-      "持久化 Main Agent 最终、基于 evidence 的 RCA 结论。每个 hypothesis 必须且只能归入 selected、rejected 或 unresolved 一类。收敛前先更新 hypothesis status，并提交 causalAssessment：明确时间契合度、传播证据和未解决矛盾。probable 不接受 temporalFit=uncertain；confirmed 还要求 propagationFit=supported 且没有未解决矛盾。",
+      "持久化 Main Agent 最终、基于 evidence 的 RCA 结论。每个 hypothesis 必须且只能归入 selected、rejected 或 unresolved 一类。causalAssessment 必须引用真实 evidence：非 uncertain 的 temporalFit 要有 temporalEvidenceIds；pre_existing_explained 还必须有独立的 transitionEvidenceIds，不能只靠同一批长期异常讲故事；propagationFit=supported 要有 propagationEvidenceIds。若关键因果区间存在 materialUnobservedGap，仍声称 supported 时必须提供 gapBridgeEvidenceIds，否则应降为 uncertain。probable 不接受 temporalFit=uncertain；confirmed 还要求 propagationFit=supported 且没有未解决矛盾。",
     parameters: Type.Object({
       investigationId: Type.String(),
       status: Type.Union([
@@ -423,11 +423,16 @@ export function createRcaMainAgentTools(options: RcaMainAgentToolsOptions): Tool
           Type.Literal("pre_existing_explained"),
           Type.Literal("uncertain"),
         ]),
+        temporalEvidenceIds: Type.Array(Type.String(), { maxItems: 20 }),
+        transitionEvidenceIds: Type.Array(Type.String(), { maxItems: 20 }),
         propagationFit: Type.Union([
           Type.Literal("supported"),
           Type.Literal("uncertain"),
           Type.Literal("not_available"),
         ]),
+        propagationEvidenceIds: Type.Array(Type.String(), { maxItems: 20 }),
+        materialUnobservedGap: Type.Boolean(),
+        gapBridgeEvidenceIds: Type.Array(Type.String(), { maxItems: 20 }),
         unresolvedContradictions: Type.Array(Type.String({ minLength: 1 }), { maxItems: 20 }),
       }),
     }),
@@ -450,7 +455,12 @@ export function createRcaMainAgentTools(options: RcaMainAgentToolsOptions): Tool
         ...(input.missingEvidence ? { missingEvidence: [...input.missingEvidence] } : {}),
         causalAssessment: {
           temporalFit: input.causalAssessment.temporalFit,
+          temporalEvidenceIds: [...input.causalAssessment.temporalEvidenceIds],
+          transitionEvidenceIds: [...input.causalAssessment.transitionEvidenceIds],
           propagationFit: input.causalAssessment.propagationFit,
+          propagationEvidenceIds: [...input.causalAssessment.propagationEvidenceIds],
+          materialUnobservedGap: input.causalAssessment.materialUnobservedGap,
+          gapBridgeEvidenceIds: [...input.causalAssessment.gapBridgeEvidenceIds],
           unresolvedContradictions: [...input.causalAssessment.unresolvedContradictions],
         },
       };
