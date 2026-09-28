@@ -40,6 +40,9 @@ interface RunningAgenticInvestigation {
   conversationId?: string;
   controller: AbortController;
   unsubscribe?: () => void;
+  investigation?: Investigation;
+  activeOperations: number;
+  cancellationPromise?: Promise<void>;
 }
 
 export type RcaOverviewKind = "alerts" | "dependencies" | "metrics" | "traces" | "topology";
@@ -258,7 +261,9 @@ export class RcaService {
       conversationId: options.conversationId,
       controller,
       unsubscribe,
+      activeOperations: 0,
     });
+    const releaseOperation = this.trackAgenticOperation(id);
 
     const call: ToolCallRecord = {
       id: "C01",
@@ -297,6 +302,8 @@ export class RcaService {
         rounds: 0,
         startedAt: now(),
       };
+      const active = this.agenticRunning.get(id);
+      if (active) active.investigation = investigation;
       const alertObservation: Observation = {
         id: this.nextObservationId(investigation),
         caseId,
@@ -326,8 +333,10 @@ export class RcaService {
       call.completedAt = now();
       await this.repository.appendToolCall(id, call);
       await bus.publish("tool.completed", "Loading alert context failed.", { toolCall: call });
-      this.cleanupAgentic(id);
+      if (!controller.signal.aborted) this.cleanupAgentic(id);
       throw error;
+    } finally {
+      releaseOperation();
     }
   }
 
@@ -350,6 +359,8 @@ export class RcaService {
       conversationId: options.conversationId,
       controller,
       unsubscribe,
+      investigation,
+      activeOperations: 0,
     });
 
     if (investigation.status === "interrupted") {
@@ -375,55 +386,62 @@ export class RcaService {
     rawRef?: string;
     result: unknown;
   }> {
-    const investigation = await this.repository.get(investigationId);
+    const investigation = await this.liveInvestigation(investigationId);
     this.assertRunning(investigation);
     const bus = await this.busFor(investigationId);
     const signal = this.agenticRunning.get(investigationId)?.controller.signal;
+    const releaseOperation = this.trackAgenticOperation(investigationId);
 
-    const { tool, arguments_ } = this.overviewTool(investigation, kind, query);
-    const recorded = await this.invokeRecordedTool(
-      investigation,
-      bus,
-      tool,
-      arguments_,
-      undefined,
-      signal,
-    );
-    const evidence: Evidence = {
-      id: this.nextEvidenceId(investigation),
-      caseId: investigation.caseId,
-      modality: toolModality(tool),
-      ...(typeof query.entity === "string" ? { entity: query.entity } : {}),
-      timeRange: investigation.alertContext.window,
-      summary: recorded.execution.summary,
-      rawRef:
-        recorded.execution.rawRef ??
-        `investigation://${investigation.id}/tool/${recorded.callId}`,
-      supports: [],
-      contradicts: [],
-      sourceQuery: arguments_,
-      toolCallId: recorded.callId,
-      facts: { source: "main-agent-overview" },
-      createdAt: now(),
-    };
-    investigation.evidence.push(evidence);
-    await this.saveInvestigation(investigation);
-    await bus.publish("evidence.created", evidence.summary, { evidence });
+    try {
+      const { tool, arguments_ } = this.overviewTool(investigation, kind, query);
+      const recorded = await this.invokeRecordedTool(
+        investigation,
+        bus,
+        tool,
+        arguments_,
+        undefined,
+        signal,
+      );
+      checkCancelled(signal);
+      const evidence: Evidence = {
+        id: this.nextEvidenceId(investigation),
+        caseId: investigation.caseId,
+        modality: toolModality(tool),
+        ...(typeof query.entity === "string" ? { entity: query.entity } : {}),
+        timeRange: investigation.alertContext.window,
+        summary: recorded.execution.summary,
+        rawRef:
+          recorded.execution.rawRef ??
+          `investigation://${investigation.id}/tool/${recorded.callId}`,
+        supports: [],
+        contradicts: [],
+        sourceQuery: arguments_,
+        toolCallId: recorded.callId,
+        facts: { source: "main-agent-overview" },
+        createdAt: now(),
+      };
+      investigation.evidence.push(evidence);
+      await this.saveInvestigation(investigation);
+      checkCancelled(signal);
+      await bus.publish("evidence.created", evidence.summary, { evidence });
 
-    return {
-      evidenceId: evidence.id,
-      toolCallId: recorded.callId,
-      summary: evidence.summary,
-      ...(recorded.execution.rawRef ? { rawRef: recorded.execution.rawRef } : {}),
-      result: compactToolResultForAgent(tool, recorded.execution.result),
-    };
+      return {
+        evidenceId: evidence.id,
+        toolCallId: recorded.callId,
+        summary: evidence.summary,
+        ...(recorded.execution.rawRef ? { rawRef: recorded.execution.rawRef } : {}),
+        result: compactToolResultForAgent(tool, recorded.execution.result),
+      };
+    } finally {
+      releaseOperation();
+    }
   }
 
   async updateHypotheses(
     investigationId: string,
     mutations: HypothesisMutation[],
   ): Promise<HypothesisMutationBatchResult> {
-    const investigation = await this.repository.get(investigationId);
+    const investigation = await this.liveInvestigation(investigationId);
     this.assertConcludable(investigation);
     const bus = await this.busFor(investigationId);
     const evidenceIds = new Set(investigation.evidence.map((item) => item.id));
@@ -644,7 +662,7 @@ export class RcaService {
     briefs: InvestigationBrief[],
     options: AgenticDispatchOptions = {},
   ): Promise<DispatchedFinding[]> {
-    const investigation = await this.repository.get(investigationId);
+    const investigation = await this.liveInvestigation(investigationId);
     this.assertRunning(investigation);
 
     if (briefs.length === 0) throw new Error("At least one investigation brief is required");
@@ -708,7 +726,9 @@ export class RcaService {
     const running = this.agenticRunning.get(investigationId);
     if (!running) throw new Error("Agentic investigation is not active");
     checkCancelled(running.controller.signal);
+    const releaseOperation = this.trackAgenticOperation(investigationId);
 
+    try {
     const taskPairs = briefs.map((brief) => {
       const task: ExpertTask = {
         id: this.nextTaskId(investigation),
@@ -743,7 +763,7 @@ export class RcaService {
       availableModalities: ["metric", "log", "trace", "event", "alert", "topology"],
     };
 
-    const results = await Promise.all(
+    const settled = await Promise.allSettled(
       taskPairs.map(async ({ task, brief }): Promise<DispatchedFinding> => {
         try {
           const run = await runner.run({
@@ -767,10 +787,12 @@ export class RcaService {
                 delta,
               }).then(() => undefined),
           });
+          checkCancelled(running.controller.signal);
           task.sessionId = run.sessionId;
           task.diagnostics = run.diagnostics;
 
           const finding = await this.acceptAgentFinding(investigation, task, run.finding, bus);
+          checkCancelled(running.controller.signal);
           task.finding = finding;
           task.status = finding.status === "failed" ? "failed" : "completed";
           task.completedAt = now();
@@ -793,12 +815,15 @@ export class RcaService {
           };
         } catch (error) {
           const cancelled = running.controller.signal.aborted || isAbortError(error);
-          task.status = cancelled ? "cancelled" : "failed";
-          task.completedAt = now();
           if (error instanceof PiExpertRunError) {
             task.diagnostics = error.diagnostics;
             if (error.sessionId) task.sessionId = error.sessionId;
           }
+          if (cancelled && task.status === "cancelled") {
+            throw error;
+          }
+          task.status = cancelled ? "cancelled" : "failed";
+          task.completedAt = now();
           const finding: AgentExpertFinding = {
             status: cancelled ? "failed" : "failed",
             strength: "inconclusive",
@@ -839,6 +864,15 @@ export class RcaService {
       }),
     );
 
+    if (running.controller.signal.aborted) {
+      throw new DOMException("Investigation cancelled", "AbortError");
+    }
+    const results: DispatchedFinding[] = [];
+    for (const item of settled) {
+      if (item.status === "rejected") throw item.reason;
+      results.push(item.value);
+    }
+
     await bus.publish("round.completed", `Agentic batch ${investigation.rounds} completed.`, {
       round: investigation.rounds,
       taskRefs: results.map((item) => item.taskRef),
@@ -846,13 +880,16 @@ export class RcaService {
       source: "main-agent",
     });
     return results;
+    } finally {
+      releaseOperation();
+    }
   }
 
   async concludeAgentic(
     investigationId: string,
     result: AgenticConclusionInput,
   ): Promise<{ investigation: Investigation; report: string }> {
-    const investigation = await this.repository.get(investigationId);
+    const investigation = await this.liveInvestigation(investigationId);
     this.assertConcludable(investigation);
     const bus = await this.busFor(investigationId);
     const evidenceIds = new Set(investigation.evidence.map((item) => item.id));
@@ -985,26 +1022,21 @@ export class RcaService {
     return this.repository.get(investigationId);
   }
 
-  cancel(investigationId: string): boolean {
-    let cancelled = false;
-    const agentic = this.agenticRunning.get(investigationId);
-    if (agentic) {
-      agentic.controller.abort();
-      void this.markAgenticCancelled(investigationId);
-      cancelled = true;
-    }
-    return cancelled;
+  async cancel(investigationId: string): Promise<boolean> {
+    const running = this.agenticRunning.get(investigationId);
+    if (!running) return false;
+    await this.requestAgenticCancellation(investigationId, running);
+    return true;
   }
 
-  cancelConversation(conversationId: string): number {
-    const ids = new Set<string>();
-    for (const [id, running] of this.agenticRunning) {
-      if (running.conversationId !== conversationId) continue;
-      running.controller.abort();
-      void this.markAgenticCancelled(id);
-      ids.add(id);
-    }
-    return ids.size;
+  async cancelConversation(conversationId: string): Promise<number> {
+    const matches = [...this.agenticRunning.entries()].filter(
+      ([, running]) => running.conversationId === conversationId,
+    );
+    await Promise.all(
+      matches.map(([id, running]) => this.requestAgenticCancellation(id, running)),
+    );
+    return matches.length;
   }
 
   private requireAgenticTools(): ObservabilityToolRegistry {
@@ -1015,6 +1047,53 @@ export class RcaService {
   private requireExpertRunner(): PiExpertRunner {
     if (!this.expertRunner) throw new Error("Pi RCA sub-agent runtime is not configured");
     return this.expertRunner;
+  }
+
+  private async liveInvestigation(investigationId: string): Promise<Investigation> {
+    const running = this.agenticRunning.get(investigationId);
+    if (running?.investigation) return running.investigation;
+    const investigation = await this.repository.get(investigationId);
+    if (running) running.investigation = investigation;
+    return investigation;
+  }
+
+  private trackAgenticOperation(investigationId: string): () => void {
+    const running = this.agenticRunning.get(investigationId);
+    if (!running) return () => undefined;
+    running.activeOperations++;
+
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      running.activeOperations = Math.max(0, running.activeOperations - 1);
+      if (!running.controller.signal.aborted || running.activeOperations !== 0) return;
+      const cancellation = running.cancellationPromise;
+      if (cancellation) {
+        void cancellation.finally(() => {
+          const current = this.agenticRunning.get(investigationId);
+          if (current === running && current.activeOperations === 0) {
+            this.cleanupAgentic(investigationId);
+          }
+        });
+      } else {
+        this.cleanupAgentic(investigationId);
+      }
+    };
+  }
+
+  private async requestAgenticCancellation(
+    investigationId: string,
+    running: RunningAgenticInvestigation,
+  ): Promise<void> {
+    if (!running.cancellationPromise) {
+      running.cancellationPromise = this.markAgenticCancelled(investigationId, running);
+      running.controller.abort();
+    }
+    await running.cancellationPromise;
+    if (running.activeOperations === 0) {
+      this.cleanupAgentic(investigationId);
+    }
   }
 
   private assertRunning(investigation: Investigation): void {
@@ -1138,6 +1217,7 @@ export class RcaService {
     try {
       const execution: ToolExecution = await tools.execute(tool, arguments_, signal);
       checkCancelled(signal);
+      const agentContextResult = compactToolResultForAgent(tool, execution.result);
       call.status = "completed";
       call.resultSummary = execution.summary;
       call.rawRef = execution.rawRef;
@@ -1158,8 +1238,10 @@ export class RcaService {
       investigation.observations.push(observation);
       await this.repository.appendToolCall(investigation.id, call);
       await this.saveInvestigation(investigation);
+      checkCancelled(signal);
       await bus.publish("tool.completed", `${tool} completed: ${execution.summary}.`, {
         toolCall: call,
+        agentContextResult,
       });
       await bus.publish("observation.created", observation.summary, {
         observation,
@@ -1175,17 +1257,25 @@ export class RcaService {
       };
     } catch (error) {
       const cancelled = signal?.aborted || isAbortError(error);
-      call.status = cancelled ? "cancelled" : "failed";
-      call.error = error instanceof Error ? error.message : String(error);
-      call.completedAt = now();
-      if (call.runtime) call.runtime.after = runtimeResourceSnapshot();
-      await this.repository.appendToolCall(investigation.id, call);
-      await this.saveInvestigation(investigation);
-      await bus.publish(
-        "tool.completed",
-        `${tool} ${cancelled ? "cancelled" : "failed"}: ${call.error}.`,
-        { toolCall: call },
-      );
+      if (cancelled) {
+        investigation.observations = (investigation.observations ?? []).filter(
+          (observation) => observation.toolCallId !== call.id,
+        );
+      }
+      const alreadyCancelled = cancelled && call.status === "cancelled";
+      if (!alreadyCancelled) {
+        call.status = cancelled ? "cancelled" : "failed";
+        call.error = error instanceof Error ? error.message : String(error);
+        call.completedAt = now();
+        if (call.runtime) call.runtime.after = runtimeResourceSnapshot();
+        await this.repository.appendToolCall(investigation.id, call);
+        await this.saveInvestigation(investigation);
+        await bus.publish(
+          "tool.completed",
+          `${tool} ${cancelled ? "cancelled" : "failed"}: ${call.error}.`,
+          { toolCall: call },
+        );
+      }
       throw error;
     }
   }
@@ -1312,26 +1402,65 @@ export class RcaService {
     ].join("\n");
   }
 
-  private async markAgenticCancelled(investigationId: string): Promise<void> {
-    try {
-      const investigation = await this.repository.get(investigationId);
-      if (investigation.status !== "running") return;
-      investigation.status = "cancelled";
-      investigation.completedAt = now();
-      investigation.error = "Investigation cancelled";
-      for (const task of investigation.expertTasks) {
-        if (task.status !== "running" && task.status !== "pending") continue;
-        task.status = "cancelled";
-        task.completedAt = now();
+  private async markAgenticCancelled(
+    investigationId: string,
+    running: RunningAgenticInvestigation,
+  ): Promise<void> {
+    let investigation = running.investigation;
+    if (!investigation) {
+      try {
+        investigation = await this.repository.get(investigationId);
+        running.investigation = investigation;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+        throw error;
       }
-      await this.saveInvestigation(investigation);
-      const bus = await this.busFor(investigationId);
-      await bus.publish("investigation.cancelled", "Investigation cancelled.", {
-        source: "user",
-      });
-    } finally {
-      this.cleanupAgentic(investigationId);
     }
+    if (investigation.status !== "running") return;
+
+    const cancelledAt = now();
+    const cancellationMessage = "Investigation cancelled";
+    investigation.status = "cancelled";
+    investigation.completedAt = cancelledAt;
+    investigation.error = cancellationMessage;
+
+    const cancelledCalls: ToolCallRecord[] = [];
+    for (const call of investigation.toolCalls) {
+      if (call.status !== "running") continue;
+      call.status = "cancelled";
+      call.completedAt = cancelledAt;
+      call.error = cancellationMessage;
+      if (call.runtime) call.runtime.after = runtimeResourceSnapshot();
+      cancelledCalls.push(call);
+    }
+
+    const cancelledTasks: ExpertTask[] = [];
+    for (const task of investigation.expertTasks) {
+      if (task.status !== "running" && task.status !== "pending") continue;
+      task.status = "cancelled";
+      task.completedAt = cancelledAt;
+      cancelledTasks.push(task);
+    }
+
+    await this.saveInvestigation(investigation);
+    for (const call of cancelledCalls) {
+      await this.repository.appendToolCall(investigationId, call);
+    }
+
+    const bus = await this.busFor(investigationId);
+    for (const call of cancelledCalls) {
+      await bus.publish("tool.completed", `${call.tool} cancelled: ${cancellationMessage}.`, {
+        toolCall: call,
+      });
+    }
+    for (const task of cancelledTasks) {
+      await bus.publish("expert.completed", `${task.expert} cancelled: ${cancellationMessage}.`, {
+        expertTask: task,
+      });
+    }
+    await bus.publish("investigation.cancelled", "Investigation cancelled.", {
+      source: "user",
+    });
   }
 
   private cleanupAgentic(investigationId: string): void {

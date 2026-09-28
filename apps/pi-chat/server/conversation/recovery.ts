@@ -51,10 +51,17 @@ function reconcileAgentTools(
     const call = investigation.toolCalls.find((entry) => entry.id === callId);
     if (!call) return [];
     const existing = existingByCallId.get(callId);
+    const observation = investigation.observations?.find(
+      (entry) => entry.toolCallId === call.id,
+    );
+    const observationFacts = detailsRecord(observation?.facts);
     const details = {
       ...detailsRecord(existing?.details),
       ...(call.expertTaskId ? { expertTaskId: call.expertTaskId } : {}),
       ...(call.rawRef ? { rawRef: call.rawRef } : {}),
+      ...(observationFacts.result !== undefined
+        ? { agentContextResult: observationFacts.result }
+        : {}),
       ...(wasInterruptedByRestart(investigation, call.interruptedByRestart)
         ? { interruptedByRestart: true }
         : {}),

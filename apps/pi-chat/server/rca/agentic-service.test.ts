@@ -133,6 +133,60 @@ test("start_rca_investigation does not implicitly replace a linked investigation
   assert.equal(payload.activeRcaContext?.investigationId, "INV-existing");
 });
 
+
+test("cancelling an active RCA terminalizes expert tasks and tools before cleanup", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-chat-agentic-cancel-"));
+  try {
+    const repository = new InvestigationRepository(directory);
+    const service = new RcaService(repository);
+    const current = investigation("INV-agentic-cancel");
+    current.expertTasks.push({
+      id: "T01",
+      expert: "trace",
+      objective: "locate unexplained latency",
+      status: "running",
+      hypothesisIds: [],
+      toolCallIds: ["C02"],
+      evidenceIds: [],
+      implementation: "pi-session",
+      createdAt: "2026-01-01T00:10:00.000Z",
+    });
+    current.toolCalls.push({
+      id: "C02",
+      expertTaskId: "T01",
+      tool: "query_traces",
+      query: { caseId: "t999", service: "checkout" },
+      status: "running",
+      startedAt: "2026-01-01T00:10:00.000Z",
+    });
+    await repository.save(current);
+
+    const eventTypes: string[] = [];
+    await service.resumeAgentic(current.id, {
+      conversationId: "conversation-cancel",
+      onEvent: (event) => {
+        eventTypes.push(event.type);
+      },
+    });
+
+    assert.equal(await service.cancelConversation("conversation-cancel"), 1);
+
+    const cancelled = await repository.get(current.id);
+    assert.equal(cancelled.status, "cancelled");
+    assert.equal(cancelled.expertTasks[0]?.status, "cancelled");
+    assert.equal(cancelled.toolCalls[0]?.status, "cancelled");
+    assert.match(cancelled.toolCalls[0]?.error ?? "", /cancelled/i);
+    assert.deepEqual(eventTypes, [
+      "tool.completed",
+      "expert.completed",
+      "investigation.cancelled",
+    ]);
+    assert.equal(await service.cancelConversation("conversation-cancel"), 0);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("hypothesis mutations partially accept valid items and publish only persisted changes", async () => {
   const directory = await mkdtemp(join(tmpdir(), "pi-chat-agentic-"));
   try {

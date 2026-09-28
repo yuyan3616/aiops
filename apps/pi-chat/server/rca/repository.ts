@@ -3,8 +3,57 @@ import { join, relative, resolve } from "node:path";
 
 import type { Investigation, InvestigationEvent, RCAResult, ToolCallRecord } from "./types";
 
+const terminalInvestigationStatuses = new Set<Investigation["status"]>([
+  "completed",
+  "inconclusive",
+  "failed",
+  "cancelled",
+]);
+const terminalExpertTaskStatuses = new Set<Investigation["expertTasks"][number]["status"]>([
+  "completed",
+  "failed",
+  "cancelled",
+]);
+const terminalToolCallStatuses = new Set<ToolCallRecord["status"]>([
+  "completed",
+  "failed",
+  "cancelled",
+]);
+
+function replaceObject<T extends object>(target: T, source: T): void {
+  for (const key of Object.keys(target) as Array<keyof T>) {
+    delete target[key];
+  }
+  Object.assign(target, structuredClone(source));
+}
+
+function preserveTerminalState(current: Investigation, incoming: Investigation): void {
+  if (
+    terminalInvestigationStatuses.has(current.status) &&
+    current.status !== incoming.status
+  ) {
+    replaceObject(incoming, current);
+    return;
+  }
+
+  for (const currentTask of current.expertTasks) {
+    if (!terminalExpertTaskStatuses.has(currentTask.status)) continue;
+    const incomingTask = incoming.expertTasks.find((task) => task.id === currentTask.id);
+    if (!incomingTask || incomingTask.status === currentTask.status) continue;
+    replaceObject(incomingTask, currentTask);
+  }
+
+  for (const currentCall of current.toolCalls) {
+    if (!terminalToolCallStatuses.has(currentCall.status)) continue;
+    const incomingCall = incoming.toolCalls.find((call) => call.id === currentCall.id);
+    if (!incomingCall || incomingCall.status === currentCall.status) continue;
+    replaceObject(incomingCall, currentCall);
+  }
+}
+
 export class InvestigationRepository {
   readonly investigationsDir: string;
+  private readonly saveQueues = new Map<string, Promise<void>>();
 
   constructor(investigationsDir: string) {
     this.investigationsDir = resolve(investigationsDir);
@@ -23,13 +72,30 @@ export class InvestigationRepository {
   }
 
   async save(investigation: Investigation): Promise<void> {
-    const directory = this.directory(investigation.id);
-    await mkdir(directory, { recursive: true });
-    await writeFile(
-      join(directory, "investigation.json"),
-      JSON.stringify(investigation, null, 2),
-      "utf8",
-    );
+    const previous = this.saveQueues.get(investigation.id) ?? Promise.resolve();
+    const next = previous.catch(() => undefined).then(async () => {
+      try {
+        const current = await this.get(investigation.id);
+        preserveTerminalState(current, investigation);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+
+      const directory = this.directory(investigation.id);
+      await mkdir(directory, { recursive: true });
+      await writeFile(
+        join(directory, "investigation.json"),
+        JSON.stringify(investigation, null, 2),
+        "utf8",
+      );
+    });
+    const tracked = next.finally(() => {
+      if (this.saveQueues.get(investigation.id) === tracked) {
+        this.saveQueues.delete(investigation.id);
+      }
+    });
+    this.saveQueues.set(investigation.id, tracked);
+    return tracked;
   }
 
   async get(investigationId: string): Promise<Investigation> {

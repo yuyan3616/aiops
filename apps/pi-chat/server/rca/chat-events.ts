@@ -124,6 +124,7 @@ export class RcaChatEventMapper {
       case "tool.completed": {
         const call = event.payload.toolCall as ToolCallRecord | undefined;
         if (!call) return [];
+        const agentContextResult = event.payload.agentContextResult;
         const status =
           call.status === "completed"
             ? "success"
@@ -146,6 +147,7 @@ export class RcaChatEventMapper {
                 details: {
                   expertTaskId: call.expertTaskId,
                   rawRef: call.rawRef,
+                  ...(agentContextResult !== undefined ? { agentContextResult } : {}),
                 },
               },
             },
@@ -159,7 +161,10 @@ export class RcaChatEventMapper {
             args: call.query,
             status,
             result: call.resultSummary ?? call.error ?? event.summary,
-            details: { rawRef: call.rawRef },
+            details: {
+              rawRef: call.rawRef,
+              ...(agentContextResult !== undefined ? { agentContextResult } : {}),
+            },
           },
         }];
       }

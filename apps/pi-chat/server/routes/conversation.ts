@@ -60,7 +60,7 @@ export function createConversationRoutes(
 
   conversationApp.post("/:conversationId/abort", async (ctx) => {
     const { conversationId } = ctx.req.param();
-    const cancelledInvestigations = rcaService.cancelConversation(conversationId);
+    const cancelledInvestigations = await rcaService.cancelConversation(conversationId);
     if (cancelledInvestigations > 0) {
       conversationService.getEventChannel(conversationId).publish("runtime.status", {
         status: "stopping",
