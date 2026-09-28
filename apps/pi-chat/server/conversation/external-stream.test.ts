@@ -152,6 +152,19 @@ test("persists RCA thinking, tools, and messages in chronological order", () => 
   ({ items, sequence } = applyExternalStreamEvent(
     items,
     sequence,
+    "report.ready",
+    {
+      investigationId: "INV-test",
+      filename: "RCA-INV-test.md",
+      status: "confirmed",
+      summary: "shipping timeout is the root cause",
+      confidence: 0.92,
+    },
+    1005,
+  ));
+  ({ items, sequence } = applyExternalStreamEvent(
+    items,
+    sequence,
     "message.completed",
     {
       message: {
@@ -167,7 +180,7 @@ test("persists RCA thinking, tools, and messages in chronological order", () => 
 
   assert.deepEqual(
     items.map((item) => item.kind),
-    ["message", "thinking", "tool", "agent", "message"],
+    ["message", "thinking", "tool", "agent", "report", "message"],
   );
   const thinking = items.find((item) => item.kind === "thinking");
   assert.equal(thinking?.kind === "thinking" ? thinking.thinking.text : "", "先检查 trace");
@@ -200,6 +213,12 @@ test("persists RCA thinking, tools, and messages in chronological order", () => 
     );
   }
 
+  const report = items.find((item) => item.kind === "report");
+  assert.equal(
+    report?.kind === "report" ? report.report.filename : "",
+    "RCA-INV-test.md",
+  );
+
   const merged = mergeMessageLists(
     [
       {
@@ -219,6 +238,6 @@ test("persists RCA thinking, tools, and messages in chronological order", () => 
   );
   assert.deepEqual(
     merged.map((item) => item.id),
-    ["native-before", "u1", "think-1", "tool-1", "agent-1", "a1", "native-after"],
+    ["native-before", "u1", "think-1", "tool-1", "agent-1", "INV-test:report", "a1", "native-after"],
   );
 });
