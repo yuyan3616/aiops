@@ -20,7 +20,6 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
 import {
-  createConversation,
   deleteConversation,
   deleteConversations,
   getBootstrap,
@@ -126,9 +125,10 @@ export default function App() {
     send(text, conversationId ? undefined : draftConfig, selectedSkills);
   };
 
-  const startNew = async () => {
-    const created = await createConversation();
-    navigate("/conversation/" + created.conversation.id);
+  const startNew = () => {
+    navigate("/");
+    setSidebarOpen(false);
+    setSelectedSkills([]);
   };
 
   const isEmpty = !conversationId || (!historyLoading && messageItems.length === 0);
