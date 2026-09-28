@@ -202,7 +202,7 @@ export function createRcaMainAgentTools(options: RcaMainAgentToolsOptions): Tool
     name: "query_rca_overview",
     label: "查询 RCA 概览",
     description:
-      "在活动 RCA 调查中执行一次有边界的 overview/统计检查。只选择能减少当前关键不确定性的 overview；raw log 阅读交给专家子 Agent。",
+      "在活动 RCA 调查中执行一次有边界的 overview/统计检查。overview 用于发现候选和减少不确定性，Top anomaly 只是线索而不是 root cause 排名。只选择能减少当前关键不确定性的 overview；raw log 阅读交给专家子 Agent。",
     parameters: Type.Object({
       investigationId: Type.String(),
       kind: Type.Union([
@@ -393,7 +393,7 @@ export function createRcaMainAgentTools(options: RcaMainAgentToolsOptions): Tool
     name: "conclude_investigation",
     label: "收敛 RCA 调查",
     description:
-      "持久化 Main Agent 最终、基于 evidence 的 RCA 结论。每个 hypothesis 必须且只能归入 selected、rejected 或 unresolved 一类。收敛前先更新 hypothesis status；unresolved 项必须给出明确 reason。",
+      "持久化 Main Agent 最终、基于 evidence 的 RCA 结论。每个 hypothesis 必须且只能归入 selected、rejected 或 unresolved 一类。收敛前先更新 hypothesis status，并提交 causalAssessment：明确时间契合度、传播证据和未解决矛盾。probable 不接受 temporalFit=uncertain；confirmed 还要求 propagationFit=supported 且没有未解决矛盾。",
     parameters: Type.Object({
       investigationId: Type.String(),
       status: Type.Union([
@@ -417,6 +417,19 @@ export function createRcaMainAgentTools(options: RcaMainAgentToolsOptions): Tool
       ),
       confidence: Type.Number({ minimum: 0, maximum: 1 }),
       missingEvidence: Type.Optional(Type.Array(Type.String(), { maxItems: 20 })),
+      causalAssessment: Type.Object({
+        temporalFit: Type.Union([
+          Type.Literal("aligned"),
+          Type.Literal("pre_existing_explained"),
+          Type.Literal("uncertain"),
+        ]),
+        propagationFit: Type.Union([
+          Type.Literal("supported"),
+          Type.Literal("uncertain"),
+          Type.Literal("not_available"),
+        ]),
+        unresolvedContradictions: Type.Array(Type.String({ minLength: 1 }), { maxItems: 20 }),
+      }),
     }),
     execute: async (_toolCallId, parameters) => {
       const { investigationId, ...input } = parameters;
@@ -435,6 +448,11 @@ export function createRcaMainAgentTools(options: RcaMainAgentToolsOptions): Tool
         })),
         confidence: input.confidence,
         ...(input.missingEvidence ? { missingEvidence: [...input.missingEvidence] } : {}),
+        causalAssessment: {
+          temporalFit: input.causalAssessment.temporalFit,
+          propagationFit: input.causalAssessment.propagationFit,
+          unresolvedContradictions: [...input.causalAssessment.unresolvedContradictions],
+        },
       };
       return serializeMutation(async () => {
         const concluded = await rcaService.concludeAgentic(investigationId, result);
