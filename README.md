@@ -40,4 +40,4 @@ The repository includes a single-service Railway deployment for the Pi Chat RCA 
 - RCA runs through the same Pi Main Agent used by the chat session. The Main Agent owns hypotheses and dispatches Pi specialist sessions for Trace, Metrics, Log, and Event/Topology checks.
 - Configure the model provider credentials used by Pi Chat (for the Railway demo this is the Packy-compatible provider); there is no separate RCA planner flag or deterministic fallback runtime.
 
-The deployment source should use branch `feat/pi-chat-rca` and the repository root, where `Dockerfile` and `railway.json` are located.
+The deployment source should use branch `main` and the repository root, where `Dockerfile` and `railway.json` are located.
