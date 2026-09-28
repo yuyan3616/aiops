@@ -124,7 +124,13 @@ export interface AgenticConclusionInput
     reason: string;
     missingEvidence?: string[];
   }>;
-  causalAssessment: CausalAssessment;
+  causalAssessment: CausalAssessment & {
+    temporalEvidenceIds: string[];
+    transitionEvidenceIds: string[];
+    propagationEvidenceIds: string[];
+    materialUnobservedGap: boolean;
+    gapBridgeEvidenceIds: string[];
+  };
 }
 
 export interface DispatchedFinding {
@@ -435,6 +441,107 @@ export class RcaService {
         ...(recorded.execution.rawRef ? { rawRef: recorded.execution.rawRef } : {}),
         result: compactToolResultForAgent(tool, recorded.execution.result),
       };
+    } finally {
+      releaseOperation();
+    }
+  }
+
+  async queryCandidateCoverage(
+    investigationId: string,
+    candidates: string[],
+    topNPerCandidate = 6,
+  ): Promise<{
+    candidates: Array<{
+      candidate: string;
+      evidenceId: string;
+      toolCallId: string;
+      summary: string;
+      rawRef?: string;
+      result: unknown;
+    }>;
+  }> {
+    const investigation = await this.liveInvestigation(investigationId);
+    this.assertRunning(investigation);
+    const normalized = [...new Set(candidates.map((item) => item.trim()).filter(Boolean))].slice(0, 8);
+    if (normalized.length < 2) {
+      throw new Error("Candidate coverage requires at least two distinct candidates");
+    }
+
+    const bus = await this.busFor(investigationId);
+    const signal = this.agenticRunning.get(investigationId)?.controller.signal;
+    const releaseOperation = this.trackAgenticOperation(investigationId);
+    const topN = Math.max(1, Math.min(Math.floor(topNPerCandidate), 10));
+    const results: Array<{
+      candidate: string;
+      evidenceId: string;
+      toolCallId: string;
+      summary: string;
+      rawRef?: string;
+      result: unknown;
+    }> = [];
+
+    try {
+      for (const candidate of normalized) {
+        checkCancelled(signal);
+        const coverageQuery = {
+          caseId: investigation.caseId,
+          from: investigation.alertContext.window.from,
+          to: investigation.alertContext.window.to,
+          service: candidate,
+          topN,
+        };
+        const recorded = await this.invokeRecordedTool(
+          investigation,
+          bus,
+          "query_metrics",
+          coverageQuery,
+          undefined,
+          signal,
+        );
+        checkCancelled(signal);
+
+        const summary = observationSummary("query_metrics", {
+          tool: "query_metrics",
+          arguments: coverageQuery,
+          ...recorded.execution,
+        });
+        const evidence: Evidence = {
+          id: this.nextEvidenceId(investigation),
+          caseId: investigation.caseId,
+          modality: "metric",
+          entity: candidate,
+          timeRange: investigation.alertContext.window,
+          summary: `candidate coverage for ${candidate}: ${summary}`,
+          rawRef:
+            recorded.execution.rawRef ??
+            `investigation://${investigation.id}/tool/${recorded.callId}`,
+          supports: [],
+          contradicts: [],
+          sourceQuery: {
+            ...coverageQuery,
+            purpose: "candidate-coverage",
+          },
+          toolCallId: recorded.callId,
+          facts: { source: "main-agent-candidate-coverage" },
+          createdAt: now(),
+        };
+        investigation.evidence.push(evidence);
+        if (!investigation.scope.candidateEntities.includes(candidate)) {
+          investigation.scope.candidateEntities.push(candidate);
+        }
+        await this.saveInvestigation(investigation);
+        await bus.publish("evidence.created", evidence.summary, { evidence });
+
+        results.push({
+          candidate,
+          evidenceId: evidence.id,
+          toolCallId: recorded.callId,
+          summary,
+          ...(recorded.execution.rawRef ? { rawRef: recorded.execution.rawRef } : {}),
+          result: compactToolResultForAgent("query_metrics", recorded.execution.result),
+        });
+      }
+      return { candidates: results };
     } finally {
       releaseOperation();
     }
@@ -903,6 +1010,26 @@ export class RcaService {
         throw new Error(`Conclusion references unknown evidence ${evidenceId}`);
       }
     }
+
+    const conclusionEvidenceIds = new Set(result.evidenceIds);
+    const causalEvidenceGroups = [
+      ["temporalEvidenceIds", result.causalAssessment.temporalEvidenceIds],
+      ["transitionEvidenceIds", result.causalAssessment.transitionEvidenceIds],
+      ["propagationEvidenceIds", result.causalAssessment.propagationEvidenceIds],
+      ["gapBridgeEvidenceIds", result.causalAssessment.gapBridgeEvidenceIds],
+    ] as const;
+    for (const [field, ids] of causalEvidenceGroups) {
+      for (const evidenceId of ids) {
+        if (!evidenceIds.has(evidenceId)) {
+          throw new Error(`causalAssessment.${field} references unknown evidence ${evidenceId}`);
+        }
+        if (!conclusionEvidenceIds.has(evidenceId)) {
+          throw new Error(
+            `causalAssessment.${field} evidence ${evidenceId} must also appear in evidenceIds`,
+          );
+        }
+      }
+    }
     for (const hypothesisId of result.rejectedHypotheses) {
       if (!hypothesisIds.has(hypothesisId)) {
         throw new Error(`Conclusion references unknown hypothesis ${hypothesisId}`);
@@ -1001,6 +1128,40 @@ export class RcaService {
     const contradictions = result.causalAssessment.unresolvedContradictions
       .map((item) => item.trim())
       .filter(Boolean);
+    const temporalEvidence = [...new Set(result.causalAssessment.temporalEvidenceIds)];
+    const transitionEvidence = [...new Set(result.causalAssessment.transitionEvidenceIds)];
+    const propagationEvidence = [...new Set(result.causalAssessment.propagationEvidenceIds)];
+    const gapBridgeEvidence = [...new Set(result.causalAssessment.gapBridgeEvidenceIds)];
+
+    if (
+      result.causalAssessment.temporalFit !== "uncertain" &&
+      temporalEvidence.length === 0
+    ) {
+      throw new Error("A non-uncertain temporal fit must cite temporal evidence");
+    }
+    if (
+      result.causalAssessment.temporalFit === "pre_existing_explained" &&
+      transitionEvidence.length === 0
+    ) {
+      throw new Error(
+        "pre_existing_explained requires independent transition/trigger evidence",
+      );
+    }
+    if (
+      result.causalAssessment.propagationFit === "supported" &&
+      propagationEvidence.length === 0
+    ) {
+      throw new Error("Supported propagation must cite propagation evidence");
+    }
+    if (
+      result.causalAssessment.materialUnobservedGap &&
+      result.causalAssessment.propagationFit === "supported" &&
+      gapBridgeEvidence.length === 0
+    ) {
+      throw new Error(
+        "Supported propagation across a material unobserved gap requires gap-bridge evidence",
+      );
+    }
     if (result.status === "probable" && result.causalAssessment.temporalFit === "uncertain") {
       throw new Error("A probable conclusion requires a non-uncertain temporal fit");
     }
@@ -1026,6 +1187,10 @@ export class RcaService {
       causalAssessment: {
         ...result.causalAssessment,
         unresolvedContradictions: [...new Set(contradictions)],
+        temporalEvidenceIds: temporalEvidence,
+        transitionEvidenceIds: transitionEvidence,
+        propagationEvidenceIds: propagationEvidence,
+        gapBridgeEvidenceIds: gapBridgeEvidence,
       },
     };
     investigation.status =
@@ -1406,7 +1571,12 @@ export class RcaService {
             "",
             "## Causal Assessment",
             `- Temporal fit: ${result.causalAssessment.temporalFit}`,
+            `- Temporal evidence: ${result.causalAssessment.temporalEvidenceIds?.join(", ") || "none"}`,
+            `- Transition evidence: ${result.causalAssessment.transitionEvidenceIds?.join(", ") || "none"}`,
             `- Propagation fit: ${result.causalAssessment.propagationFit}`,
+            `- Propagation evidence: ${result.causalAssessment.propagationEvidenceIds?.join(", ") || "none"}`,
+            `- Material unobserved gap: ${result.causalAssessment.materialUnobservedGap ?? false}`,
+            `- Gap-bridge evidence: ${result.causalAssessment.gapBridgeEvidenceIds?.join(", ") || "none"}`,
             `- Unresolved contradictions: ${
               result.causalAssessment.unresolvedContradictions.length
                 ? result.causalAssessment.unresolvedContradictions.join("; ")

@@ -207,6 +207,14 @@ export interface CausalAssessment {
   temporalFit: "aligned" | "pre_existing_explained" | "uncertain";
   propagationFit: "supported" | "uncertain" | "not_available";
   unresolvedContradictions: string[];
+
+  // Optional on persisted results so investigations created by older builds remain readable.
+  // New conclusions must provide these fields through AgenticConclusionInput.
+  temporalEvidenceIds?: string[];
+  transitionEvidenceIds?: string[];
+  propagationEvidenceIds?: string[];
+  materialUnobservedGap?: boolean;
+  gapBridgeEvidenceIds?: string[];
 }
 
 export interface RCAResult {

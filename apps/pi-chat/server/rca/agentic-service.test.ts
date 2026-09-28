@@ -82,12 +82,75 @@ test("Main Agent RCA tools expose explicit investigation controls instead of a b
     "start_rca_investigation",
     "resume_rca_investigation",
     "query_rca_overview",
+    "screen_rca_candidates",
     "update_hypotheses",
     "dispatch_investigations",
     "get_investigation_state",
     "conclude_investigation",
   ]);
   assert.equal(names.includes("investigate_rca_case"), false);
+});
+
+test("screen_rca_candidates delegates a bounded candidate set to the RCA service", async () => {
+  let received:
+    | { investigationId: string; candidates: string[]; topNPerCandidate: number }
+    | undefined;
+  const fakeService = {
+    async queryCandidateCoverage(
+      investigationId: string,
+      candidates: string[],
+      topNPerCandidate: number,
+    ) {
+      received = { investigationId, candidates, topNPerCandidate };
+      return {
+        candidates: candidates.map((candidate, index) => ({
+          candidate,
+          evidenceId: `E0${index + 1}`,
+          toolCallId: `C0${index + 1}`,
+          summary: `${candidate} screened`,
+          result: {},
+        })),
+      };
+    },
+  } as unknown as RcaService;
+
+  const definitions = createRcaMainAgentTools({
+    rcaService: fakeService,
+    conversationId: "conversation-candidate-coverage",
+    getModelRef: () => ({ provider: "packy", id: "deepseek-flash" }),
+    onProjection: () => {},
+    onLinkInvestigation: () => {},
+  });
+  const tool = definitions.find((item) => item.name === "screen_rca_candidates");
+  assert.ok(tool);
+
+  const execute = tool.execute as unknown as (
+    toolCallId: string,
+    parameters: {
+      investigationId: string;
+      candidates: string[];
+      topNPerCandidate?: number;
+    },
+  ) => Promise<{ content: Array<{ type: string; text: string }> }>;
+
+  const response = await execute("call-screen", {
+    investigationId: "INV-screen",
+    candidates: ["checkout", "shipping", "email"],
+    topNPerCandidate: 4,
+  });
+  const payload = JSON.parse(response.content[0]?.text ?? "{}") as {
+    candidates?: Array<{ candidate?: string }>;
+  };
+
+  assert.deepEqual(received, {
+    investigationId: "INV-screen",
+    candidates: ["checkout", "shipping", "email"],
+    topNPerCandidate: 4,
+  });
+  assert.deepEqual(
+    payload.candidates?.map((item) => item.candidate),
+    ["checkout", "shipping", "email"],
+  );
 });
 
 test("start_rca_investigation does not implicitly replace a linked investigation", async () => {
@@ -275,7 +338,12 @@ test("agentic conclusion requires real evidence and complete hypothesis accounti
         confidence: 0.9,
         causalAssessment: {
           temporalFit: "aligned",
+          temporalEvidenceIds: ["E01"],
+          transitionEvidenceIds: [],
           propagationFit: "supported",
+          propagationEvidenceIds: ["E01"],
+          materialUnobservedGap: false,
+          gapBridgeEvidenceIds: [],
           unresolvedContradictions: [],
         },
       }),
@@ -294,7 +362,12 @@ test("agentic conclusion requires real evidence and complete hypothesis accounti
       missingEvidence: ["independent log or metric confirmation"],
       causalAssessment: {
         temporalFit: "aligned",
+        temporalEvidenceIds: ["E01"],
+        transitionEvidenceIds: [],
         propagationFit: "supported",
+        propagationEvidenceIds: ["E01"],
+        materialUnobservedGap: false,
+        gapBridgeEvidenceIds: [],
         unresolvedContradictions: [],
       },
     });
@@ -337,7 +410,12 @@ test("causal assessment blocks confident conclusions with unresolved temporal or
         confidence: 0.7,
         causalAssessment: {
           temporalFit: "uncertain",
+          temporalEvidenceIds: [],
+          transitionEvidenceIds: [],
           propagationFit: "supported",
+          propagationEvidenceIds: ["E01"],
+          materialUnobservedGap: false,
+          gapBridgeEvidenceIds: [],
           unresolvedContradictions: [],
         },
       }),
@@ -375,7 +453,12 @@ test("causal assessment blocks confident conclusions with unresolved temporal or
         confidence: 0.95,
         causalAssessment: {
           temporalFit: "aligned",
+          temporalEvidenceIds: ["E01"],
+          transitionEvidenceIds: [],
           propagationFit: "uncertain",
+          propagationEvidenceIds: [],
+          materialUnobservedGap: false,
+          gapBridgeEvidenceIds: [],
           unresolvedContradictions: [],
         },
       }),
@@ -394,11 +477,118 @@ test("causal assessment blocks confident conclusions with unresolved temporal or
         confidence: 0.95,
         causalAssessment: {
           temporalFit: "aligned",
+          temporalEvidenceIds: ["E01"],
+          transitionEvidenceIds: [],
           propagationFit: "supported",
+          propagationEvidenceIds: ["E01"],
+          materialUnobservedGap: false,
+          gapBridgeEvidenceIds: [],
           unresolvedContradictions: ["candidate was already degraded before the alert window"],
         },
       }),
       /cannot retain unresolved contradictions/,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("pre-existing explanations require transition evidence and supported propagation cannot cross an unbridged gap", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-chat-agentic-causal-evidence-"));
+  try {
+    const repository = new InvestigationRepository(directory);
+    const service = new RcaService(repository);
+    const current = investigation("INV-agentic-causal-evidence");
+    current.evidence.push({
+      ...current.evidence[0]!,
+      id: "E02",
+      modality: "metric",
+      summary: "an incident-aligned transition signal",
+      toolCallId: "C02",
+    });
+    current.hypotheses.push({
+      id: "H01",
+      statement: "a pre-existing dependency anomaly became causal during the alert window",
+      status: "supported",
+      confidence: 0.7,
+      supportingEvidenceIds: ["E01", "E02"],
+      contradictingEvidenceIds: [],
+      nextChecks: [],
+    });
+    await repository.save(current);
+
+    await assert.rejects(
+      service.concludeAgentic(current.id, {
+        status: "probable",
+        rootCauseEntities: ["dependency"],
+        summary: "pre-existing anomaly without transition proof",
+        evidenceIds: ["E01", "E02"],
+        selectedHypothesisIds: ["H01"],
+        rejectedHypotheses: [],
+        unresolvedHypotheses: [],
+        confidence: 0.7,
+        causalAssessment: {
+          temporalFit: "pre_existing_explained",
+          temporalEvidenceIds: ["E01"],
+          transitionEvidenceIds: [],
+          propagationFit: "uncertain",
+          propagationEvidenceIds: [],
+          materialUnobservedGap: false,
+          gapBridgeEvidenceIds: [],
+          unresolvedContradictions: [],
+        },
+      }),
+      /requires independent transition\/trigger evidence/,
+    );
+
+    await assert.rejects(
+      service.concludeAgentic(current.id, {
+        status: "probable",
+        rootCauseEntities: ["dependency"],
+        summary: "propagation crosses an unobserved gap",
+        evidenceIds: ["E01", "E02"],
+        selectedHypothesisIds: ["H01"],
+        rejectedHypotheses: [],
+        unresolvedHypotheses: [],
+        confidence: 0.7,
+        causalAssessment: {
+          temporalFit: "pre_existing_explained",
+          temporalEvidenceIds: ["E01"],
+          transitionEvidenceIds: ["E02"],
+          propagationFit: "supported",
+          propagationEvidenceIds: ["E01"],
+          materialUnobservedGap: true,
+          gapBridgeEvidenceIds: [],
+          unresolvedContradictions: [],
+        },
+      }),
+      /requires gap-bridge evidence/,
+    );
+
+    const concluded = await service.concludeAgentic(current.id, {
+      status: "probable",
+      rootCauseEntities: ["dependency"],
+      summary: "pre-existing anomaly has an independent transition signal",
+      evidenceIds: ["E01", "E02"],
+      selectedHypothesisIds: ["H01"],
+      rejectedHypotheses: [],
+      unresolvedHypotheses: [],
+      confidence: 0.7,
+      causalAssessment: {
+        temporalFit: "pre_existing_explained",
+        temporalEvidenceIds: ["E01"],
+        transitionEvidenceIds: ["E02"],
+        propagationFit: "uncertain",
+        propagationEvidenceIds: [],
+        materialUnobservedGap: true,
+        gapBridgeEvidenceIds: [],
+        unresolvedContradictions: ["the exact transport mechanism remains unresolved"],
+      },
+    });
+    assert.equal(concluded.investigation.rootCause?.status, "probable");
+    assert.deepEqual(
+      concluded.investigation.rootCause?.causalAssessment?.transitionEvidenceIds,
+      ["E02"],
     );
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -439,7 +629,12 @@ test("inconclusive RCA accepts uncertain causal assessment", async () => {
       confidence: 0.35,
       causalAssessment: {
         temporalFit: "uncertain",
+        temporalEvidenceIds: [],
+        transitionEvidenceIds: [],
         propagationFit: "uncertain",
+        propagationEvidenceIds: [],
+        materialUnobservedGap: true,
+        gapBridgeEvidenceIds: [],
         unresolvedContradictions: ["the candidate anomaly may predate the alert window"],
       },
     });
@@ -763,7 +958,12 @@ test("interrupted investigation may still conclude from persisted evidence", asy
       missingEvidence: ["additional metric confirmation after restart"],
       causalAssessment: {
         temporalFit: "aligned",
+        temporalEvidenceIds: ["E01"],
+        transitionEvidenceIds: [],
         propagationFit: "uncertain",
+        propagationEvidenceIds: [],
+        materialUnobservedGap: false,
+        gapBridgeEvidenceIds: [],
         unresolvedContradictions: [],
       },
     });
@@ -928,7 +1128,12 @@ test("conclusion rejects any hypothesis left outside selected rejected or unreso
         confidence: 0.75,
         causalAssessment: {
           temporalFit: "aligned",
+          temporalEvidenceIds: ["E01"],
+          transitionEvidenceIds: [],
           propagationFit: "uncertain",
+          propagationEvidenceIds: [],
+          materialUnobservedGap: false,
+          gapBridgeEvidenceIds: [],
           unresolvedContradictions: [],
         },
       }),
@@ -952,7 +1157,12 @@ test("conclusion rejects any hypothesis left outside selected rejected or unreso
       confidence: 0.75,
       causalAssessment: {
         temporalFit: "aligned",
+        temporalEvidenceIds: ["E01"],
+        transitionEvidenceIds: [],
         propagationFit: "uncertain",
+        propagationEvidenceIds: [],
+        materialUnobservedGap: false,
+        gapBridgeEvidenceIds: [],
         unresolvedContradictions: [],
       },
     });

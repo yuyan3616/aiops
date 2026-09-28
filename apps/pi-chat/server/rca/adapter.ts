@@ -67,6 +67,7 @@ export interface LogQuery {
   to: string;
   service?: string;
   pod?: string;
+  mode?: "anomaly" | "all" | "custom";
   keywords?: string[];
   limit?: number;
 }
@@ -77,6 +78,44 @@ export interface EventQuery {
   entity?: string;
   level?: string;
   limit?: number;
+}
+
+export const DEFAULT_LOG_ANOMALY_KEYWORDS = [
+  "error",
+  "exception",
+  "timeout",
+  "timed out",
+  "connection refused",
+  "retry",
+  "failed",
+  "unavailable",
+  "deadline",
+  "panic",
+  "fatal",
+  "reset",
+] as const;
+
+export function resolveLogQueryFilter(
+  query: Pick<LogQuery, "mode" | "keywords">,
+): {
+  mode: "anomaly" | "all" | "custom";
+  effectiveKeywords: string[];
+} {
+  const mode =
+    query.mode ??
+    (query.keywords ? (query.keywords.length > 0 ? "custom" : "all") : "anomaly");
+  if (mode === "custom" && (!query.keywords || query.keywords.length === 0)) {
+    throw new Error("query_logs mode=custom requires at least one keyword");
+  }
+  return {
+    mode,
+    effectiveKeywords:
+      mode === "all"
+        ? []
+        : mode === "custom"
+          ? [...(query.keywords ?? [])]
+          : [...DEFAULT_LOG_ANOMALY_KEYWORDS],
+  };
 }
 
 export interface AlertQuery {
@@ -750,6 +789,10 @@ export class RCA100Adapter {
     signal?: AbortSignal,
   ): Promise<
     QueryEnvelope<{
+      filter: {
+        mode: "anomaly" | "all" | "custom";
+        effectiveKeywords: string[];
+      };
       serviceCounts: Record<string, number>;
       keywordCounts: Record<string, number>;
       samples: Array<Record<string, unknown>>;
@@ -759,20 +802,7 @@ export class RCA100Adapter {
   > {
     const range = ensureValidRange(query);
     const limit = clampLimit(query.limit, 30, 200);
-    const keywords = query.keywords ?? [
-      "error",
-      "exception",
-      "timeout",
-      "timed out",
-      "connection refused",
-      "retry",
-      "failed",
-      "unavailable",
-      "deadline",
-      "panic",
-      "fatal",
-      "reset",
-    ];
+    const { mode, effectiveKeywords: keywords } = resolveLogQueryFilter(query);
     const serviceCounts: Record<string, number> = {};
     const keywordCounts: Record<string, number> = {};
     const samples: Array<Record<string, unknown>> = [];
@@ -845,6 +875,10 @@ export class RCA100Adapter {
       truncated: matchedRows > limit,
       rawRef,
       data: {
+        filter: {
+          mode,
+          effectiveKeywords: [...keywords],
+        },
         serviceCounts,
         keywordCounts,
         samples: jsonSafe(samples) as Array<Record<string, unknown>>,
