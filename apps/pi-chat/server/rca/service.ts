@@ -483,23 +483,28 @@ export class RcaService {
     try {
       for (const candidate of normalized) {
         checkCancelled(signal);
+        const coverageQuery = {
+          caseId: investigation.caseId,
+          from: investigation.alertContext.window.from,
+          to: investigation.alertContext.window.to,
+          service: candidate,
+          topN,
+        };
         const recorded = await this.invokeRecordedTool(
           investigation,
           bus,
           "query_metrics",
-          {
-            caseId: investigation.caseId,
-            from: investigation.alertContext.window.from,
-            to: investigation.alertContext.window.to,
-            service: candidate,
-            topN,
-          },
+          coverageQuery,
           undefined,
           signal,
         );
         checkCancelled(signal);
 
-        const summary = observationSummary("query_metrics", recorded.execution);
+        const summary = observationSummary("query_metrics", {
+          tool: "query_metrics",
+          arguments: coverageQuery,
+          ...recorded.execution,
+        });
         const evidence: Evidence = {
           id: this.nextEvidenceId(investigation),
           caseId: investigation.caseId,
@@ -513,11 +518,7 @@ export class RcaService {
           supports: [],
           contradicts: [],
           sourceQuery: {
-            caseId: investigation.caseId,
-            from: investigation.alertContext.window.from,
-            to: investigation.alertContext.window.to,
-            service: candidate,
-            topN,
+            ...coverageQuery,
             purpose: "candidate-coverage",
           },
           toolCallId: recorded.callId,
