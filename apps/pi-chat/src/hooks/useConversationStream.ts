@@ -5,7 +5,7 @@ import type {
   MessageListItem,
   StreamEvent,
 } from "@shared/types";
-import { useRef, useState, useEffect, useLayoutEffect, useReducer } from "react";
+import { useRef, useState, useEffect, useReducer } from "react";
 import { useNavigate } from "react-router-dom";
 
 import {
@@ -14,14 +14,9 @@ import {
   createConversation,
   getConversation,
   sendMessage,
-  resolveBrowserHandoff,
   updateConversationConfig,
-  openRemoteBrowser,
-  closeRemoteBrowser,
-  saveRemoteBrowser,
-  loadRemoteBrowser,
 } from "@/api";
-import { browserPanelReducer, conversationReducer, createBrowserPanelState } from "@/state";
+import { conversationReducer, createRuntimeState, runtimeReducer } from "@/state";
 
 interface PendingSend {
   conversationId: string;
@@ -52,21 +47,13 @@ export function useConversationStream(conversationId?: string) {
     conversationId?: string;
     conversation?: ConversationSummary;
   }>({});
-  const [runtime, dispatch] = useReducer(
-    browserPanelReducer,
-    conversationId,
-    createBrowserPanelState,
-  );
-  const [pendingActionIds, setPendingActionIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [runtime, dispatch] = useReducer(runtimeReducer, conversationId, createRuntimeState);
   const actionInFlight = useRef(new Set<string>());
   const resync = useRef<() => Promise<void>>(async () => {});
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
   const pendingSend = useRef<PendingSend | null>(null);
-  const openIntent = useRef<string | undefined>(undefined);
-  const routeRef = useRef(conversationId);
-  useLayoutEffect(() => {
-    routeRef.current = conversationId;
-    openIntent.current = undefined;
+
+  useEffect(() => {
     dispatch({ type: "select", conversationId });
   }, [conversationId]);
 
@@ -94,7 +81,7 @@ export function useConversationStream(conversationId?: string) {
       }
       if (event.streamId !== cursor.id || event.id <= cursor.lastEventId) return;
       cursor = { id: event.streamId, lastEventId: event.id };
-      // Replayed messages must not roll browser state back behind its latest snapshot.
+      // Replayed messages must not roll runtime state back behind its latest snapshot.
       if (event.id > runtimeEventId) dispatch({ type: "event", conversationId, event });
       if (event.type === "conversation.updated") {
         const conversation = (event.payload as { conversation?: ConversationSummary }).conversation;
@@ -117,7 +104,7 @@ export function useConversationStream(conversationId?: string) {
       syncing = true;
       buffered = [];
       dispatch({ type: "disconnect", conversationId });
-      setErrorState({ conversationId, message: "连接中断，浏览器暂为只读，正在重新同步…" });
+      setErrorState({ conversationId, message: "连接中断，正在重新同步…" });
     };
     const sync = async () => {
       if (disposed || !streamOpen) return;
@@ -270,21 +257,15 @@ export function useConversationStream(conversationId?: string) {
     runtime.conversationId === conversationId ? runtime.error ?? "" : "";
   const error = connectionError || runtimeError;
   const historyLoading = Boolean(conversationId && historyState.conversationId !== conversationId);
-  const connected = Boolean(
-    conversationId && runtime.conversationId === conversationId && runtime.connected,
-  );
-  const actionPending = Boolean(conversationId && pendingActionIds.has(conversationId));
-  const browserHandoff =
-    runtime.conversationId === conversationId ? runtime.browserHandoff : undefined;
-  async function browserAction(action: (id: string) => Promise<unknown>) {
+
+  const abort = async () => {
     if (!conversationId || actionInFlight.current.has(conversationId)) return;
     const actionConversationId = conversationId;
     const refresh = resync.current;
     actionInFlight.current.add(actionConversationId);
-    setPendingActionIds((current) => new Set(current).add(actionConversationId));
     setErrorState({ conversationId: actionConversationId, message: "" });
     try {
-      await action(actionConversationId);
+      await abortConversation(actionConversationId);
       await refresh();
     } catch (error) {
       await refresh();
@@ -294,18 +275,9 @@ export function useConversationStream(conversationId?: string) {
       });
     } finally {
       actionInFlight.current.delete(actionConversationId);
-      setPendingActionIds((current) => {
-        const next = new Set(current);
-        next.delete(actionConversationId);
-        return next;
-      });
     }
-  }
-  const abort = () => browserAction(abortConversation);
-  const resolveBrowserHandoffRequest = (action: "resume" | "cancel") =>
-    browserHandoff
-      ? browserAction((id) => resolveBrowserHandoff(id, browserHandoff.id, action))
-      : Promise.resolve();
+  };
+
   return {
     messageItems,
     historyLoading,
@@ -314,37 +286,6 @@ export function useConversationStream(conversationId?: string) {
     send: submit,
     status,
     abort,
-    browserHandoff,
-    connected,
-    actionPending,
-    resolveBrowserHandoff: resolveBrowserHandoffRequest,
-    browser: runtime.conversationId === conversationId ? runtime.browser : undefined,
-    saveBrowser: () => browserAction(saveRemoteBrowser),
-    loadBrowser: () => browserAction(loadRemoteBrowser),
-    browserOpen: runtime.conversationId === conversationId && runtime.mode !== "closed",
-    openBrowser: () => {
-      if (!conversationId) return;
-      openIntent.current = conversationId;
-      dispatch({ type: "open", conversationId });
-      void browserAction(async (id) => {
-        await openRemoteBrowser(id);
-        // A slow provisioning response must not keep an abandoned manual browser alive.
-        if (openIntent.current !== id || routeRef.current !== id) await closeRemoteBrowser(id);
-      });
-    },
-    closeBrowser: async () => {
-      openIntent.current = undefined;
-      if (conversationId) {
-        try {
-          await closeRemoteBrowser(conversationId);
-        } catch (error) {
-          setErrorState({ conversationId, message: (error as Error).message });
-          return false;
-        }
-      }
-      dispatch({ type: "close", conversationId });
-      return true;
-    },
     selectedSkills,
     setSelectedSkills,
     conversationTitle:
