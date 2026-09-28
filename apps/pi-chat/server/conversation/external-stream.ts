@@ -5,6 +5,7 @@ import type {
   ChatMessage,
   EventType,
   HypothesisView,
+  InvestigationReportArtifact,
   MessageListItem,
   ThinkingBlock,
   ToolRun,
@@ -161,6 +162,21 @@ export function applyExternalStreamEvent(
         : [...item.board.hypotheses, hypothesis];
       return { ...item, board: { ...item.board, hypotheses } };
     });
+    return { items, sequence };
+  }
+
+  if (type === "report.ready") {
+    const report = data as unknown as InvestigationReportArtifact;
+    if (!report.investigationId || !report.filename) return { items, sequence };
+    const id = `${report.investigationId}:report`;
+    const existing = items.find((item) => item.kind === "report" && item.id === id);
+    if (existing) {
+      items = updateItem(items, id, (item) =>
+        item.kind === "report" ? { ...item, report } : item,
+      );
+    } else {
+      items.push({ kind: "report", id, report, seqId: allocate() });
+    }
     return { items, sequence };
   }
 

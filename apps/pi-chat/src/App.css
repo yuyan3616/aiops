@@ -1895,8 +1895,84 @@ button {
 
 .main-agent-block .thinking,
 .messages > .tool-card,
-.messages > .agent-thread-card {
+.messages > .agent-thread-card,
+.messages > .rca-report-card {
   margin-left: 33px;
+}
+
+.rca-report-card {
+  width: calc(100% - 33px);
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  margin-top: 4px;
+  padding: 12px;
+  border: 1px solid #e2e4e7;
+  border-radius: 9px;
+  background: #fbfbfc;
+}
+
+.rca-report-icon {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  border-radius: 8px;
+  background: #f0f1f3;
+  color: #555a60;
+}
+
+.rca-report-copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.rca-report-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+}
+
+.rca-report-status {
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: #effaf5;
+  color: #07865a;
+  font-size: 10px;
+}
+
+.rca-report-summary {
+  margin: 4px 0 3px;
+  overflow: hidden;
+  color: #62676d;
+  font-size: 11.5px;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rca-report-meta {
+  color: #969a9f;
+  font-size: 10px;
+}
+
+.rca-report-download {
+  flex: 0 0 auto;
+  gap: 5px;
+  text-decoration: none;
+}
+
+@media (max-width: 640px) {
+  .rca-report-card {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .rca-report-download {
+    margin-left: 45px;
+  }
 }
 
 .agent-thread-card {

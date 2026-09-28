@@ -198,3 +198,28 @@ test("conversationReducer merges structured RCA hypothesis updates", () => {
   assert.equal(items[0].board.hypotheses[0]?.status, "rejected");
   assert.deepEqual(items[0].board.hypotheses[0]?.contradictingEvidenceIds, ["E01"]);
 });
+
+test("conversationReducer adds a downloadable RCA report artifact", () => {
+  const items = conversationReducer([], {
+    type: "event",
+    event: {
+      id: 20,
+      streamId: "s1",
+      type: "report.ready",
+      payload: {
+        investigationId: "INV-test",
+        filename: "RCA-INV-test.md",
+        status: "confirmed",
+        summary: "checkout dependency timeout",
+        confidence: 0.91,
+      },
+    },
+  });
+
+  assert.equal(items.length, 1);
+  assert.equal(items[0]?.kind, "report");
+  if (items[0]?.kind !== "report") return;
+  assert.equal(items[0].report.filename, "RCA-INV-test.md");
+  assert.equal(items[0].report.confidence, 0.91);
+});
+

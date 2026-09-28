@@ -182,3 +182,32 @@ test("settles an orphaned RCA main-agent tool after a process restart", () => {
   );
   assert.equal(stillLive[0]?.kind === "tool" ? stillLive[0].tool.status : "", "running");
 });
+
+test("restores a report card for a completed persisted investigation", () => {
+  const investigation = interruptedInvestigation();
+  investigation.status = "completed";
+  investigation.completedAt = "2026-09-28T00:05:00.000Z";
+  investigation.error = undefined;
+  investigation.rootCause = {
+    investigationId: investigation.id,
+    status: "confirmed",
+    rootCauseEntities: ["checkout"],
+    summary: "checkout is blocked on an uninstrumented dependency",
+    evidenceIds: ["E01"],
+    rejectedHypotheses: [],
+    confidence: 0.88,
+  };
+
+  const reconciled = reconcileRcaExecutionItems(
+    [],
+    new Map([[investigation.id, investigation]]),
+  );
+
+  assert.equal(reconciled.length, 1);
+  assert.equal(reconciled[0]?.kind, "report");
+  if (reconciled[0]?.kind !== "report") return;
+  assert.equal(reconciled[0].report.investigationId, "INV-test");
+  assert.equal(reconciled[0].report.filename, "RCA-INV-test.md");
+  assert.equal(reconciled[0].report.confidence, 0.88);
+});
+

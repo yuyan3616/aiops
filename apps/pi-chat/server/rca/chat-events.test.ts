@@ -102,6 +102,19 @@ test("projects RCA events as structured UI events without synthetic thinking", (
         contradictingEvidenceIds: ["E01"],
       }),
     ),
+    ...mapper.map(
+      event(7, "investigation.completed", {
+        result: {
+          investigationId: "INV-test",
+          status: "confirmed",
+          rootCauseEntities: ["shipping"],
+          summary: "shipping timeout is the root cause",
+          evidenceIds: ["E01"],
+          rejectedHypotheses: ["H01"],
+          confidence: 0.92,
+        },
+      }),
+    ),
   ];
 
   const types = projected.map((item) => item.type);
@@ -111,6 +124,7 @@ test("projects RCA events as structured UI events without synthetic thinking", (
   assert.ok(types.includes("agent.tool.started"));
   assert.ok(types.includes("agent.tool.completed"));
   assert.ok(types.includes("agent.evidence.added"));
+  assert.ok(types.includes("report.ready"));
 
   const hypothesis = projected.find((item) => item.type === "hypothesis.updated");
   assert.equal(
@@ -133,4 +147,9 @@ test("projects RCA events as structured UI events without synthetic thinking", (
     (evidenceEvent?.payload.evidence as { id?: string } | undefined)?.id,
     "E01",
   );
+
+  const reportEvent = projected.find((item) => item.type === "report.ready");
+  assert.equal(reportEvent?.payload.investigationId, "INV-test");
+  assert.equal(reportEvent?.payload.filename, "RCA-INV-test.md");
+  assert.equal(reportEvent?.payload.confidence, 0.92);
 });

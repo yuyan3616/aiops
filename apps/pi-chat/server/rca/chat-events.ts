@@ -1,6 +1,6 @@
 import type { EventType } from "@shared/types";
 
-import type { ExpertKind, ExpertTask, InvestigationEvent, ToolCallRecord } from "./types";
+import type { ExpertKind, ExpertTask, InvestigationEvent, RCAResult, ToolCallRecord } from "./types";
 
 export interface ChatStreamProjection {
   type: EventType;
@@ -212,12 +212,25 @@ export class RcaChatEventMapper {
           },
         }];
       }
+      case "investigation.completed": {
+        const result = event.payload.result as RCAResult | undefined;
+        if (!result) return [];
+        return [{
+          type: "report.ready",
+          payload: {
+            investigationId: this.investigationId,
+            filename: `RCA-${this.investigationId}.md`,
+            status: result.status,
+            summary: result.summary,
+            confidence: result.confidence,
+          },
+        }];
+      }
       case "investigation.started":
       case "investigation.interrupted":
       case "investigation.resumed":
       case "observation.created":
       case "round.completed":
-      case "investigation.completed":
       case "investigation.failed":
       case "investigation.cancelled":
         return [];

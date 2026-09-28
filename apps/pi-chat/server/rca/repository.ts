@@ -132,11 +132,33 @@ export class InvestigationRepository {
   async saveReport(investigationId: string, result: RCAResult, report: string): Promise<void> {
     const directory = this.directory(investigationId);
     await mkdir(directory, { recursive: true });
-    await writeFile(
-      join(directory, "final-report.json"),
-      JSON.stringify({ result, report }, null, 2),
-      "utf8",
-    );
+    const markdown = report.endsWith("\n") ? report : `${report}\n`;
+    await Promise.all([
+      writeFile(
+        join(directory, "final-report.json"),
+        JSON.stringify({ result, report }, null, 2),
+        "utf8",
+      ),
+      writeFile(join(directory, "final-report.md"), markdown, "utf8"),
+    ]);
+  }
+
+  async getReport(investigationId: string): Promise<string> {
+    const directory = this.directory(investigationId);
+    try {
+      return await readFile(join(directory, "final-report.md"), "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+
+    // Backward compatibility for investigations completed before Markdown
+    // artifacts were introduced.
+    const raw = await readFile(join(directory, "final-report.json"), "utf8");
+    const persisted = JSON.parse(raw) as { report?: unknown };
+    if (typeof persisted.report !== "string" || !persisted.report.trim()) {
+      throw new Error(`Investigation ${investigationId} has no downloadable report`);
+    }
+    return persisted.report.endsWith("\n") ? persisted.report : `${persisted.report}\n`;
   }
 
   async saveEvaluation(investigationId: string, evaluation: unknown): Promise<void> {

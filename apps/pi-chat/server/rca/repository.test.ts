@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
 import { InvestigationRepository } from "./repository";
-import type { Investigation } from "./types";
+import type { Investigation, RCAResult } from "./types";
 
 test("restart recovery closes running RCA work and is idempotent", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "pi-chat-rca-recovery-"));
@@ -181,3 +181,36 @@ test("terminal RCA state cannot be regressed by a stale whole-document save", as
   assert.equal(persisted.toolCalls[0]?.status, "cancelled");
   assert.equal(persisted.toolCalls[0]?.resultSummary, undefined);
 });
+
+test("persists Markdown report artifacts and reads legacy JSON reports", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-chat-rca-report-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const repository = new InvestigationRepository(directory);
+  const result: RCAResult = {
+    investigationId: "INV-report",
+    status: "confirmed",
+    rootCauseEntities: ["checkout"],
+    summary: "checkout dependency timeout",
+    evidenceIds: ["E01", "E02"],
+    rejectedHypotheses: [],
+    confidence: 0.91,
+  };
+  const report = "# RCA Report\n\ncheckout dependency timeout";
+
+  await repository.saveReport(result.investigationId, result, report);
+
+  const markdownPath = join(repository.directory(result.investigationId), "final-report.md");
+  assert.equal(await readFile(markdownPath, "utf8"), report + "\n");
+  assert.equal(await repository.getReport(result.investigationId), report + "\n");
+
+  const legacyId = "INV-legacy-report";
+  const legacyDirectory = repository.directory(legacyId);
+  await mkdir(legacyDirectory, { recursive: true });
+  await writeFile(
+    join(legacyDirectory, "final-report.json"),
+    JSON.stringify({ result: { ...result, investigationId: legacyId }, report }),
+    "utf8",
+  );
+  assert.equal(await repository.getReport(legacyId), report + "\n");
+});
+
