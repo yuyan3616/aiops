@@ -32,6 +32,7 @@ import type {
   ConversationSummary,
   EventType,
   ModelOption,
+  PendingHumanRequest,
   RuntimeStatus,
   SkillOption,
 } from "@shared/types";
@@ -151,6 +152,14 @@ export class ConversationService {
     // with the user-facing prompt for the same provider and hurts time-to-first-token.
     await this.ensureFallbackTitle(conversationId, cleanedUserInput);
 
+    if (!session.isStreaming && managedSession.pendingHumanRequest) {
+      await this.resolvePendingHumanRequest(
+        managedSession,
+        managedSession.pendingHumanRequest,
+        cleanedUserInput,
+      );
+    }
+
     const purpose: PromptPerformancePurpose = session.isStreaming ? "steer" : "main_chat";
     this.beginPromptPerformance(managedSession, purpose, requestStartedAt);
 
@@ -223,6 +232,9 @@ export class ConversationService {
         lastEventId: channel.lastId,
       },
       diagnostics: managedSession.diagnostics,
+      ...(managedSession.pendingHumanRequest
+        ? { pendingHumanRequest: managedSession.pendingHumanRequest }
+        : {}),
     };
   }
 
@@ -518,6 +530,8 @@ export class ConversationService {
       onLinkInvestigation: (investigationId) =>
         this.linkInvestigation(conversationRecord.id, investigationId),
       getRcaContext,
+      onHumanInputRequested: (request) =>
+        this.requestHumanInput(conversationRecord.id, request),
       onConcluded: (investigation, report) => {
         const managed = this.managedSessions.get(conversationRecord.id);
         if (!managed || !investigation.rootCause) return;
@@ -549,9 +563,16 @@ export class ConversationService {
       id: conversationRecord.id,
       runtime,
       channel: this.getEventChannel(conversationRecord.id),
-      status: runtime.session.isStreaming ? "running" : "ready",
+      status: runtime.session.isStreaming
+        ? "running"
+        : conversationRecord.pendingHumanRequest
+          ? "waiting_for_human"
+          : "ready",
       diagnostics: runtime.diagnostics.map((item) => item.message),
       activeSkillNames: [...selectedSkills],
+      ...(conversationRecord.pendingHumanRequest
+        ? { pendingHumanRequest: conversationRecord.pendingHumanRequest }
+        : {}),
     };
     this.managedSessions.set(managedSession.id, managedSession);
     this.bind(managedSession);
@@ -660,9 +681,14 @@ export class ConversationService {
           managedSession.streamMessageId = undefined;
           managedSession.streamThinkingId = undefined;
           this.finishPromptPerformance(managedSession.id, "agent_settled");
-          this.setStatus(managedSession, "ready");
+          this.setStatus(
+            managedSession,
+            managedSession.pendingHumanRequest ? "waiting_for_human" : "ready",
+          );
           managedSession.channel.publish("runtime.settled", {});
-          this.flushPendingTitleRefinement(managedSession);
+          if (!managedSession.pendingHumanRequest) {
+            this.flushPendingTitleRefinement(managedSession);
+          }
           break;
         default:
           break;
@@ -743,6 +769,66 @@ export class ConversationService {
         record,
         this.managedSessions.get(record.id)?.status ?? "cold",
       ),
+    });
+  }
+
+  private async requestHumanInput(
+    conversationId: string,
+    input: Omit<PendingHumanRequest, "id" | "createdAt">,
+  ): Promise<PendingHumanRequest> {
+    const existing = await this.conversationRepository.get(conversationId);
+    if (!existing) throw new Error(`Conversation with ID ${conversationId} not found`);
+    if (existing.pendingHumanRequest) {
+      throw new Error("Conversation is already waiting for human input");
+    }
+
+    const request: PendingHumanRequest = {
+      id: `HREQ-${randomUUID()}`,
+      question: input.question.trim().slice(0, 600),
+      reason: input.reason,
+      inputType: input.inputType,
+      ...(input.options?.length ? { options: input.options.slice(0, 8) } : {}),
+      ...(input.allowFreeText !== undefined ? { allowFreeText: input.allowFreeText } : {}),
+      ...(input.investigationId ? { investigationId: input.investigationId } : {}),
+      createdAt: new Date().toISOString(),
+    };
+
+    await this.enqueueRecordWrite(conversationId, async () => {
+      await this.conversationRepository.update(conversationId, {
+        pendingHumanRequest: request,
+      });
+    });
+
+    const managed = this.managedSessions.get(conversationId);
+    if (managed) managed.pendingHumanRequest = request;
+    if (request.investigationId) {
+      await this.rcaService.waitForHuman(request.investigationId, request.id);
+    }
+    this.getEventChannel(conversationId).publish("human.input.requested", { request });
+    return request;
+  }
+
+  private async resolvePendingHumanRequest(
+    managedSession: ManagedSession,
+    request: PendingHumanRequest,
+    answer: string,
+  ): Promise<void> {
+    if (request.investigationId) {
+      await this.rcaService.recordHumanResponse(request.investigationId, {
+        requestId: request.id,
+        question: request.question,
+        answer,
+      });
+    }
+    await this.enqueueRecordWrite(managedSession.id, async () => {
+      await this.conversationRepository.update(managedSession.id, {
+        pendingHumanRequest: undefined,
+      });
+    });
+    managedSession.pendingHumanRequest = undefined;
+    managedSession.channel.publish("human.input.received", {
+      requestId: request.id,
+      answer,
     });
   }
 

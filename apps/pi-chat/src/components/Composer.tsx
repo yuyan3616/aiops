@@ -19,6 +19,7 @@ const thinkingNames: Record<ThinkingLevel, string> = {
 
 export function Composer({
   busy,
+  waitingForHuman,
   model,
   models,
   thinkingLevel,
@@ -34,6 +35,7 @@ export function Composer({
   onScrollToBottom,
 }: {
   busy: boolean;
+  waitingForHuman: boolean;
   model?: { provider: string; id: string };
   models: ModelOption[];
   thinkingLevel?: ThinkingLevel;
@@ -50,8 +52,8 @@ export function Composer({
 }) {
   const [input, setInput] = useState("");
   const hasInput = Boolean(input.trim());
-  const stopAction = busy && !hasInput;
-  const sendDisabled = !busy && !hasInput;
+  const stopAction = busy && !waitingForHuman && !hasInput;
+  const sendDisabled = waitingForHuman ? !hasInput : !busy && !hasInput;
 
   const submit = () => {
     const text = input.trim();
@@ -83,7 +85,13 @@ export function Composer({
               submit();
             }
           }}
-          placeholder={busy ? "可继续补充调查信息…" : "输入消息，按 Alt + Enter 发送…"}
+          placeholder={
+            waitingForHuman
+              ? "补充 Pi Ops 需要的信息…"
+              : busy
+                ? "可继续补充调查信息…"
+                : "输入消息，按 Alt + Enter 发送…"
+          }
           rows={1}
         />
         <div className="composer-toolbar">
@@ -113,7 +121,15 @@ export function Composer({
                     size="icon"
                     onClick={() => (stopAction ? void onAbort() : submit())}
                     disabled={sendDisabled}
-                    aria-label={stopAction ? "停止调查" : busy ? "补充当前调查" : "发送消息"}
+                    aria-label={
+                      stopAction
+                        ? "停止调查"
+                        : waitingForHuman
+                          ? "回答 Pi Ops"
+                          : busy
+                            ? "补充当前调查"
+                            : "发送消息"
+                    }
                   >
                     {stopAction ? (
                       <Square size={14} fill="currentColor" />
@@ -128,9 +144,11 @@ export function Composer({
                   ? "请输入内容后发送"
                   : stopAction
                     ? "停止调查"
-                    : busy
-                      ? "补充当前调查"
-                      : "发送消息"}
+                    : waitingForHuman
+                      ? "回答 Pi Ops"
+                      : busy
+                        ? "补充当前调查"
+                        : "发送消息"}
               </TooltipContent>
             </Tooltip>
           </TooltipProvider>
@@ -138,11 +156,13 @@ export function Composer({
       </div>
       <div className="composer-hint">
         <span>
-          {busy
-            ? hasInput
-              ? "Alt + Enter 发送补充 · Enter 换行"
-              : "输入内容可补充当前调查 · Enter 换行"
-            : "Alt + Enter 发送 · Enter 换行"}
+          {waitingForHuman
+            ? "补充所需信息后按 Alt + Enter 发送 · Enter 换行"
+            : busy
+              ? hasInput
+                ? "Alt + Enter 发送补充 · Enter 换行"
+                : "输入内容可补充当前调查 · Enter 换行"
+              : "Alt + Enter 发送 · Enter 换行"}
         </span>
       </div>
     </footer>

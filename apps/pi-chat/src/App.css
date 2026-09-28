@@ -2507,3 +2507,48 @@ button {
     margin-left: 0;
   }
 }
+
+
+.human-input-card {
+  width: min(100%, 620px);
+  margin: 8px 0 4px;
+  padding: 14px 15px;
+  border: 1px solid #dedede;
+  border-radius: 12px;
+  background: #fafafa;
+}
+
+.human-input-card-heading {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #242424;
+  font-size: 13px;
+}
+
+.human-input-card p {
+  margin: 9px 0 10px;
+  color: #333;
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.human-input-card small {
+  display: block;
+  margin-top: 9px;
+  color: #8a8a8a;
+  font-size: 11px;
+}
+
+.human-input-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.human-input-options button {
+  min-height: 32px;
+  border-color: #d5d5d5;
+  background: #fff;
+  font-size: 12px;
+}

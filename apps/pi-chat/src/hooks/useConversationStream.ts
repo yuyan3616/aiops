@@ -3,6 +3,7 @@ import type {
   ConversationConfigUpdate,
   ConversationSummary,
   MessageListItem,
+  PendingHumanRequest,
   StreamEvent,
 } from "@shared/types";
 import { useRef, useState, useEffect, useReducer } from "react";
@@ -51,6 +52,10 @@ export function useConversationStream(conversationId?: string) {
   const actionInFlight = useRef(new Set<string>());
   const resync = useRef<() => Promise<void>>(async () => {});
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
+  const [humanRequestState, setHumanRequestState] = useState<{
+    conversationId?: string;
+    request?: PendingHumanRequest;
+  }>({});
   const pendingSend = useRef<PendingSend | null>(null);
 
   useEffect(() => {
@@ -89,6 +94,12 @@ export function useConversationStream(conversationId?: string) {
           setConversationMeta({ conversationId, conversation });
         }
       }
+      if (event.type === "human.input.requested") {
+        const request = (event.payload as { request?: PendingHumanRequest }).request;
+        if (request) setHumanRequestState({ conversationId, request });
+      } else if (event.type === "human.input.received") {
+        setHumanRequestState({ conversationId });
+      }
       setMessageState((current) => ({
         conversationId,
         items: conversationReducer(current.conversationId === conversationId ? current.items : [], {
@@ -126,6 +137,7 @@ export function useConversationStream(conversationId?: string) {
           conversation: conversation.conversation,
         });
         setSelectedSkills(conversation.activeSkillNames ?? []);
+        setHumanRequestState({ conversationId, request: conversation.pendingHumanRequest });
         setErrorState({ conversationId, message: "" });
         syncing = false;
         const events = buffered;
@@ -288,6 +300,10 @@ export function useConversationStream(conversationId?: string) {
     abort,
     selectedSkills,
     setSelectedSkills,
+    pendingHumanRequest:
+      humanRequestState.conversationId === conversationId
+        ? humanRequestState.request
+        : undefined,
     conversationTitle:
       conversationMeta.conversationId === conversationId
         ? conversationMeta.conversation?.title
