@@ -79,6 +79,7 @@ test("Main Agent RCA tools expose explicit investigation controls instead of a b
   });
   const names = tools.map((tool) => tool.name);
   assert.deepEqual(names, [
+    "find_incident_candidates",
     "start_rca_investigation",
     "resume_rca_investigation",
     "query_rca_overview",
@@ -90,6 +91,51 @@ test("Main Agent RCA tools expose explicit investigation controls instead of a b
     "conclude_investigation",
   ]);
   assert.equal(names.includes("investigate_rca_case"), false);
+});
+
+test("find_incident_candidates delegates pre-investigation filters to RCA service", async () => {
+  let received: Record<string, unknown> | undefined;
+  const fakeService = {
+    async findIncidentCandidates(query: Record<string, unknown>) {
+      received = query;
+      return [{
+        caseId: "t039",
+        title: "checkout latency",
+        triggerTime: "2026-01-01T00:10:00.000Z",
+        window: {
+          from: "2026-01-01T00:00:00.000Z",
+          to: "2026-01-01T00:10:00.000Z",
+        },
+        entity: { id: "checkout", name: "checkout", type: "service", domain: "apm" },
+        service: "checkout",
+      }];
+    },
+  } as unknown as RcaService;
+  const definitions = createRcaMainAgentTools({
+    rcaService: fakeService,
+    conversationId: "conversation-discovery",
+    getModelRef: () => ({ provider: "packy", id: "deepseek-flash" }),
+    onProjection: () => {},
+    onLinkInvestigation: () => {},
+  });
+  const tool = definitions.find((item) => item.name === "find_incident_candidates");
+  assert.ok(tool);
+  const execute = tool.execute as unknown as (
+    toolCallId: string,
+    parameters: { service?: string; environment?: string; limit?: number },
+  ) => Promise<{ content: Array<{ type: string; text: string }> }>;
+  const response = await execute("call-discovery", {
+    service: "checkout",
+    environment: "prod",
+    limit: 5,
+  });
+  const payload = JSON.parse(response.content[0]?.text ?? "{}") as {
+    count?: number;
+    candidates?: Array<{ caseId?: string }>;
+  };
+  assert.deepEqual(received, { service: "checkout", environment: "prod", limit: 5 });
+  assert.equal(payload.count, 1);
+  assert.equal(payload.candidates?.[0]?.caseId, "t039");
 });
 
 test("request_user_input forwards one blocking clarification with active investigation context", async () => {

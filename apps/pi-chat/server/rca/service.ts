@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
+import type { IncidentCandidateQuery } from "./adapter";
 import {
   InvestigationEventBus,
   type InvestigationEventListener,
@@ -1338,6 +1339,10 @@ export class RcaService {
     if (!controller || controller.signal.aborted) return false;
     controller.abort();
     return true;
+  }
+
+  findIncidentCandidates(query: IncidentCandidateQuery = {}) {
+    return this.requireAgenticTools().adapter.findIncidentCandidates(query);
   }
 
   get(investigationId: string): Promise<Investigation> {

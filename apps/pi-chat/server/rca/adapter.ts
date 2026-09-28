@@ -1,4 +1,4 @@
-import { access, readFile } from "node:fs/promises";
+import { access, readFile, readdir } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 
 import {
@@ -125,6 +125,27 @@ export interface AlertQuery {
   limit?: number;
 }
 
+export interface IncidentCandidateQuery {
+  service?: string;
+  environment?: string;
+  symptom?: string;
+  from?: string;
+  to?: string;
+  limit?: number;
+}
+
+export interface IncidentCandidate {
+  caseId: string;
+  title: string;
+  triggerTime: string;
+  window: TimeRange;
+  entity: AlertContext["entity"];
+  service?: string;
+  operation?: string;
+  workspace?: string;
+  region?: string;
+}
+
 interface TraceRow {
   traceId: string;
   spanId: string;
@@ -238,6 +259,75 @@ export class RCA100Adapter {
   readonly casesDir: string;
   constructor(casesDir: string) {
     this.casesDir = resolve(casesDir);
+  }
+
+  async findIncidentCandidates(
+    query: IncidentCandidateQuery = {},
+  ): Promise<IncidentCandidate[]> {
+    const normalize = (value: string | undefined) => value?.trim().toLowerCase();
+    const service = normalize(query.service);
+    const environment = normalize(query.environment);
+    const symptom = normalize(query.symptom);
+    const from = query.from ? Date.parse(query.from) : undefined;
+    const to = query.to ? Date.parse(query.to) : undefined;
+    if (query.from && !Number.isFinite(from)) throw new Error("Invalid incident discovery from time");
+    if (query.to && !Number.isFinite(to)) throw new Error("Invalid incident discovery to time");
+    if (from !== undefined && to !== undefined && from > to) {
+      throw new Error("Incident discovery from time must not be after to time");
+    }
+    const matches = (needle: string | undefined, values: Array<string | undefined>) =>
+      !needle || values.some((value) => value?.toLowerCase().includes(needle));
+    const inRequestedTime = (alert: AlertContext) => {
+      if (from === undefined && to === undefined) return true;
+      const windowFrom = Date.parse(alert.window.from);
+      const windowTo = Date.parse(alert.window.to);
+      if (Number.isFinite(windowFrom) && Number.isFinite(windowTo)) {
+        return (from === undefined || windowTo >= from) && (to === undefined || windowFrom <= to);
+      }
+      const trigger = Date.parse(alert.triggerTime);
+      return Number.isFinite(trigger) &&
+        (from === undefined || trigger >= from) &&
+        (to === undefined || trigger <= to);
+    };
+
+    const entries = await readdir(this.casesDir, { withFileTypes: true });
+    const candidates: IncidentCandidate[] = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !/^t\d+$/i.test(entry.name)) continue;
+      let task: RcaTask;
+      try {
+        task = await this.loadTask(entry.name);
+      } catch {
+        continue;
+      }
+      const alert = task.alert;
+      if (!matches(service, [alert.service, alert.operation, alert.entity.name, alert.title])) continue;
+      if (!matches(environment, [alert.workspace, alert.region, alert.entity.domain, alert.title])) continue;
+      if (!matches(symptom, [alert.title, alert.service, alert.operation, alert.entity.name])) continue;
+      if (!inRequestedTime(alert)) continue;
+      candidates.push({
+        caseId: task.caseId || entry.name,
+        title: alert.title,
+        triggerTime: alert.triggerTime,
+        window: alert.window,
+        entity: alert.entity,
+        ...(alert.service ? { service: alert.service } : {}),
+        ...(alert.operation ? { operation: alert.operation } : {}),
+        ...(alert.workspace ? { workspace: alert.workspace } : {}),
+        ...(alert.region ? { region: alert.region } : {}),
+      });
+    }
+
+    candidates.sort((left, right) => {
+      const leftTime = Date.parse(left.triggerTime);
+      const rightTime = Date.parse(right.triggerTime);
+      if (Number.isFinite(leftTime) && Number.isFinite(rightTime)) return rightTime - leftTime;
+      return left.caseId.localeCompare(right.caseId);
+    });
+    const limit = Number.isInteger(query.limit)
+      ? Math.min(Math.max(Number(query.limit), 1), 20)
+      : 8;
+    return candidates.slice(0, limit);
   }
 
   runtimeAccessiblePaths(caseId: string): string[] {

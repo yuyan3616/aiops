@@ -134,6 +134,35 @@ export function createRcaMainAgentTools(options: RcaMainAgentToolsOptions): Tool
     }
   };
 
+  const discoveryTool = defineTool({
+    name: "find_incident_candidates",
+    label: "发现故障候选",
+    description:
+      "在启动 RCA Investigation 前，根据用户提供的 service、环境、症状或时间范围，从用户可见的告警 metadata 中寻找可能对应的 case。它只用于定位调查入口，不读取或返回 benchmark ground truth。若唯一候选足够明确，可直接使用其 caseId；若存在多个会实质改变调查范围的候选，再使用 request_user_input 向用户澄清。",
+    parameters: Type.Object({
+      service: Type.Optional(Type.String()),
+      environment: Type.Optional(Type.String()),
+      symptom: Type.Optional(Type.String()),
+      from: Type.Optional(Type.String({ description: "可选 ISO-8601 起始时间" })),
+      to: Type.Optional(Type.String({ description: "可选 ISO-8601 结束时间" })),
+      limit: Type.Optional(Type.Number({ minimum: 1, maximum: 20 })),
+    }),
+    execute: async (_toolCallId, parameters) => {
+      const query = cleanRecord(parameters as Record<string, unknown>);
+      const candidates = await rcaService.findIncidentCandidates(query);
+      return toolResult({
+        candidates,
+        count: candidates.length,
+        guidance:
+          candidates.length === 1
+            ? "存在唯一候选；若与用户描述一致，可直接启动该 case。"
+            : candidates.length > 1
+              ? "存在多个候选；只有歧义会影响调查范围时才向用户询问。"
+              : "没有找到匹配候选；请缩小范围或向用户询问当前最关键的缺失信息。",
+      });
+    },
+  });
+
   const startTool = defineTool({
     name: "start_rca_investigation",
     label: "开始 RCA 调查",
@@ -551,6 +580,7 @@ export function createRcaMainAgentTools(options: RcaMainAgentToolsOptions): Tool
   });
 
   return [
+    discoveryTool,
     startTool,
     resumeTool,
     overviewTool,
