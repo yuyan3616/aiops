@@ -250,6 +250,90 @@ test("cancelling an active RCA terminalizes expert tasks and tools before cleanu
   }
 });
 
+test("user steering interrupts only the active dispatch and keeps the investigation running", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-chat-agentic-steer-"));
+  try {
+    const repository = new InvestigationRepository(directory);
+    const service = new RcaService(repository);
+    const current = investigation("INV-agentic-steer");
+    current.hypotheses.push({
+      id: "H01",
+      statement: "checkout latency was caused by a dependency regression",
+      status: "possible",
+      confidence: 0.4,
+      supportingEvidenceIds: [],
+      contradictingEvidenceIds: [],
+      nextChecks: [],
+    });
+    await repository.save(current);
+
+    Object.assign(service, {
+      expertRunner: {
+        run: ({ signal }: { signal?: AbortSignal }) =>
+          new Promise<never>((_resolve, reject) => {
+            const rejectAbort = () =>
+              reject(new DOMException("Dispatch superseded by user intervention", "AbortError"));
+            if (signal?.aborted) {
+              rejectAbort();
+              return;
+            }
+            signal?.addEventListener("abort", rejectAbort, { once: true });
+          }),
+      },
+    });
+
+    await service.resumeAgentic(current.id, {
+      conversationId: "conversation-steer",
+    });
+
+    const dispatchPromise = service.dispatchAgentic(current.id, [
+      {
+        role: "trace",
+        question: "Check whether the dependency path explains checkout latency.",
+        hypothesisIds: ["H01"],
+        context: {
+          alertSummary: "checkout latency",
+          mainWindow: current.alertContext.window,
+          knownFacts: [],
+        },
+        expected: ["Return a tool-backed finding."],
+      },
+    ]);
+
+    let dispatchStarted = false;
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const snapshot = await repository.get(current.id);
+      if (snapshot.expertTasks.some((task) => task.status === "running")) {
+        dispatchStarted = true;
+        break;
+      }
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    assert.equal(dispatchStarted, true);
+
+    const intervention = await service.recordUserIntervention(
+      current.id,
+      "14:02 checkout 做过一次手工发布",
+    );
+    assert.equal(intervention?.id, "UI01");
+    assert.equal(service.interruptActiveDispatch(current.id), true);
+
+    const outcome = await dispatchPromise;
+    assert.equal(outcome.interrupted, true);
+    assert.deepEqual(outcome.findings, []);
+
+    const persisted = await repository.get(current.id);
+    assert.equal(persisted.status, "running");
+    assert.equal(persisted.expertTasks[0]?.status, "cancelled");
+    assert.equal(
+      persisted.userInterventions?.[0]?.content,
+      "14:02 checkout 做过一次手工发布",
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("hypothesis mutations partially accept valid items and publish only persisted changes", async () => {
   const directory = await mkdtemp(join(tmpdir(), "pi-chat-agentic-"));
   try {
