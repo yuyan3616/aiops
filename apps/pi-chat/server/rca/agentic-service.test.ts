@@ -1094,7 +1094,12 @@ test("conclusion rejects any hypothesis left outside selected rejected or unreso
       confidence: 0.75,
       causalAssessment: {
         temporalFit: "aligned",
+        temporalEvidenceIds: ["E01"],
+        transitionEvidenceIds: [],
         propagationFit: "uncertain",
+        propagationEvidenceIds: [],
+        materialUnobservedGap: false,
+        gapBridgeEvidenceIds: [],
         unresolvedContradictions: [],
       },
     });
