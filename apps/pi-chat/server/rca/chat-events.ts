@@ -227,6 +227,7 @@ export class RcaChatEventMapper {
         }];
       }
       case "investigation.started":
+      case "user.intervention":
       case "investigation.interrupted":
       case "investigation.resumed":
       case "observation.created":

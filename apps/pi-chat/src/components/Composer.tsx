@@ -49,11 +49,13 @@ export function Composer({
   onScrollToBottom(): void;
 }) {
   const [input, setInput] = useState("");
-  const sendDisabled = !busy && !input.trim();
+  const hasInput = Boolean(input.trim());
+  const stopAction = busy && !hasInput;
+  const sendDisabled = !busy && !hasInput;
 
   const submit = () => {
     const text = input.trim();
-    if (!text || busy) return;
+    if (!text) return;
     setInput("");
     onSend(text, selectedSkills);
   };
@@ -81,7 +83,7 @@ export function Composer({
               submit();
             }
           }}
-          placeholder={busy ? "正在生成回复…" : "输入消息，按 Alt + Enter 发送…"}
+          placeholder={busy ? "可继续补充调查信息…" : "输入消息，按 Alt + Enter 发送…"}
           rows={1}
         />
         <div className="composer-toolbar">
@@ -107,25 +109,41 @@ export function Composer({
               <TooltipTrigger asChild>
                 <span>
                   <Button
-                    className={"send-button " + (busy ? "stop-button" : "")}
+                    className={"send-button " + (stopAction ? "stop-button" : "")}
                     size="icon"
-                    onClick={() => (busy ? void onAbort() : submit())}
+                    onClick={() => (stopAction ? void onAbort() : submit())}
                     disabled={sendDisabled}
-                    aria-label={busy ? "停止生成" : "发送消息"}
+                    aria-label={stopAction ? "停止调查" : busy ? "补充当前调查" : "发送消息"}
                   >
-                    {busy ? <Square size={14} fill="currentColor" /> : <ArrowUp size={18} />}
+                    {stopAction ? (
+                      <Square size={14} fill="currentColor" />
+                    ) : (
+                      <ArrowUp size={18} />
+                    )}
                   </Button>
                 </span>
               </TooltipTrigger>
               <TooltipContent>
-                {sendDisabled ? "请输入内容后发送" : busy ? "停止生成" : "发送消息"}
+                {sendDisabled
+                  ? "请输入内容后发送"
+                  : stopAction
+                    ? "停止调查"
+                    : busy
+                      ? "补充当前调查"
+                      : "发送消息"}
               </TooltipContent>
             </Tooltip>
           </TooltipProvider>
         </div>
       </div>
       <div className="composer-hint">
-        <span>Alt + Enter 发送 · Enter 换行</span>
+        <span>
+          {busy
+            ? hasInput
+              ? "Alt + Enter 发送补充 · Enter 换行"
+              : "输入内容可补充当前调查 · Enter 换行"
+            : "Alt + Enter 发送 · Enter 换行"}
+        </span>
       </div>
     </footer>
   );

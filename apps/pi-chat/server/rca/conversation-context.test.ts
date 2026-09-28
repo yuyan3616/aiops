@@ -59,6 +59,21 @@ test("renders a compact server-authoritative RCA context", () => {
   assert.match(rendered, /active investigation: INV-context/);
   assert.match(rendered, /resume/i);
 
+  const withIntervention = investigation("running");
+  withIntervention.userInterventions = [
+    {
+      id: "UI01",
+      content: "14:02 checkout 做过一次手工发布",
+      createdAt: "2026-09-28T00:02:00.000Z",
+    },
+  ];
+  const interventionContext = conversationRcaContextFromInvestigation(withIntervention);
+  const interventionRendered = renderConversationRcaContext(interventionContext);
+  assert.match(interventionRendered, /调查中用户补充/);
+  assert.match(interventionRendered, /UI01/);
+  assert.match(interventionRendered, /14:02 checkout/);
+  assert.match(interventionRendered, /不是 telemetry evidence/);
+
   const idle = renderConversationRcaContext(idleConversationRcaContext());
   assert.match(idle, /state: idle/);
   assert.match(idle, /active investigation: none/);

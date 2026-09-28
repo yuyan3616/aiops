@@ -132,6 +132,24 @@ export class ConversationService {
         () => undefined,
       );
     }
+
+    if (session.isStreaming) {
+      const investigationId = await this.resolveInvestigation(conversationId);
+      const intervention = investigationId
+        ? await this.rcaService.recordUserIntervention(investigationId, cleanedUserInput)
+        : undefined;
+
+      await session.prompt(cleanedUserInput, {
+        streamingBehavior: "steer",
+        source: "rpc",
+      });
+
+      if (investigationId && intervention) {
+        this.rcaService.interruptActiveDispatch(investigationId);
+      }
+      return;
+    }
+
     runDetached(
       () => session.prompt(cleanedUserInput),
       (cause) => {
