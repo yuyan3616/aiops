@@ -1022,6 +1022,10 @@ export class RcaService {
     return this.repository.get(investigationId);
   }
 
+  getReport(investigationId: string): Promise<string> {
+    return this.repository.getReport(investigationId);
+  }
+
   async cancel(investigationId: string): Promise<boolean> {
     const running = this.agenticRunning.get(investigationId);
     if (!running) return false;
