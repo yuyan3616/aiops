@@ -80,6 +80,44 @@ export interface EventQuery {
   limit?: number;
 }
 
+export const DEFAULT_LOG_ANOMALY_KEYWORDS = [
+  "error",
+  "exception",
+  "timeout",
+  "timed out",
+  "connection refused",
+  "retry",
+  "failed",
+  "unavailable",
+  "deadline",
+  "panic",
+  "fatal",
+  "reset",
+] as const;
+
+export function resolveLogQueryFilter(
+  query: Pick<LogQuery, "mode" | "keywords">,
+): {
+  mode: "anomaly" | "all" | "custom";
+  effectiveKeywords: string[];
+} {
+  const mode =
+    query.mode ??
+    (query.keywords ? (query.keywords.length > 0 ? "custom" : "all") : "anomaly");
+  if (mode === "custom" && (!query.keywords || query.keywords.length === 0)) {
+    throw new Error("query_logs mode=custom requires at least one keyword");
+  }
+  return {
+    mode,
+    effectiveKeywords:
+      mode === "all"
+        ? []
+        : mode === "custom"
+          ? [...(query.keywords ?? [])]
+          : [...DEFAULT_LOG_ANOMALY_KEYWORDS],
+  };
+}
+
 export interface AlertQuery {
   from: string;
   to: string;
@@ -764,28 +802,7 @@ export class RCA100Adapter {
   > {
     const range = ensureValidRange(query);
     const limit = clampLimit(query.limit, 30, 200);
-    const defaultKeywords = [
-      "error",
-      "exception",
-      "timeout",
-      "timed out",
-      "connection refused",
-      "retry",
-      "failed",
-      "unavailable",
-      "deadline",
-      "panic",
-      "fatal",
-      "reset",
-    ];
-    const mode =
-      query.mode ??
-      (query.keywords ? (query.keywords.length > 0 ? "custom" : "all") : "anomaly");
-    if (mode === "custom" && (!query.keywords || query.keywords.length === 0)) {
-      throw new Error("query_logs mode=custom requires at least one keyword");
-    }
-    const keywords =
-      mode === "all" ? [] : mode === "custom" ? [...(query.keywords ?? [])] : defaultKeywords;
+    const { mode, effectiveKeywords: keywords } = resolveLogQueryFilter(query);
     const serviceCounts: Record<string, number> = {};
     const keywordCounts: Record<string, number> = {};
     const samples: Array<Record<string, unknown>> = [];
