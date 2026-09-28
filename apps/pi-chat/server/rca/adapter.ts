@@ -357,7 +357,9 @@ export class RCA100Adapter {
       anomalies: MetricAnomaly[];
       peerOutliers: Array<{
         entitySet: string;
+        entityId?: string;
         entity: string;
+        service?: string;
         metric: string;
         incidentMedian: number;
         peerMedian: number;
