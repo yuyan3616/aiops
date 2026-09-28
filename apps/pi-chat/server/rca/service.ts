@@ -853,40 +853,40 @@ export class RcaService {
 
     try {
       const taskPairs = briefs.map((brief) => {
-      const task: ExpertTask = {
-        id: this.nextTaskId(investigation),
-        expert: brief.role,
-        objective: brief.question.trim().slice(0, 1000),
-        status: "running",
-        hypothesisIds: [...new Set(brief.hypothesisIds)],
-        toolCallIds: [],
-        evidenceIds: [],
-        brief,
-        implementation: "pi-session",
-        createdAt: now(),
-      };
-      investigation.expertTasks.push(task);
-      return { task, brief };
-    });
+        const task: ExpertTask = {
+          id: this.nextTaskId(investigation),
+          expert: brief.role,
+          objective: brief.question.trim().slice(0, 1000),
+          status: "running",
+          hypothesisIds: [...new Set(brief.hypothesisIds)],
+          toolCallIds: [],
+          evidenceIds: [],
+          brief,
+          implementation: "pi-session",
+          createdAt: now(),
+        };
+        investigation.expertTasks.push(task);
+        return { task, brief };
+      });
 
-    investigation.rounds += 1;
-    await this.saveInvestigation(investigation);
-    for (const { task, brief } of taskPairs) {
+      investigation.rounds += 1;
+      await this.saveInvestigation(investigation);
+      for (const { task, brief } of taskPairs) {
       await bus.publish("expert.started", `${task.expert} investigating: ${brief.question}`, {
         expertTask: task,
         round: investigation.rounds,
         source: "main-agent-dispatch",
       });
-    }
+      }
 
-    const rcaTask: RcaTask = {
+      const rcaTask: RcaTask = {
       caseId: investigation.caseId,
       version: "runtime",
       alert: investigation.alertContext,
       availableModalities: ["metric", "log", "trace", "event", "alert", "topology"],
-    };
+      };
 
-    const settled = await Promise.allSettled(
+      const settled = await Promise.allSettled(
       taskPairs.map(async ({ task, brief }): Promise<DispatchedFinding> => {
         try {
           const run = await runner.run({

@@ -98,7 +98,7 @@ export function renderConversationRcaContext(
     "",
     "即使旧聊天记录显示了不同状态，也必须把本段视为当前唯一可信状态。",
     ...interventionLines,
-    "对于后续追问，继续沿用当前调查；需要持久化的 evidence、hypotheses 或结果时，调用 get_investigation_state。"
+    "对于后续追问，继续沿用当前调查；需要持久化的 evidence、hypotheses 或结果时，调用 get_investigation_state。",
     context.state === "interrupted"
       ? "该调查曾被中断。只有确实需要继续取证时才 resume（恢复）；已有 evidence 仍可用于解释或直接形成结论。"
       : "除非用户明确要求重新运行、新建调查或调查另一个 case，否则不要为当前会话再次创建调查。",
