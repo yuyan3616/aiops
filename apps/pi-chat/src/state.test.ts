@@ -3,10 +3,10 @@ import test from "node:test";
 
 import type { ConversationSnapshot, StreamEvent } from "@shared/types";
 
-import { browserPanelReducer, conversationReducer, createBrowserPanelState } from "./state";
+import { conversationReducer, createRuntimeState, runtimeReducer } from "./state";
 
-test("runtime.error keeps the user-facing error message in browser state", () => {
-  const initial = createBrowserPanelState("c1");
+test("runtime.error keeps the user-facing runtime error", () => {
+  const initial = createRuntimeState("c1");
   const event = {
     id: 1,
     streamId: "s1",
@@ -16,7 +16,7 @@ test("runtime.error keeps the user-facing error message in browser state", () =>
     },
   } as StreamEvent;
 
-  const failed = browserPanelReducer(initial, {
+  const failed = runtimeReducer(initial, {
     type: "event",
     conversationId: "c1",
     event,
@@ -28,7 +28,7 @@ test("runtime.error keeps the user-facing error message in browser state", () =>
     "当前未配置可用的 LLM/API Key，请先配置模型提供商凭据后再使用普通聊天。",
   );
 
-  const running = browserPanelReducer(failed, {
+  const running = runtimeReducer(failed, {
     type: "event",
     conversationId: "c1",
     event: {
@@ -44,13 +44,13 @@ test("runtime.error keeps the user-facing error message in browser state", () =>
 });
 
 test("snapshot restores a persisted runtime error after page refresh", () => {
-  const initial = createBrowserPanelState("c1");
+  const initial = createRuntimeState("c1");
   const snapshot = {
     status: "error",
     error: "模型未配置",
   } as ConversationSnapshot;
 
-  const restored = browserPanelReducer(initial, {
+  const restored = runtimeReducer(initial, {
     type: "snapshot",
     conversationId: "c1",
     snapshot,

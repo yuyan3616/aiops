@@ -7,48 +7,10 @@ export type RuntimeStatus =
   | "error"
   | "cold";
 
-export interface BrowserHandoffRequest {
-  id: string;
-  conversationId: string;
-  toolCallId: string;
-  reason: string;
-  expiresAt: number;
-}
-
-/** Browser operation phase, separate from the server-side sandbox controller lifecycle. */
-export const BrowserPhase = {
-  /** No browser connection is currently ready for use. */
-  Stopped: "stopped",
-  /** Creating or connecting to the sandbox and waiting for Chrome. */
-  Starting: "starting",
-  /** Importing the saved browser state. */
-  Loading: "loading",
-  /** The browser is ready for operations. */
-  Ready: "ready",
-  /** Exporting and persisting the browser state. */
-  Saving: "saving",
-  /** Terminating the sandbox and clearing its record. */
-  Releasing: "releasing",
-  /** The last browser operation failed. */
-  Error: "error",
-} as const;
-
-export type BrowserPhase = (typeof BrowserPhase)[keyof typeof BrowserPhase];
-
-export interface BrowserState {
-  phase: BrowserPhase;
-  sandboxId?: string;
-  vncUrl?: string;
-  savedAt?: string;
-  loadedAt?: string;
-  error?: string;
-}
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 export type { ThinkingLevel };
 
 export type EventType =
-  | "browser.handoff.changed"
-  | "browser.state"
   | "runtime.status"
   | "runtime.error"
   | "runtime.settled"
@@ -192,8 +154,6 @@ export interface ConversationSummary {
 }
 
 export interface ConversationSnapshot {
-  browser?: BrowserState;
-  browserHandoff?: BrowserHandoffRequest;
   conversation: ConversationSummary;
   messageList: MessageListItem[];
   activeSkillNames: string[];
@@ -230,7 +190,6 @@ export interface SkillOption {
 }
 
 export interface BootstrapData {
-  browser?: { enabled: true };
   models: ModelOption[];
   skills: SkillOption[];
 }

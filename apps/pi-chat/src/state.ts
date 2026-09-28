@@ -2,8 +2,6 @@ import { appendAgentReasoning, upsertAgentTool } from "../shared/agent-timeline"
 import type {
   AgentThreadEvidence,
   AgentThreadRun,
-  BrowserHandoffRequest,
-  BrowserState,
   ChatImage,
   ChatMessage,
   ConversationSnapshot,
@@ -25,98 +23,64 @@ function eventPayload(event: StreamEvent): EventPayload {
   return event.payload && typeof event.payload === "object" ? (event.payload as EventPayload) : {};
 }
 
-export interface BrowserPanelState {
+export interface RuntimeState {
   conversationId?: string;
-  mode: "closed" | "manual";
   status: RuntimeStatus;
-  browserHandoff?: BrowserHandoffRequest;
-  browser?: BrowserState;
   error?: string;
   connected: boolean;
 }
 
-export function createBrowserPanelState(conversationId?: string): BrowserPanelState {
+export function createRuntimeState(conversationId?: string): RuntimeState {
   return {
     conversationId,
-    mode: "closed",
     status: "cold",
     connected: false,
   };
 }
 
-type BrowserPanelAction = { conversationId?: string } & (
-  | { type: "select" | "open" | "close" | "disconnect" }
+type RuntimeAction = { conversationId?: string } & (
+  | { type: "select" | "disconnect" }
   | { type: "snapshot"; snapshot: ConversationSnapshot }
   | { type: "event"; event: StreamEvent }
 );
 
-// The runtime and panel policy consume the same ordered, cursor-checked stream.
-// Snapshots restore safety state, never visibility or a user's intent to open.
-export function browserPanelReducer(
-  state: BrowserPanelState,
-  action: BrowserPanelAction,
-): BrowserPanelState {
-  if (action.type === "select") return createBrowserPanelState(action.conversationId);
+export function runtimeReducer(state: RuntimeState, action: RuntimeAction): RuntimeState {
+  if (action.type === "select") return createRuntimeState(action.conversationId);
   if (action.conversationId !== state.conversationId) return state;
-  let next = state;
+
   switch (action.type) {
-    case "open":
-      return { ...state, mode: "manual" };
-    case "close":
-      return { ...state, mode: "closed" };
     case "disconnect":
       return { ...state, connected: false };
-    case "snapshot": {
-      const { status, browserHandoff } = action.snapshot;
-      next = {
+    case "snapshot":
+      return {
         ...state,
-        status,
-        browserHandoff,
-        browser: action.snapshot.browser,
+        status: action.snapshot.status,
         error: action.snapshot.error,
         connected: true,
       };
-      break;
-    }
     case "event": {
-      const { event } = action;
-      const payload = eventPayload(event);
-      switch (event.type) {
-        case "browser.handoff.changed":
-          next = {
-            ...state,
-            browserHandoff: (event.payload as BrowserHandoffRequest | null) ?? undefined,
-          };
-          break;
-        case "browser.state":
-          next = { ...state, browser: event.payload as BrowserState };
-          break;
-        case "runtime.status": {
-          const status = payload.status as RuntimeStatus;
-          next = {
-            ...state,
-            status,
-            error: status === "error" ? state.error : undefined,
-          };
-          break;
-        }
-        case "runtime.error":
-          next = {
-            ...state,
-            status: "error",
-            error:
-              typeof payload.error === "string" && payload.error.trim()
-                ? payload.error
-                : "运行时发生错误，请稍后重试。",
-          };
-          break;
-        default:
-          return state;
+      const payload = eventPayload(action.event);
+      if (action.event.type === "runtime.status") {
+        const status = payload.status as RuntimeStatus;
+        return {
+          ...state,
+          status,
+          error: status === "error" ? state.error : undefined,
+        };
       }
-      break;
+      if (action.event.type === "runtime.error") {
+        return {
+          ...state,
+          status: "error",
+          error:
+            typeof payload.error === "string" && payload.error.trim()
+              ? payload.error
+              : "运行时发生错误，请稍后重试。",
+        };
+      }
+      return state;
     }
   }
-  return next;
 }
 
 function updateItem(
