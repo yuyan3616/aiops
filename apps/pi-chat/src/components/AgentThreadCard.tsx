@@ -4,6 +4,7 @@ import type { AgentStep, AgentThreadRun } from "@shared/types";
 import {
   Brain,
   CheckCircle2,
+  ChevronDown,
   ChevronRight,
   LoaderCircle,
   Network,
@@ -47,6 +48,37 @@ function timelineSteps(agent: AgentThreadRun): AgentStep[] {
     });
   }
   return legacy;
+}
+
+function AgentReasoningStep({ text, active }: { text: string; active: boolean }) {
+  const [open, setOpen] = useState(active);
+
+  useEffect(() => {
+    // Keep the currently streaming reasoning visible. Once a tool starts or
+    // the agent settles, the completed reasoning collapses automatically.
+    // oxlint-disable-next-line react/set-state-in-effect -- sync UI with runtime boundary.
+    setOpen(active);
+  }, [active]);
+
+  return (
+    <div className={"agent-thread-reasoning " + (open ? "open" : "collapsed")}>
+      <button
+        className="agent-thread-reasoning-toggle"
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <span>分析</span>
+        {active && <small>进行中</small>}
+        {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+      </button>
+      {open && (
+        <div className="agent-thread-reasoning-body">
+          <Markdown content={text || "正在分析…"} />
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function AgentThreadCard({ agent }: { agent: AgentThreadRun }) {
@@ -130,25 +162,19 @@ export function AgentThreadCard({ agent }: { agent: AgentThreadRun }) {
                 </div>
                 <div className="agent-thread-timeline">
                   {steps.length > 0 ? (
-                    steps.map((step) =>
+                    steps.map((step, index) =>
                       step.type === "reasoning" ? (
-                        <div
-                          className="agent-thread-timeline-step reasoning"
-                          key={step.id}
-                        >
+                        <div className="agent-thread-timeline-step reasoning" key={step.id}>
                           <div className="agent-thread-timeline-marker">
                             <Brain size={12} />
                           </div>
-                          <div className="agent-thread-reasoning">
-                            <small>分析</small>
-                            <Markdown content={step.text} />
-                          </div>
+                          <AgentReasoningStep
+                            text={step.text}
+                            active={agent.status === "running" && index === steps.length - 1}
+                          />
                         </div>
                       ) : (
-                        <div
-                          className="agent-thread-timeline-step tool"
-                          key={step.id}
-                        >
+                        <div className="agent-thread-timeline-step tool" key={step.id}>
                           <div className="agent-thread-timeline-marker tool-marker" />
                           <div className="agent-thread-timeline-tool">
                             <ToolCard tool={step.tool} />

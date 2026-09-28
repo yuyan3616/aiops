@@ -2311,7 +2311,7 @@ button {
 }
 
 .agent-thread-reasoning {
-  padding: 7px 9px 8px;
+  overflow: hidden;
   border-radius: 7px;
   background: #f7f8f9;
   color: #686e74;
@@ -2319,15 +2319,50 @@ button {
   line-height: 1.65;
 }
 
-.agent-thread-reasoning small {
-  display: block;
-  margin-bottom: 3px;
-  color: #999fa5;
-  font-size: 9px;
+.agent-thread-reasoning-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 9px;
+  border: 0;
+  background: transparent;
+  color: #777d83;
+  cursor: pointer;
+  text-align: left;
+}
+
+.agent-thread-reasoning-toggle > span {
+  font-size: 10px;
   font-weight: 650;
 }
 
-.agent-thread-reasoning .markdown > * {
+.agent-thread-reasoning-toggle > small {
+  margin-left: auto;
+  color: #9aa0a6;
+  font-size: 9px;
+  font-weight: 500;
+}
+
+.agent-thread-reasoning-toggle > svg:last-child {
+  margin-left: auto;
+  flex: 0 0 auto;
+  color: #9aa0a6;
+}
+
+.agent-thread-reasoning-toggle > small + svg:last-child {
+  margin-left: 0;
+}
+
+.agent-thread-reasoning.collapsed .agent-thread-reasoning-toggle:hover {
+  background: #f1f2f3;
+}
+
+.agent-thread-reasoning-body {
+  padding: 0 9px 8px;
+}
+
+.agent-thread-reasoning-body .markdown > * {
   margin: 4px 0;
   color: inherit;
   font-size: inherit;
