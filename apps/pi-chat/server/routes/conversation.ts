@@ -20,6 +20,24 @@ export function createConversationRoutes(
     return ctx.json(conversationList);
   });
 
+  conversationApp.post("/batch-delete", async (ctx) => {
+    const body = await jsonBody<{ ids?: unknown }>(ctx.req.raw);
+    if (!Array.isArray(body.ids)) {
+      throw new Error("ids should be an array of conversation ids");
+    }
+    if (
+      body.ids.length === 0 ||
+      body.ids.length > 100 ||
+      body.ids.some((id) => typeof id !== "string" || id.trim().length === 0)
+    ) {
+      throw new Error("ids should contain between 1 and 100 valid conversation ids");
+    }
+    const deletedIds = await conversationService.deleteMany(
+      [...new Set(body.ids.map((id) => id.trim()))],
+    );
+    return ctx.json({ deletedIds });
+  });
+
   conversationApp.get("/:conversationId", async (ctx) => {
     const { conversationId } = ctx.req.param();
     const conversationSnapshot = await conversationService.snapshot(conversationId);
