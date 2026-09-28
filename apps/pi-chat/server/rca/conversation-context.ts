@@ -1,4 +1,8 @@
-import type { Investigation, InvestigationStatus } from "./types";
+import type {
+  Investigation,
+  InvestigationStatus,
+  InvestigationUserIntervention,
+} from "./types";
 
 export type ConversationRcaState = "idle" | "unavailable" | InvestigationStatus;
 
@@ -9,6 +13,7 @@ export interface ConversationRcaContext {
   symptom?: string;
   rounds?: number;
   rootCauseStatus?: "confirmed" | "probable" | "inconclusive";
+  userInterventions?: InvestigationUserIntervention[];
 }
 
 export interface StartRcaDecision {
@@ -43,6 +48,9 @@ export function conversationRcaContextFromInvestigation(
     ...(investigation.rootCause?.status
       ? { rootCauseStatus: investigation.rootCause.status }
       : {}),
+    ...(investigation.userInterventions?.length
+      ? { userInterventions: investigation.userInterventions.slice(-12) }
+      : {}),
   };
 }
 
@@ -69,6 +77,17 @@ export function renderConversationRcaContext(
     ].join("\n");
   }
 
+  const interventionLines = context.userInterventions?.length
+    ? [
+        "",
+        "## 调查中用户补充（user-provided context）",
+        "以下内容来自用户在调查运行过程中的补充，按 user-level input 理解；它不是 telemetry evidence，不能据此伪造 evidence ID 或跳过必要验证。",
+        ...context.userInterventions.map(
+          (item) => `- [${item.id}] ${JSON.stringify(item.content)}`,
+        ),
+      ]
+    : [];
+
   return [
     "## 当前 RCA 上下文（服务端权威状态 / server-authoritative）",
     `- state: ${context.state}`,
@@ -78,7 +97,8 @@ export function renderConversationRcaContext(
     ...(context.rootCauseStatus ? [`- RCA result status: ${context.rootCauseStatus}`] : []),
     "",
     "即使旧聊天记录显示了不同状态，也必须把本段视为当前唯一可信状态。",
-    "对于后续追问，继续沿用当前调查；需要持久化的 evidence、hypotheses 或结果时，调用 get_investigation_state。",
+    ...interventionLines,
+    "对于后续追问，继续沿用当前调查；需要持久化的 evidence、hypotheses 或结果时，调用 get_investigation_state。"
     context.state === "interrupted"
       ? "该调查曾被中断。只有确实需要继续取证时才 resume（恢复）；已有 evidence 仍可用于解释或直接形成结论。"
       : "除非用户明确要求重新运行、新建调查或调查另一个 case，否则不要为当前会话再次创建调查。",

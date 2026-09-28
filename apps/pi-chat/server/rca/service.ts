@@ -30,6 +30,7 @@ import type {
   HypothesisStatus,
   Investigation,
   InvestigationBrief,
+  InvestigationUserIntervention,
   Observation,
   RCAResult,
   RcaTask,
@@ -43,6 +44,7 @@ interface RunningAgenticInvestigation {
   unsubscribe?: () => void;
   investigation?: Investigation;
   activeOperations: number;
+  activeDispatchController?: AbortController;
   cancellationPromise?: Promise<void>;
 }
 
@@ -141,6 +143,11 @@ export interface DispatchedFinding {
   evidenceIds: string[];
   observationIds: string[];
   diagnostics?: AgentRunDiagnostics;
+}
+
+export interface AgenticDispatchResult {
+  findings: DispatchedFinding[];
+  interrupted: boolean;
 }
 
 function now(): string {
@@ -771,7 +778,7 @@ export class RcaService {
     investigationId: string,
     briefs: InvestigationBrief[],
     options: AgenticDispatchOptions = {},
-  ): Promise<DispatchedFinding[]> {
+  ): Promise<AgenticDispatchResult> {
     const investigation = await this.liveInvestigation(investigationId);
     this.assertRunning(investigation);
 
@@ -837,9 +844,15 @@ export class RcaService {
     if (!running) throw new Error("Agentic investigation is not active");
     checkCancelled(running.controller.signal);
     const releaseOperation = this.trackAgenticOperation(investigationId);
+    const dispatchController = new AbortController();
+    running.activeDispatchController = dispatchController;
+    const dispatchSignal = AbortSignal.any([
+      running.controller.signal,
+      dispatchController.signal,
+    ]);
 
     try {
-    const taskPairs = briefs.map((brief) => {
+      const taskPairs = briefs.map((brief) => {
       const task: ExpertTask = {
         id: this.nextTaskId(investigation),
         expert: brief.role,
@@ -881,7 +894,7 @@ export class RcaService {
             task: rcaTask,
             brief,
             model: options.model,
-            signal: running.controller.signal,
+            signal: dispatchSignal,
             invoke: (tool, arguments_) =>
               this.invokeRecordedTool(
                 investigation,
@@ -889,7 +902,7 @@ export class RcaService {
                 tool,
                 arguments_,
                 task,
-                running.controller.signal,
+                dispatchSignal,
               ),
             onThinking: (delta) =>
               bus.publish("expert.thinking.delta", "", {
@@ -897,12 +910,12 @@ export class RcaService {
                 delta,
               }).then(() => undefined),
           });
-          checkCancelled(running.controller.signal);
+          checkCancelled(dispatchSignal);
           task.sessionId = run.sessionId;
           task.diagnostics = run.diagnostics;
 
           const finding = await this.acceptAgentFinding(investigation, task, run.finding, bus);
-          checkCancelled(running.controller.signal);
+          checkCancelled(dispatchSignal);
           task.finding = finding;
           task.status = finding.status === "failed" ? "failed" : "completed";
           task.completedAt = now();
@@ -924,7 +937,9 @@ export class RcaService {
             ...(task.diagnostics ? { diagnostics: task.diagnostics } : {}),
           };
         } catch (error) {
-          const cancelled = running.controller.signal.aborted || isAbortError(error);
+          const softInterrupted =
+            dispatchController.signal.aborted && !running.controller.signal.aborted;
+          const cancelled = dispatchSignal.aborted || isAbortError(error);
           if (error instanceof PiExpertRunError) {
             task.diagnostics = error.diagnostics;
             if (error.sessionId) task.sessionId = error.sessionId;
@@ -937,7 +952,11 @@ export class RcaService {
           const finding: AgentExpertFinding = {
             status: cancelled ? "failed" : "failed",
             strength: "inconclusive",
-            summary: error instanceof Error ? error.message : String(error),
+            summary: softInterrupted
+              ? "Dispatch superseded by user intervention."
+              : error instanceof Error
+                ? error.message
+                : String(error),
             conclusions: [],
             evidenceClaims: [],
             candidateEntities: [],
@@ -974,23 +993,38 @@ export class RcaService {
       }),
     );
 
-    if (running.controller.signal.aborted) {
-      throw new DOMException("Investigation cancelled", "AbortError");
-    }
-    const results: DispatchedFinding[] = [];
-    for (const item of settled) {
-      if (item.status === "rejected") throw item.reason;
-      results.push(item.value);
-    }
+      if (running.controller.signal.aborted) {
+        throw new DOMException("Investigation cancelled", "AbortError");
+      }
 
-    await bus.publish("round.completed", `Agentic batch ${investigation.rounds} completed.`, {
-      round: investigation.rounds,
-      taskRefs: results.map((item) => item.taskRef),
-      evidenceIds: results.flatMap((item) => item.evidenceIds),
-      source: "main-agent",
-    });
-    return results;
+      const interrupted = dispatchController.signal.aborted;
+      const results: DispatchedFinding[] = [];
+      for (const item of settled) {
+        if (item.status === "rejected") {
+          if (interrupted) continue;
+          throw item.reason;
+        }
+        results.push(item.value);
+      }
+
+      await bus.publish(
+        "round.completed",
+        interrupted
+          ? `Agentic batch ${investigation.rounds} interrupted by user intervention.`
+          : `Agentic batch ${investigation.rounds} completed.`,
+        {
+          round: investigation.rounds,
+          taskRefs: results.map((item) => item.taskRef),
+          evidenceIds: results.flatMap((item) => item.evidenceIds),
+          interrupted,
+          source: "main-agent",
+        },
+      );
+      return { findings: results, interrupted };
     } finally {
+      if (running.activeDispatchController === dispatchController) {
+        running.activeDispatchController = undefined;
+      }
       releaseOperation();
     }
   }
@@ -1206,6 +1240,41 @@ export class RcaService {
     );
     this.cleanupAgentic(investigationId);
     return { investigation, report };
+  }
+
+  async recordUserIntervention(
+    investigationId: string,
+    content: string,
+  ): Promise<InvestigationUserIntervention | undefined> {
+    const investigation = await this.liveInvestigation(investigationId);
+    if (investigation.status !== "running") return undefined;
+
+    const cleanedContent = content.trim().slice(0, 4000);
+    if (!cleanedContent) return undefined;
+
+    const intervention: InvestigationUserIntervention = {
+      id: this.nextUserInterventionId(investigation),
+      content: cleanedContent,
+      createdAt: now(),
+    };
+    investigation.userInterventions ??= [];
+    investigation.userInterventions.push(intervention);
+    await this.saveInvestigation(investigation);
+
+    const bus = await this.busFor(investigationId);
+    await bus.publish("user.intervention", "User supplied additional investigation context.", {
+      intervention,
+      source: "user",
+    });
+    return intervention;
+  }
+
+  interruptActiveDispatch(investigationId: string): boolean {
+    const running = this.agenticRunning.get(investigationId);
+    const controller = running?.activeDispatchController;
+    if (!controller || controller.signal.aborted) return false;
+    controller.abort();
+    return true;
   }
 
   get(investigationId: string): Promise<Investigation> {
@@ -1547,6 +1616,10 @@ export class RcaService {
 
   private nextTaskId(investigation: Investigation): string {
     return `T${String(investigation.expertTasks.length + 1).padStart(2, "0")}`;
+  }
+
+  private nextUserInterventionId(investigation: Investigation): string {
+    return `UI${String((investigation.userInterventions?.length ?? 0) + 1).padStart(2, "0")}`;
   }
 
   private renderReport(investigation: Investigation): string {

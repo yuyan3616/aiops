@@ -388,10 +388,10 @@ export function createRcaMainAgentTools(options: RcaMainAgentToolsOptions): Tool
         ...(brief.notInScope ? { notInScope: brief.notInScope } : {}),
       }));
       return serializeMutation(async () => {
-        const findings = await rcaService.dispatchAgentic(parameters.investigationId, briefs, {
+        const dispatch = await rcaService.dispatchAgentic(parameters.investigationId, briefs, {
           model: options.getModelRef(),
         });
-        return toolResult({ findings });
+        return toolResult(dispatch);
       });
     },
   });

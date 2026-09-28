@@ -245,6 +245,12 @@ export interface InvestigationScope {
   candidateEntities: string[];
 }
 
+export interface InvestigationUserIntervention {
+  id: string;
+  content: string;
+  createdAt: string;
+}
+
 export interface Investigation {
   id: string;
   caseId: string;
@@ -257,6 +263,7 @@ export interface Investigation {
   evidence: Evidence[];
   expertTasks: ExpertTask[];
   toolCalls: ToolCallRecord[];
+  userInterventions?: InvestigationUserIntervention[];
   rootCause?: RCAResult;
   rounds: number;
   startedAt: string;
@@ -267,6 +274,7 @@ export interface Investigation {
 
 export type InvestigationEventType =
   | "investigation.started"
+  | "user.intervention"
   | "hypothesis.created"
   | "hypothesis.updated"
   | "expert.started"
