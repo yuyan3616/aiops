@@ -4,7 +4,11 @@ import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { RCA100Adapter, traceQueryWindowRelation } from "./adapter";
+import {
+  RCA100Adapter,
+  resolveLogQueryFilter,
+  traceQueryWindowRelation,
+} from "./adapter";
 import {
   compactToolResultForAgent,
   OBSERVABILITY_TOOL_NAMES,
@@ -106,6 +110,33 @@ rca100Test("tools query t039 by time, service, operation, and keyword with bound
   assert.ok(
     metricAnomalies.length === 0 ||
       metricAnomalies.every((item) => typeof item.entityId === "string" && item.entityId.length > 0),
+  );
+});
+
+test("log query filter semantics distinguish anomaly, all, and custom modes", () => {
+  const anomaly = resolveLogQueryFilter({});
+  assert.equal(anomaly.mode, "anomaly");
+  assert.ok(anomaly.effectiveKeywords.includes("error"));
+  assert.ok(anomaly.effectiveKeywords.length > 0);
+
+  assert.deepEqual(resolveLogQueryFilter({ mode: "all" }), {
+    mode: "all",
+    effectiveKeywords: [],
+  });
+
+  assert.deepEqual(resolveLogQueryFilter({ keywords: [] }), {
+    mode: "all",
+    effectiveKeywords: [],
+  });
+
+  assert.deepEqual(resolveLogQueryFilter({ mode: "custom", keywords: ["networkpolicy"] }), {
+    mode: "custom",
+    effectiveKeywords: ["networkpolicy"],
+  });
+
+  assert.throws(
+    () => resolveLogQueryFilter({ mode: "custom" }),
+    /requires at least one keyword/,
   );
 });
 
