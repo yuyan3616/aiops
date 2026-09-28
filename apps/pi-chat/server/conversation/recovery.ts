@@ -23,6 +23,25 @@ function investigationIdForAgent(agentId: string): string | undefined {
   return index > 0 ? agentId.slice(0, index) : undefined;
 }
 
+function reportItemForInvestigation(investigation: Investigation): MessageListItem | undefined {
+  const result = investigation.rootCause;
+  if (!result) return undefined;
+  if (investigation.status !== "completed" && investigation.status !== "inconclusive") {
+    return undefined;
+  }
+  return {
+    kind: "report",
+    id: `${investigation.id}:report`,
+    report: {
+      investigationId: investigation.id,
+      filename: `RCA-${investigation.id}.md`,
+      status: result.status,
+      summary: result.summary,
+      confidence: result.confidence,
+    },
+  };
+}
+
 function wasInterruptedByRestart(
   investigation: Investigation,
   explicitFlag?: boolean,
@@ -87,7 +106,7 @@ export function reconcileRcaExecutionItems(
   items: MessageListItem[],
   investigations: ReadonlyMap<string, Investigation>,
 ): MessageListItem[] {
-  return items.map((item) => {
+  const reconciled = items.map((item) => {
     if (item.kind !== "agent") return item;
     const investigationId = investigationIdForAgent(item.id);
     if (!investigationId) return item;
@@ -134,6 +153,17 @@ export function reconcileRcaExecutionItems(
       agent: reconciledAgent,
     };
   });
+
+  const reportIds = new Set(
+    reconciled.filter((item) => item.kind === "report").map((item) => item.id),
+  );
+  for (const investigation of investigations.values()) {
+    const reportItem = reportItemForInvestigation(investigation);
+    if (!reportItem || reportIds.has(reportItem.id)) continue;
+    reconciled.push(reportItem);
+    reportIds.add(reportItem.id);
+  }
+  return reconciled;
 }
 
 export function settleInterruptedRcaSessionTools(
