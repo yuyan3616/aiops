@@ -85,10 +85,63 @@ test("Main Agent RCA tools expose explicit investigation controls instead of a b
     "screen_rca_candidates",
     "update_hypotheses",
     "dispatch_investigations",
+    "request_user_input",
     "get_investigation_state",
     "conclude_investigation",
   ]);
   assert.equal(names.includes("investigate_rca_case"), false);
+});
+
+test("request_user_input forwards one blocking clarification with active investigation context", async () => {
+  let received: unknown;
+  const definitions = createRcaMainAgentTools({
+    rcaService: {} as RcaService,
+    conversationId: "conversation-human-input",
+    getModelRef: () => ({ provider: "packy", id: "deepseek-flash" }),
+    onProjection: () => {},
+    onLinkInvestigation: () => {},
+    getRcaContext: () => ({ state: "running", investigationId: "INV-human", caseId: "t039" }),
+    onHumanInputRequested: (request) => {
+      received = request;
+      return { id: "HREQ-test", createdAt: "2026-09-28T00:00:00.000Z", ...request };
+    },
+  });
+  const tool = definitions.find((item) => item.name === "request_user_input");
+  assert.ok(tool);
+  const execute = tool.execute as unknown as (
+    toolCallId: string,
+    parameters: {
+      question: string;
+      reason: "ambiguous_scope";
+      inputType: "select";
+      options: Array<{ value: string; label: string }>;
+    },
+  ) => Promise<{ content: Array<{ type: string; text: string }> }>;
+  const result = await execute("call-human", {
+    question: "要排查哪个环境？",
+    reason: "ambiguous_scope",
+    inputType: "select",
+    options: [
+      { value: "prod", label: "Production" },
+      { value: "staging", label: "Staging" },
+    ],
+  });
+  const payload = JSON.parse(result.content[0]?.text ?? "{}") as {
+    waitingForHuman?: boolean;
+    request?: { investigationId?: string };
+  };
+  assert.equal(payload.waitingForHuman, true);
+  assert.equal(payload.request?.investigationId, "INV-human");
+  assert.deepEqual(received, {
+    question: "要排查哪个环境？",
+    reason: "ambiguous_scope",
+    inputType: "select",
+    options: [
+      { value: "prod", label: "Production" },
+      { value: "staging", label: "Staging" },
+    ],
+    investigationId: "INV-human",
+  });
 });
 
 test("screen_rca_candidates delegates a bounded candidate set to the RCA service", async () => {
@@ -321,6 +374,7 @@ test("user steering interrupts only the active dispatch and keeps the investigat
     const persisted = await repository.get(current.id);
     assert.equal(persisted.status, "running");
     assert.equal(persisted.expertTasks[0]?.status, "cancelled");
+    assert.equal(persisted.expertTasks[0]?.cancellationReason, "superseded_by_user");
     assert.equal(
       persisted.userInterventions?.[0]?.content,
       "14:02 checkout 做过一次手工发布",
