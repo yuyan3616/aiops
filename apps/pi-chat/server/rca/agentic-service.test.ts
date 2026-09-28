@@ -267,10 +267,15 @@ test("user steering interrupts only the active dispatch and keeps the investigat
     });
     await repository.save(current);
 
+    let markDispatchStarted!: () => void;
+    const dispatchStarted = new Promise<void>((resolve) => {
+      markDispatchStarted = resolve;
+    });
     Object.assign(service, {
       expertRunner: {
         run: ({ signal }: { signal?: AbortSignal }) =>
           new Promise<never>((_resolve, reject) => {
+            markDispatchStarted();
             const rejectAbort = () =>
               reject(new DOMException("Dispatch superseded by user intervention", "AbortError"));
             if (signal?.aborted) {
@@ -300,16 +305,7 @@ test("user steering interrupts only the active dispatch and keeps the investigat
       },
     ]);
 
-    let dispatchStarted = false;
-    for (let attempt = 0; attempt < 20; attempt++) {
-      const snapshot = await repository.get(current.id);
-      if (snapshot.expertTasks.some((task) => task.status === "running")) {
-        dispatchStarted = true;
-        break;
-      }
-      await new Promise<void>((resolve) => setImmediate(resolve));
-    }
-    assert.equal(dispatchStarted, true);
+    await dispatchStarted;
 
     const intervention = await service.recordUserIntervention(
       current.id,
