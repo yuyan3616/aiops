@@ -1,3 +1,4 @@
+import { normalizeConversationIds } from "@server/conversation/batch-delete";
 import type { ConversationService } from "@server/conversation/service";
 import type { RcaService } from "@server/rca/service";
 import { jsonBody } from "@server/utils";
@@ -22,19 +23,9 @@ export function createConversationRoutes(
 
   conversationApp.post("/batch-delete", async (ctx) => {
     const body = await jsonBody<{ ids?: unknown }>(ctx.req.raw);
-    const ids = body.ids;
-    if (!Array.isArray(ids)) {
-      throw new Error("ids should be an array of conversation ids");
-    }
-    if (
-      ids.length === 0 ||
-      ids.length > 100 ||
-      ids.some((id) => typeof id !== "string" || id.trim().length === 0)
-    ) {
-      throw new Error("ids should contain between 1 and 100 valid conversation ids");
-    }
-    const normalizedIds = (ids as string[]).map((id) => id.trim());
-    const deletedIds = await conversationService.deleteMany([...new Set(normalizedIds)]);
+    const deletedIds = await conversationService.deleteMany(
+      normalizeConversationIds(body.ids),
+    );
     return ctx.json({ deletedIds });
   });
 
