@@ -194,25 +194,40 @@ export class ConversationService {
   }
 
   async delete(id: string) {
-    const conversationRecord = await this.conversationRepository.get(id);
-    if (!conversationRecord) return;
+    await this.deleteMany([id]);
+  }
 
-    const managedSesson = this.managedSessions.get(id);
-    if (managedSesson && this.isBusy(managedSesson)) {
-      throw new Error(`Cannot delete conversation ${id} because it is busy.`);
+  async deleteMany(ids: string[]): Promise<string[]> {
+    const uniqueIds = [...new Set(ids)];
+    const records = (
+      await Promise.all(uniqueIds.map((id) => this.conversationRepository.get(id)))
+    ).filter((record) => record !== null);
+
+    for (const record of records) {
+      const managedSession = this.managedSessions.get(record.id);
+      if (managedSession && this.isBusy(managedSession)) {
+        throw new Error(`Cannot delete conversation ${record.id} because it is busy.`);
+      }
     }
 
-    if (existsSync(conversationRecord.sessionFile)) {
-      await rm(conversationRecord.sessionFile, {
+    for (const record of records) {
+      await this.waitForRecordWrites(record.id);
+      await this.release(record.id);
+
+      if (existsSync(record.sessionFile)) {
+        await rm(record.sessionFile, {
+          force: true,
+        });
+      }
+
+      await rm(record.workspaceDir, {
         force: true,
+        recursive: true,
       });
+      await this.conversationRepository.delete(record.id);
     }
 
-    await rm(conversationRecord.workspaceDir, {
-      force: true,
-      recursive: true,
-    });
-    await this.conversationRepository.delete(id);
+    return records.map((record) => record.id);
   }
 
   async persistExternalEvent(
