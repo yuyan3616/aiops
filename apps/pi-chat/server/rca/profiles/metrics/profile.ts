@@ -3,23 +3,23 @@ import { briefSearchText, capFindingStrength, containsAny, loadProfileText, skil
 
 const baseline = skill(
   "baseline-validation",
-  "Baseline Validation",
-  `Treat baseline as a comparison candidate, not healthy truth. If incident/baseline is near 1, check whether baseline was already abnormal using peers, an earlier window, or surrounding trend. Do not reject a hypothesis solely because baseline and incident are equally bad.`,
+  "Baseline 有效性验证",
+  `把 baseline 当作比较候选，而不是健康真值。如果 incident/baseline 接近 1，应通过 peer、更早窗口或周边 trend 检查 baseline 是否早已异常。不能只因为 baseline 和 incident 一样差就否定 hypothesis。`,
 );
 const peer = skill(
   "peer-comparison",
-  "Peer Comparison",
-  `Compare the same metric across genuinely comparable services, hosts, pods, or operations. A deviation from healthy peers can expose baseline contamination. State when the peer group is heterogeneous or weak.`,
+  "Peer 对比",
+  `在真正可比的 service、host、pod 或 operation 之间比较同一 metric。相对健康 peer 的偏离可以暴露 baseline contamination；如果 peer group 异质或可信度弱，要明确说明。`,
 );
 const saturation = skill(
   "saturation-analysis",
-  "Saturation Analysis",
-  `For CPU, memory, thread, connection, queue, or pool hypotheses, look for sustained pressure and align it with latency/error timing. Distinguish capacity pressure from demand increase. High utilization alone does not establish exhaustion; prefer multiple mutually consistent signals.`,
+  "资源饱和分析",
+  `对于 CPU、memory、thread、connection、queue 或 pool 类 hypothesis，寻找持续 pressure，并与 latency/error 的时间变化对齐。区分 capacity pressure 与 demand increase。单独的高 utilization 不能证明资源耗尽，优先寻找多个相互一致的 signal。`,
 );
 
 export const metricsProfile: ExpertProfile = {
   role: "metrics",
-  label: "metrics investigation",
+  label: "Metrics 调查",
   systemPrompt: loadProfileText(import.meta.url, "./SYSTEM.md"),
   tools: ["get_metric_catalog", "query_metrics"],
   modalities: ["metric"],

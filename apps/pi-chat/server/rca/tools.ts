@@ -358,12 +358,12 @@ export class ObservabilityToolRegistry {
 
   createPiTools(options: PiToolFactoryOptions = {}): ToolDefinition[] {
     const caseParameter = {
-      caseId: Type.String({ description: "RCA100 case id, for example t039" }),
+      caseId: Type.String({ description: "RCA100 case id，例如 t039" }),
     };
     const rangeParameters = {
       ...caseParameter,
-      from: Type.String({ description: "inclusive ISO-8601 start time" }),
-      to: Type.String({ description: "inclusive ISO-8601 end time" }),
+      from: Type.String({ description: "包含边界的 ISO-8601 开始时间" }),
+      to: Type.String({ description: "包含边界的 ISO-8601 结束时间" }),
     };
     const execute =
       (name: ObservabilityToolName) =>
@@ -375,38 +375,38 @@ export class ObservabilityToolRegistry {
     const definitions = [
       defineTool({
         name: "get_alert_context",
-        label: "Get alert context",
+        label: "获取告警上下文",
         description:
-          "Load only the user-visible alert fields from an RCA100 task. Never returns ground truth.",
+          "只加载 RCA100 task 中用户可见的 alert 字段，绝不会返回 ground truth。",
         parameters: Type.Object(caseParameter),
         execute: execute("get_alert_context"),
       }),
       defineTool({
         name: "get_metric_catalog",
-        label: "Discover metrics",
-        description: "Discover actual metric names and entity sets before querying metrics.",
+        label: "发现 Metrics",
+        description: "在查询 metrics 前发现真实 metric 名称和 entity set。",
         parameters: Type.Object(caseParameter),
         execute: execute("get_metric_catalog"),
       }),
       defineTool({
         name: "get_log_fields",
-        label: "Discover log fields",
-        description: "Return the actual logs parquet schema without returning log rows.",
+        label: "发现 Log 字段",
+        description: "返回真实 logs parquet schema，但不返回 log row。",
         parameters: Type.Object(caseParameter),
         execute: execute("get_log_fields"),
       }),
       defineTool({
         name: "get_trace_fields",
-        label: "Discover trace fields",
-        description: "Return the actual traces parquet schema without returning trace rows.",
+        label: "发现 Trace 字段",
+        description: "返回真实 traces parquet schema，但不返回 trace row。",
         parameters: Type.Object(caseParameter),
         execute: execute("get_trace_fields"),
       }),
       defineTool({
         name: "query_metrics",
-        label: "Query metrics",
+        label: "查询 Metrics",
         description:
-          "Query and aggregate metrics for a bounded time range. Returns top anomaly summaries, not the entire parquet file.",
+          "在有边界的时间范围内查询并聚合 metrics。只返回 top anomaly summary，不返回整个 parquet 文件。",
         parameters: Type.Object({
           ...rangeParameters,
           baselineFrom: Type.Optional(Type.String()),
@@ -421,9 +421,9 @@ export class ObservabilityToolRegistry {
       }),
       defineTool({
         name: "query_logs",
-        label: "Query logs",
+        label: "查询 Logs",
         description:
-          "Search logs by bounded time, service, pod, and keywords. Returns counts, top samples, and slow access-log signals.",
+          "按有边界的时间、service、pod 和 keyword 搜索 logs。返回计数、top sample 和 slow access-log signal。",
         parameters: Type.Object({
           ...rangeParameters,
           service: Type.Optional(Type.String()),
@@ -435,9 +435,9 @@ export class ObservabilityToolRegistry {
       }),
       defineTool({
         name: "query_traces",
-        label: "Query traces",
+        label: "查询 Traces",
         description:
-          "Analyze bounded traces with latency baselines, critical paths, propagation candidates, and top spans.",
+          "分析有边界的 traces，返回 latency baseline、critical path、propagation candidate 和 top span。",
         parameters: Type.Object({
           ...rangeParameters,
           baselineFrom: Type.Optional(Type.String()),
@@ -454,9 +454,9 @@ export class ObservabilityToolRegistry {
       }),
       defineTool({
         name: "query_events",
-        label: "Query events",
+        label: "查询 Events",
         description:
-          "Query parsed Kubernetes events in a bounded time range. May return no relevant evidence.",
+          "在有边界的时间范围内查询已解析的 Kubernetes events；可能返回没有相关 evidence。",
         parameters: Type.Object({
           ...rangeParameters,
           entity: Type.Optional(Type.String()),
@@ -467,8 +467,8 @@ export class ObservabilityToolRegistry {
       }),
       defineTool({
         name: "query_alerts",
-        label: "Query alerts",
-        description: "Query alert records in a bounded time range.",
+        label: "查询 Alerts",
+        description: "在有边界的时间范围内查询 alert record。",
         parameters: Type.Object({
           ...rangeParameters,
           subject: Type.Optional(Type.String()),
@@ -478,9 +478,9 @@ export class ObservabilityToolRegistry {
       }),
       defineTool({
         name: "get_topology",
-        label: "Get topology",
+        label: "获取 Topology",
         description:
-          "Return an entity-centered topology subgraph with a maximum traversal depth of three.",
+          "返回以 entity 为中心的 topology 子图，最大遍历深度为 3。",
         parameters: Type.Object({
           ...caseParameter,
           entity: Type.Optional(Type.String()),
@@ -490,8 +490,8 @@ export class ObservabilityToolRegistry {
       }),
       defineTool({
         name: "get_service_dependencies",
-        label: "Get service dependencies",
-        description: "Return service call dependencies from the topology adapter.",
+        label: "获取 Service 依赖",
+        description: "从 topology adapter 返回 service call dependency。",
         parameters: Type.Object({
           ...caseParameter,
           service: Type.Optional(Type.String()),

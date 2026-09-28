@@ -24,44 +24,44 @@ export function listExpertProfiles(): ExpertProfile[] {
 }
 
 function findingContract(profile: ExpertProfile): string {
-  return `## Runtime constraints
+  return `## Runtime 约束
 
-Allowed evidence modalities: ${profile.modalities.join(", ")}.
-Maximum specialist tool calls: ${profile.maxToolCalls}.
+允许使用的 evidence modality：${profile.modalities.join(", ")}。
+专家工具调用上限：${profile.maxToolCalls}。
 
-Return exactly this JSON shape:
+必须严格返回下面的 JSON 结构：
 {
   "status": "succeeded|failed|inconclusive|blocked",
   "strength": "strong|moderate|weak|inconclusive",
   "verdict": "supports|contradicts|no-signal|mixed|inconclusive",
-  "summary": "concise finding",
-  "conclusions": ["1-5 direct answers to the brief"],
+  "summary": "简洁的调查结论",
+  "conclusions": ["1-5 条对当前 brief 的直接回答"],
   "evidenceClaims": [
     {
-      "toolCallId": "Cxx returned by a real tool call",
-      "modality": "one allowed modality",
-      "entity": "optional entity",
-      "summary": "what this tool result establishes",
-      "supports": ["hypothesis ids from the brief"],
-      "contradicts": ["hypothesis ids from the brief"]
+      "toolCallId": "真实工具调用返回的 Cxx",
+      "modality": "一个允许的 modality",
+      "entity": "可选 entity",
+      "summary": "该工具结果能够建立什么事实",
+      "supports": ["brief 中的 hypothesis id"],
+      "contradicts": ["brief 中的 hypothesis id"]
     }
   ],
-  "candidateEntities": ["optional narrowed entities"],
-  "candidateMechanism": "optional mechanism",
-  "suggestedFollowUps": ["only follow-ups outside your current evidence"],
-  "blockedOn": "only when status=blocked"
+  "candidateEntities": ["可选的收敛候选 entity"],
+  "candidateMechanism": "可选 mechanism",
+  "suggestedFollowUps": ["只填写超出当前 evidence 范围的后续建议"],
+  "blockedOn": "仅当 status=blocked 时填写"
 }`;
 }
 
 export function buildExpertSystemPrompt(profile: ExpertProfile, brief: InvestigationBrief): string {
   const skills = profile.selectSkills(brief);
   const skillSections = skills.length
-    ? skills.map((entry) => `## Loaded specialist skill: ${entry.title} [${entry.id}]\n\n${entry.content}`).join("\n\n")
-    : "## Loaded specialist skills\n\nNo additional specialist skill was selected for this brief.";
+    ? skills.map((entry) => `## 已加载专家技能：${entry.title} [${entry.id}]\n\n${entry.content}`).join("\n\n")
+    : "## 已加载专家技能\n\n当前 brief 未选择额外专家技能。";
 
   return [
     commonContract,
-    `# Active specialist profile: ${profile.label}`,
+    `# 当前激活的专家 Profile：${profile.label}`,
     profile.systemPrompt,
     skillSections,
     findingContract(profile),

@@ -3,23 +3,23 @@ import { briefSearchText, capFindingStrength, containsAny, loadProfileText, skil
 
 const dependency = skill(
   "dependency-path",
-  "Dependency Path Analysis",
-  `Determine whether the candidate entity lies on a plausible path to the affected service and identify direction: upstream dependency, downstream callee, shared dependency, or unrelated sibling. Mere graph proximity is weak unless direction fits observed propagation.`,
+  "依赖路径分析",
+  `判断 candidate entity 是否位于通往受影响 service 的合理路径上，并识别方向：upstream dependency、downstream callee、shared dependency 或 unrelated sibling。仅仅图上距离接近是弱 evidence，除非方向与已观察到的传播一致。`,
 );
 const change = skill(
   "change-correlation",
-  "Change Correlation",
-  `Compare change time with symptom onset and verify the changed entity lies on a relevant dependency path. Time proximity without path relevance is only a lead; path relevance without temporal alignment is also insufficient for a strong incident-specific claim.`,
+  "变更相关性分析",
+  `比较 change time 与 symptom onset，并确认 changed entity 位于相关 dependency path。只有时间接近但路径无关时只能算线索；只有路径相关但时间不对齐，也不足以形成强 incident-specific claim。`,
 );
 const timeline = skill(
   "incident-timeline",
-  "Incident Timeline",
-  `Order symptom onset, alerts, deployments/config changes, restarts, scaling, and recovery events. Use exact timestamps when available and mark uncertain onset when the observation window may start after the incident.`,
+  "故障时间线",
+  `按顺序整理 symptom onset、alert、deployment/config change、restart、scaling 和 recovery event。有精确 timestamp 时优先使用；如果 observation window 可能晚于 incident 起点，要标记 onset 不确定。`,
 );
 
 export const eventTopologyProfile: ExpertProfile = {
   role: "event-topology",
-  label: "event and topology investigation",
+  label: "Event / Topology 调查",
   systemPrompt: loadProfileText(import.meta.url, "./SYSTEM.md"),
   tools: ["get_service_dependencies", "get_topology", "query_events", "query_alerts"],
   modalities: ["event", "topology", "alert"],

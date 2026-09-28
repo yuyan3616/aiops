@@ -7,19 +7,19 @@ import {
   type ModelRuntime,
 } from "@earendil-works/pi-coding-agent";
 
-const TITLE_SYSTEM_PROMPT = `You generate concise conversation titles.
+const TITLE_SYSTEM_PROMPT = `你负责生成简洁的会话标题。
 
-Return JSON only: {"title":"..."}.
+只返回 JSON：{"title":"..."}。
 
-Rules:
-- Use the language used by the user.
-- Describe the task, not the user.
-- If a case id such as t039 is present, preserve it exactly.
-- Do not state an unconfirmed hypothesis as fact.
-- Chinese titles should usually be 6-16 Chinese characters excluding a case id.
-- English titles should usually be 3-8 words.
-- No quotes, markdown, trailing punctuation, or meta phrases such as "用户想要".
-- Never include secrets, URLs, stack traces, or long verbatim prompts.`;
+规则：
+- 使用用户当前使用的语言。
+- 描述任务，不描述用户本人。
+- 如果出现 t039 这类 case id，必须原样保留。
+- 不要把尚未确认的 hypothesis 写成事实。
+- 中文标题通常为 6-16 个中文字符（case id 不计入）。
+- 英文标题通常为 3-8 个单词。
+- 不要加引号、markdown、句末标点或“用户想要”这类元话语。
+- 绝不能包含 secret、URL、stack trace 或大段原始 prompt。`;
 
 export interface TitleGenerationInput {
   userMessage: string;
@@ -146,7 +146,7 @@ export class ConversationTitleGenerator {
 
     try {
       await session.prompt(
-        `Generate a title for this conversation context:\n\n${JSON.stringify(input, null, 2)}`,
+        `为下面这段会话上下文生成标题：\n\n${JSON.stringify(input, null, 2)}`,
       );
     } finally {
       unsubscribe();

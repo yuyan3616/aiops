@@ -51,38 +51,38 @@ export function renderConversationRcaContext(
 ): string {
   if (context.state === "idle") {
     return [
-      "## Current RCA context (server-authoritative)",
+      "## 当前 RCA 上下文（服务端权威状态）",
       "- state: idle",
-      "- active investigation: none",
+      "- active investigation: none（无）",
       "",
-      "Use ordinary chat for ordinary questions. Start an RCA investigation only when the user is asking to investigate, diagnose, troubleshoot, or find the root cause of a concrete case.",
+      "普通问题按普通对话处理。只有用户明确要求调查、诊断、排障或定位某个具体 case 的根因时，才启动 RCA 调查。",
     ].join("\n");
   }
 
   if (context.state === "unavailable") {
     return [
-      "## Current RCA context (server-authoritative)",
+      "## 当前 RCA 上下文（服务端权威状态）",
       "- state: unavailable",
       `- active investigation: ${context.investigationId ?? "unknown"}`,
       "",
-      "The conversation points to an investigation whose persisted state is unavailable. Do not infer its state from old chat messages. Start a replacement investigation only when the user explicitly asks for a new or re-run investigation; set forceNew=true.",
+      "当前会话关联的调查持久化状态不可用。不要根据旧聊天记录推断它的当前状态。只有用户明确要求新建或重新运行调查时，才启动替代调查，并设置 forceNew=true。",
     ].join("\n");
   }
 
   return [
-    "## Current RCA context (server-authoritative)",
+    "## 当前 RCA 上下文（服务端权威状态）",
     `- state: ${context.state}`,
     `- active investigation: ${context.investigationId}`,
     `- case: ${context.caseId}`,
     ...(context.rounds !== undefined ? [`- completed investigation rounds: ${context.rounds}`] : []),
     ...(context.rootCauseStatus ? [`- RCA result status: ${context.rootCauseStatus}`] : []),
     "",
-    "Treat this section as the current source of truth even if older transcript messages show a different state.",
-    "For follow-up questions, continue from this investigation and use get_investigation_state when the persisted evidence or hypotheses are needed.",
+    "即使旧聊天记录显示了不同状态，也必须把本段视为当前唯一可信状态。",
+    "对于后续追问，继续沿用当前调查；需要持久化的 evidence、hypotheses 或结果时，调用 get_investigation_state。",
     context.state === "interrupted"
-      ? "This investigation was interrupted. Resume it only when additional investigation is needed; existing evidence may still be used for explanation or conclusion."
-      : "Do not start another investigation for this conversation unless the user explicitly asks to re-run, start a new investigation, or investigate a different case.",
-    "When an explicit replacement/new investigation is requested while an active investigation is linked, call start_rca_investigation with forceNew=true.",
+      ? "该调查曾被中断。只有确实需要继续取证时才恢复；已有 evidence 仍可用于解释或直接形成结论。"
+      : "除非用户明确要求重新运行、新建调查或调查另一个 case，否则不要为当前会话再次创建调查。",
+    "当已经关联调查且用户明确要求替换/新建时，调用 start_rca_investigation，并设置 forceNew=true。",
   ].join("\n");
 }
 
@@ -98,7 +98,7 @@ export function decideStartRcaInvestigation(
       allowed: false,
       recommendedAction: "continue_active_investigation",
       reason:
-        `Investigation ${context.investigationId ?? "unknown"} for ${context.caseId ?? "unknown case"} is still running. Continue and conclude the active investigation before starting another one.`,
+        `调查 ${context.investigationId ?? "unknown"}（case ${context.caseId ?? "unknown case"}）仍在运行。继续并先收敛当前调查，再考虑启动新的调查。`,
     };
   }
 
@@ -109,7 +109,7 @@ export function decideStartRcaInvestigation(
       allowed: false,
       recommendedAction: "resume_active_investigation",
       reason:
-        `Investigation ${context.investigationId ?? "unknown"} for ${context.caseId ?? "unknown case"} is interrupted. Use its persisted state or resume it unless the user explicitly requested a new investigation; then retry with forceNew=true.`,
+        `调查 ${context.investigationId ?? "unknown"}（case ${context.caseId ?? "unknown case"}）处于 interrupted。优先使用其持久化状态，或在需要更多取证时恢复；只有用户明确要求新调查时，才用 forceNew=true 重试。`,
     };
   }
 
@@ -118,7 +118,7 @@ export function decideStartRcaInvestigation(
       allowed: false,
       recommendedAction: "explicit_new_investigation_required",
       reason:
-        `The linked investigation ${context.investigationId ?? "unknown"} is unavailable. Do not replace it implicitly. If the user explicitly requested a new investigation for ${requestedCaseId}, retry with forceNew=true.`,
+        `关联调查 ${context.investigationId ?? "unknown"} 当前不可用。不要隐式替换它。如果用户明确要求为 ${requestedCaseId} 新建调查，再使用 forceNew=true 重试。`,
     };
   }
 
@@ -126,6 +126,6 @@ export function decideStartRcaInvestigation(
     allowed: false,
     recommendedAction: "read_active_investigation",
     reason:
-      `Investigation ${context.investigationId ?? "unknown"} for ${context.caseId ?? "unknown case"} is already linked with state ${context.state}. Use it for follow-up questions. If the user explicitly requested a new or re-run investigation for ${requestedCaseId}, retry with forceNew=true.`,
+      `调查 ${context.investigationId ?? "unknown"}（case ${context.caseId ?? "unknown case"}）已关联，当前状态为 ${context.state}。后续追问继续使用它。如果用户明确要求为 ${requestedCaseId} 新建或重跑调查，再使用 forceNew=true 重试。`,
   };
 }

@@ -3,23 +3,23 @@ import { briefSearchText, capFindingStrength, containsAny, loadProfileText, skil
 
 const criticalPath = skill(
   "critical-path",
-  "Critical Path Analysis",
-  `Use when locating end-to-end latency. Preserve parent-child timestamps, identify the causally relevant longest path, treat overlapping children as concurrent, compare total duration with observed child intervals, and report the smallest segment where unexplained duration appears. Never infer an internal mechanism from a timing gap alone.`,
+  "关键路径分析",
+  `用于定位端到端延迟。保留 parent-child 时间戳，识别真正具有因果意义的最长路径，把重叠 children 视为并发；比较 total duration 与已观测 child interval，报告出现 unexplained duration 的最小区段。绝不能仅凭 timing gap 推断内部 mechanism。`,
 );
 const latencyGap = skill(
   "latency-gap",
-  "Unobserved Latency Gap",
-  `When observed spans do not explain total duration, locate whether the uncovered interval is before, between, or after observed children. Consider missing instrumentation, proxy/client wait, queueing, network delay, runtime pause, and local computation as alternatives. Phrase the result as an observation boundary unless evidence distinguishes the mechanism.`,
+  "未观测延迟缺口",
+  `当已观测 span 无法解释 total duration 时，定位 uncovered interval 位于 observed children 之前、之间还是之后。把 missing instrumentation、proxy/client wait、queueing、network delay、runtime pause、local computation 都作为替代解释。除非 evidence 能区分 mechanism，否则把结果表述为观测边界，不要直接下机制结论。`,
 );
 const traceComparison = skill(
   "trace-comparison",
-  "Trace Comparison",
-  `Compare the same service/operation when possible. Use distributions and path structure rather than one exemplar. Check whether the suspicious path or gap also exists in baseline or peer traces. A persistent pre-incident pattern weakens incident-specific causality but does not prove health.`,
+  "Trace 对比分析",
+  `尽量比较相同 service/operation。使用 distribution 与 path structure，不要依赖单个 exemplar。检查可疑 path 或 gap 是否也存在于 baseline 或 peer trace。incident 前就长期存在的模式会削弱 incident-specific causality，但不能因此证明健康。`,
 );
 
 export const traceProfile: ExpertProfile = {
   role: "trace",
-  label: "trace investigation",
+  label: "Trace 调查",
   systemPrompt: loadProfileText(import.meta.url, "./SYSTEM.md"),
   tools: ["get_trace_fields", "get_service_dependencies", "query_traces"],
   modalities: ["trace", "topology"],

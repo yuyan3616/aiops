@@ -204,14 +204,14 @@ export class PiExpertRunner {
       execute: async (name, _toolCallId, parameters) => {
         if (toolCallCount >= profile.maxToolCalls) {
           throw new Error(
-            `${profile.label} tool-call budget reached. Finalize from the observations already collected.`,
+            `${profile.label} 的工具调用预算已用完。请基于已经收集的 observation 直接收敛。`,
           );
         }
         const toolBudget = profile.toolBudgets?.[name];
         const currentToolCalls = perToolCalls.get(name) ?? 0;
         if (toolBudget !== undefined && currentToolCalls >= toolBudget) {
           throw new Error(
-            `${name} budget reached for ${profile.label}. Finalize from the observations already collected.`,
+            `${profile.label} 的 ${name} 调用预算已用完。请基于已经收集的 observation 直接收敛。`,
           );
         }
         perToolCalls.set(name, currentToolCalls + 1);
@@ -323,7 +323,7 @@ export class PiExpertRunner {
       try {
         sampleProcessMemory();
         await session.prompt(
-          `Investigate this brief. Use tools only as needed, then return the required JSON finding.\n\n${JSON.stringify(
+          `调查下面这个 brief。只在确有需要时使用工具，完成后返回规定的 JSON finding。分析过程和 finding 的自然语言内容优先使用中文；工具名、字段名和枚举值保持原样。\n\n${JSON.stringify(
             prompt,
             null,
             2,
@@ -339,7 +339,7 @@ export class PiExpertRunner {
           parseFailureDetail = error instanceof Error ? error.message : String(error);
           output = "";
           await session.prompt(
-            "Your investigation work is complete. Do not call more tools. Return ONLY the required JSON finding now, using the evidence and toolCallId values already collected. Negative/no-anomaly results are valid findings. Do not restart the investigation or broaden the search.",
+            "调查工作已经完成，不要再调用工具。现在只返回规定的 JSON finding，并且只能使用已经收集到的 evidence 和 toolCallId。negative/no-anomaly 结果同样是有效 finding。不要重新开始调查，也不要扩大搜索范围。",
           );
           sampleProcessMemory();
           parsed = extractJson(output);

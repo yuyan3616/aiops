@@ -132,15 +132,15 @@ export function createRcaMainAgentTools(options: RcaMainAgentToolsOptions): Tool
 
   const startTool = defineTool({
     name: "start_rca_investigation",
-    label: "Start RCA investigation",
+    label: "开始 RCA 调查",
     description:
-      "Start an auditable RCA investigation for a concrete case. When Current RCA context already links an investigation, do not replace it implicitly. Set forceNew=true only when the user explicitly asked to re-run, start fresh, or investigate a different case.",
+      "为具体 case 启动一次可审计的 RCA 调查。若当前 RCA context 已关联调查，不要隐式替换。只有用户明确要求重跑、从头开始或调查不同 case 时才设置 forceNew=true。",
     parameters: Type.Object({
-      caseId: Type.String({ description: "RCA case id, for example t039" }),
+      caseId: Type.String({ description: "RCA case id，例如 t039" }),
       forceNew: Type.Optional(
         Type.Boolean({
           description:
-            "Explicitly replace the linked investigation. Use only when the user clearly requested a new/re-run investigation or a different case.",
+            "显式替换已关联调查。仅当用户明确要求新建/重跑调查或调查另一个 case 时使用。",
         }),
       ),
     }),
@@ -182,9 +182,9 @@ export function createRcaMainAgentTools(options: RcaMainAgentToolsOptions): Tool
 
   const resumeTool = defineTool({
     name: "resume_rca_investigation",
-    label: "Resume RCA investigation",
+    label: "恢复 RCA 调查",
     description:
-      "Resume an investigation that was interrupted by a process restart. Preserves prior hypotheses, observations, evidence, and completed task history.",
+      "恢复因进程重启而 interrupted 的调查，并保留已有 hypotheses、observations、evidence 和已完成任务历史。",
     parameters: Type.Object({
       investigationId: Type.String(),
     }),
@@ -200,9 +200,9 @@ export function createRcaMainAgentTools(options: RcaMainAgentToolsOptions): Tool
 
   const overviewTool = defineTool({
     name: "query_rca_overview",
-    label: "Query RCA overview",
+    label: "查询 RCA 概览",
     description:
-      "Run one bounded overview/statistical check in an active RCA investigation. Choose only the overview that reduces a current uncertainty. Raw log reading belongs to a specialist sub-agent.",
+      "在活动 RCA 调查中执行一次有边界的 overview/统计检查。只选择能减少当前关键不确定性的 overview；raw log 阅读交给专家子 Agent。",
     parameters: Type.Object({
       investigationId: Type.String(),
       kind: Type.Union([
@@ -252,9 +252,9 @@ export function createRcaMainAgentTools(options: RcaMainAgentToolsOptions): Tool
 
   const updateHypothesesTool = defineTool({
     name: "update_hypotheses",
-    label: "Update RCA hypotheses",
+    label: "更新 RCA 假设",
     description:
-      "Create or update competing RCA hypotheses with partial acceptance. Use op=create to define a new immutable statement; use op=update to change only status/confidence/evidence/checks on an existing id. A semantic revision must be a new create operation, optionally with supersedes. The result reports accepted and rejected mutations independently.",
+      "创建或更新相互竞争的 RCA hypotheses，并支持 mutation 部分接受。op=create 只定义新的不可变 statement；op=update 只修改已有 id 的 status/confidence/evidence/checks。语义实质变化必须新建 hypothesis，可选用 supersedes 关联。结果会分别报告 accepted 和 rejected mutation。",
     parameters: Type.Object({
       investigationId: Type.String(),
       mutations: Type.Array(
@@ -305,9 +305,9 @@ export function createRcaMainAgentTools(options: RcaMainAgentToolsOptions): Tool
 
   const dispatchTool = defineTool({
     name: "dispatch_investigations",
-    label: "Dispatch RCA sub-agents",
+    label: "调度 RCA 子 Agent",
     description:
-      "Dispatch one to three independent falsifiable briefs to real Pi specialist sessions. Independent briefs in the same call run concurrently. Dispatch only when the result can change a named hypothesis.",
+      "向真实 Pi 专家 Session 下发 1-3 个彼此独立、可证伪的 brief。同一调用中的独立 brief 会并发执行。只有结果可能改变指定 hypothesis 时才 dispatch。",
     parameters: Type.Object({
       investigationId: Type.String(),
       briefs: Type.Array(
@@ -377,9 +377,9 @@ export function createRcaMainAgentTools(options: RcaMainAgentToolsOptions): Tool
 
   const stateTool = defineTool({
     name: "get_investigation_state",
-    label: "Get RCA investigation state",
+    label: "读取 RCA 调查状态",
     description:
-      "Read the current hypotheses, evidence summaries, specialist findings, and task status for an active or completed investigation.",
+      "读取活动或已完成调查中的当前 hypotheses、evidence summary、specialist findings 和 task status。",
     parameters: Type.Object({
       investigationId: Type.String(),
     }),
@@ -391,9 +391,9 @@ export function createRcaMainAgentTools(options: RcaMainAgentToolsOptions): Tool
 
   const concludeTool = defineTool({
     name: "conclude_investigation",
-    label: "Conclude RCA investigation",
+    label: "收敛 RCA 调查",
     description:
-      "Persist the Main Agent's final evidence-grounded RCA conclusion. Every hypothesis must be accounted for exactly once as selected, rejected, or unresolved. Update hypothesis statuses before concluding; unresolved items require an explicit reason.",
+      "持久化 Main Agent 最终、基于 evidence 的 RCA 结论。每个 hypothesis 必须且只能归入 selected、rejected 或 unresolved 一类。收敛前先更新 hypothesis status；unresolved 项必须给出明确 reason。",
     parameters: Type.Object({
       investigationId: Type.String(),
       status: Type.Union([
