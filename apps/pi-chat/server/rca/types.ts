@@ -203,6 +203,12 @@ export interface ToolCallRecord {
   error?: string;
 }
 
+export interface CausalAssessment {
+  temporalFit: "aligned" | "pre_existing_explained" | "uncertain";
+  propagationFit: "supported" | "uncertain" | "not_available";
+  unresolvedContradictions: string[];
+}
+
 export interface RCAResult {
   investigationId: string;
   status: "confirmed" | "probable" | "inconclusive";
@@ -219,6 +225,9 @@ export interface RCAResult {
   }>;
   confidence: number;
   missingEvidence?: string[];
+  // Optional for backward compatibility with investigations persisted before
+  // causal assessment became part of the conclusion contract.
+  causalAssessment?: CausalAssessment;
 }
 
 export interface InvestigationScope {
@@ -289,6 +298,7 @@ export interface ModalitySchema {
 
 export interface MetricAnomaly {
   entitySet: string;
+  entityId?: string;
   entity: string;
   service?: string;
   metric: string;
@@ -318,6 +328,13 @@ export interface TraceAnomaly {
   rawRef: string;
 }
 
+export interface TraceQueryWindowRelation {
+  startedBeforeWindow: boolean;
+  startedInWindow: boolean;
+  endedInWindow: boolean;
+  spansEntireWindow: boolean;
+}
+
 export interface TracePathNode {
   service: string;
   operation: string;
@@ -328,6 +345,7 @@ export interface TracePathNode {
   spanId: string;
   parentSpanId?: string;
   statusCode?: string;
+  queryWindowRelation?: TraceQueryWindowRelation;
 }
 
 export interface CriticalTracePath {
