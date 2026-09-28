@@ -1,5 +1,5 @@
 import { mkdir } from "node:fs/promises";
-import { join, resolve, relative, isAbsolute } from "node:path";
+import { join, resolve } from "node:path";
 
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 /*
@@ -23,7 +23,6 @@ export interface GlobalConfig {
   skillsDir: string;
   rcaCasesDir: string;
   rcaInvestigationsDir: string;
-  rcaDefaultCaseId: string;
 }
 
 export function getGlobalConfig(rootDir = process.env.PI_CHAT_ROOT_DIR): GlobalConfig {
@@ -41,25 +40,9 @@ export function getGlobalConfig(rootDir = process.env.PI_CHAT_ROOT_DIR): GlobalC
     rcaInvestigationsDir: resolve(
       process.env.RCA_INVESTIGATIONS_DIR ?? join(resolvedRootDir, "data", "rca", "investigations"),
     ),
-    rcaDefaultCaseId: process.env.RCA_DEFAULT_CASE_ID ?? "t039",
   };
 }
 
 export async function ensureDir(paths: string[]) {
   return Promise.all(paths.map((path) => mkdir(path, { recursive: true })));
-}
-
-export function assertInside(parentDir: string, candidateDir: string) {
-  const safeRootDir = resolve(parentDir);
-  const safeCandidateDir = resolve(candidateDir);
-  const child = relative(safeRootDir, safeCandidateDir);
-  if (
-    !child ||
-    child == "" || // candidateDir equals rootDir
-    child.startsWith("..") || // candicateDir is outside rootDir
-    isAbsolute(child) // absolute path is not allowed
-  ) {
-    throw new Error(`Directory ${candidateDir} is not inside ${parentDir}`);
-  }
-  return safeCandidateDir;
 }
