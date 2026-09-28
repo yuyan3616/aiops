@@ -1,5 +1,6 @@
 import { AgentThreadCard } from "@components/AgentThreadCard";
 import { HypothesisBoard } from "@components/HypothesisBoard";
+import { InvestigationReportCard } from "@components/InvestigationReportCard";
 import { Markdown } from "@components/Markdown";
 import { MessageActions } from "@components/MessageActions";
 import { ThinkingItem } from "@components/ThinkingItem";
@@ -52,6 +53,14 @@ export function MessageItem({
   }
   if (item.kind === "agent") {
     return <AgentThreadCard agent={item.agent} />;
+  }
+  if (item.kind === "report") {
+    return (
+      <>
+        {identity}
+        <InvestigationReportCard report={item.report} />
+      </>
+    );
   }
 
   const user = item.message.role === "user";
