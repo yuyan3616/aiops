@@ -430,6 +430,46 @@ test("user steering interrupts only the active dispatch and keeps the investigat
   }
 });
 
+test("waiting for human survives recovery and resumes the same investigation", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-chat-agentic-human-wait-"));
+  try {
+    const repository = new InvestigationRepository(directory);
+    const service = new RcaService(repository);
+    const current = investigation("INV-human-wait");
+    await repository.save(current);
+
+    await service.waitForHuman(current.id, "HREQ-test");
+    let persisted = await repository.get(current.id);
+    assert.equal(persisted.status, "waiting_for_human");
+
+    const recovered = await repository.recoverInterrupted();
+    assert.deepEqual(recovered, []);
+    persisted = await repository.get(current.id);
+    assert.equal(persisted.status, "waiting_for_human");
+
+    const response = await service.recordHumanResponse(current.id, {
+      requestId: "HREQ-test",
+      question: "要排查哪个环境？",
+      answer: "production",
+    });
+    assert.equal(response.kind, "clarification_response");
+    assert.equal(response.question, "要排查哪个环境？");
+    assert.equal(response.content, "production");
+
+    persisted = await repository.get(current.id);
+    assert.equal(persisted.status, "waiting_for_human");
+    assert.equal(persisted.userInterventions?.at(-1)?.requestId, "HREQ-test");
+
+    const resumed = await service.resumeAgentic(current.id, {
+      conversationId: "conversation-human-wait",
+    });
+    assert.equal(resumed.status, "running");
+    assert.equal((await repository.get(current.id)).status, "running");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("hypothesis mutations partially accept valid items and publish only persisted changes", async () => {
   const directory = await mkdtemp(join(tmpdir(), "pi-chat-agentic-"));
   try {

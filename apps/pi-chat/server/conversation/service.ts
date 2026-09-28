@@ -152,18 +152,29 @@ export class ConversationService {
     // with the user-facing prompt for the same provider and hurts time-to-first-token.
     await this.ensureFallbackTitle(conversationId, cleanedUserInput);
 
-    if (!session.isStreaming && managedSession.pendingHumanRequest) {
+    const pendingHumanRequest = managedSession.pendingHumanRequest;
+    if (pendingHumanRequest) {
       await this.resolvePendingHumanRequest(
         managedSession,
-        managedSession.pendingHumanRequest,
+        pendingHumanRequest,
         cleanedUserInput,
       );
     }
 
-    const purpose: PromptPerformancePurpose = session.isStreaming ? "steer" : "main_chat";
+    const streamingNow = session.isStreaming;
+    const purpose: PromptPerformancePurpose =
+      streamingNow && !pendingHumanRequest ? "steer" : "main_chat";
     this.beginPromptPerformance(managedSession, purpose, requestStartedAt);
 
-    if (session.isStreaming) {
+    if (streamingNow) {
+      if (pendingHumanRequest) {
+        await session.prompt(cleanedUserInput, {
+          streamingBehavior: "followUp",
+          source: "rpc",
+        });
+        return;
+      }
+
       const investigationId = await this.resolveInvestigation(conversationId);
       const intervention = investigationId
         ? await this.rcaService.recordUserIntervention(investigationId, cleanedUserInput)
@@ -801,9 +812,22 @@ export class ConversationService {
 
     const managed = this.managedSessions.get(conversationId);
     if (managed) managed.pendingHumanRequest = request;
-    if (request.investigationId) {
-      await this.rcaService.waitForHuman(request.investigationId, request.id);
+    try {
+      if (request.investigationId) {
+        await this.rcaService.waitForHuman(request.investigationId, request.id);
+      }
+    } catch (error) {
+      await this.enqueueRecordWrite(conversationId, async () => {
+        await this.conversationRepository.update(conversationId, {
+          pendingHumanRequest: undefined,
+        });
+      });
+      if (managed?.pendingHumanRequest?.id === request.id) {
+        managed.pendingHumanRequest = undefined;
+      }
+      throw error;
     }
+    if (managed) this.setStatus(managed, "waiting_for_human");
     this.getEventChannel(conversationId).publish("human.input.requested", { request });
     return request;
   }
