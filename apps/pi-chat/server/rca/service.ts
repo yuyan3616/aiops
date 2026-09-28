@@ -446,6 +446,106 @@ export class RcaService {
     }
   }
 
+  async queryCandidateCoverage(
+    investigationId: string,
+    candidates: string[],
+    topNPerCandidate = 6,
+  ): Promise<{
+    candidates: Array<{
+      candidate: string;
+      evidenceId: string;
+      toolCallId: string;
+      summary: string;
+      rawRef?: string;
+      result: unknown;
+    }>;
+  }> {
+    const investigation = await this.liveInvestigation(investigationId);
+    this.assertRunning(investigation);
+    const normalized = [...new Set(candidates.map((item) => item.trim()).filter(Boolean))].slice(0, 8);
+    if (normalized.length < 2) {
+      throw new Error("Candidate coverage requires at least two distinct candidates");
+    }
+
+    const bus = await this.busFor(investigationId);
+    const signal = this.agenticRunning.get(investigationId)?.controller.signal;
+    const releaseOperation = this.trackAgenticOperation(investigationId);
+    const topN = Math.max(1, Math.min(Math.floor(topNPerCandidate), 10));
+    const results: Array<{
+      candidate: string;
+      evidenceId: string;
+      toolCallId: string;
+      summary: string;
+      rawRef?: string;
+      result: unknown;
+    }> = [];
+
+    try {
+      for (const candidate of normalized) {
+        checkCancelled(signal);
+        const recorded = await this.invokeRecordedTool(
+          investigation,
+          bus,
+          "query_metrics",
+          {
+            caseId: investigation.caseId,
+            from: investigation.alertContext.window.from,
+            to: investigation.alertContext.window.to,
+            service: candidate,
+            topN,
+          },
+          undefined,
+          signal,
+        );
+        checkCancelled(signal);
+
+        const summary = observationSummary("query_metrics", recorded.execution);
+        const evidence: Evidence = {
+          id: this.nextEvidenceId(investigation),
+          caseId: investigation.caseId,
+          modality: "metric",
+          entity: candidate,
+          timeRange: investigation.alertContext.window,
+          summary: `candidate coverage for ${candidate}: ${summary}`,
+          rawRef:
+            recorded.execution.rawRef ??
+            `investigation://${investigation.id}/tool/${recorded.callId}`,
+          supports: [],
+          contradicts: [],
+          sourceQuery: {
+            caseId: investigation.caseId,
+            from: investigation.alertContext.window.from,
+            to: investigation.alertContext.window.to,
+            service: candidate,
+            topN,
+            purpose: "candidate-coverage",
+          },
+          toolCallId: recorded.callId,
+          facts: { source: "main-agent-candidate-coverage" },
+          createdAt: now(),
+        };
+        investigation.evidence.push(evidence);
+        if (!investigation.scope.candidateEntities.includes(candidate)) {
+          investigation.scope.candidateEntities.push(candidate);
+        }
+        await this.saveInvestigation(investigation);
+        await bus.publish("evidence.created", evidence.summary, { evidence });
+
+        results.push({
+          candidate,
+          evidenceId: evidence.id,
+          toolCallId: recorded.callId,
+          summary,
+          ...(recorded.execution.rawRef ? { rawRef: recorded.execution.rawRef } : {}),
+          result: compactToolResultForAgent("query_metrics", recorded.execution.result),
+        });
+      }
+      return { candidates: results };
+    } finally {
+      releaseOperation();
+    }
+  }
+
   async updateHypotheses(
     investigationId: string,
     mutations: HypothesisMutation[],
