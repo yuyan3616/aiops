@@ -7,7 +7,6 @@ export PI_CHAT_PORT="${PI_CHAT_PORT:-4328}"
 export PI_CHAT_ROOT_DIR="${PI_CHAT_ROOT_DIR:-/tmp/pi-chat}"
 export RCA_INVESTIGATIONS_DIR="${RCA_INVESTIGATIONS_DIR:-/tmp/pi-chat/data/rca/investigations}"
 export RCA100_CASES_DIR="${RCA100_CASES_DIR:-/app/apps/pi-chat/.rca-data/cases}"
-export RCA_DEFAULT_CASE_ID="${RCA_DEFAULT_CASE_ID:-t039}"
 
 PUBLIC_PORT="${PORT:-3000}"
 
