@@ -124,7 +124,13 @@ export interface AgenticConclusionInput
     reason: string;
     missingEvidence?: string[];
   }>;
-  causalAssessment: CausalAssessment;
+  causalAssessment: CausalAssessment & {
+    temporalEvidenceIds: string[];
+    transitionEvidenceIds: string[];
+    propagationEvidenceIds: string[];
+    materialUnobservedGap: boolean;
+    gapBridgeEvidenceIds: string[];
+  };
 }
 
 export interface DispatchedFinding {
@@ -903,6 +909,26 @@ export class RcaService {
         throw new Error(`Conclusion references unknown evidence ${evidenceId}`);
       }
     }
+
+    const conclusionEvidenceIds = new Set(result.evidenceIds);
+    const causalEvidenceGroups = [
+      ["temporalEvidenceIds", result.causalAssessment.temporalEvidenceIds],
+      ["transitionEvidenceIds", result.causalAssessment.transitionEvidenceIds],
+      ["propagationEvidenceIds", result.causalAssessment.propagationEvidenceIds],
+      ["gapBridgeEvidenceIds", result.causalAssessment.gapBridgeEvidenceIds],
+    ] as const;
+    for (const [field, ids] of causalEvidenceGroups) {
+      for (const evidenceId of ids) {
+        if (!evidenceIds.has(evidenceId)) {
+          throw new Error(`causalAssessment.${field} references unknown evidence ${evidenceId}`);
+        }
+        if (!conclusionEvidenceIds.has(evidenceId)) {
+          throw new Error(
+            `causalAssessment.${field} evidence ${evidenceId} must also appear in evidenceIds`,
+          );
+        }
+      }
+    }
     for (const hypothesisId of result.rejectedHypotheses) {
       if (!hypothesisIds.has(hypothesisId)) {
         throw new Error(`Conclusion references unknown hypothesis ${hypothesisId}`);
@@ -1001,6 +1027,40 @@ export class RcaService {
     const contradictions = result.causalAssessment.unresolvedContradictions
       .map((item) => item.trim())
       .filter(Boolean);
+    const temporalEvidence = [...new Set(result.causalAssessment.temporalEvidenceIds)];
+    const transitionEvidence = [...new Set(result.causalAssessment.transitionEvidenceIds)];
+    const propagationEvidence = [...new Set(result.causalAssessment.propagationEvidenceIds)];
+    const gapBridgeEvidence = [...new Set(result.causalAssessment.gapBridgeEvidenceIds)];
+
+    if (
+      result.causalAssessment.temporalFit !== "uncertain" &&
+      temporalEvidence.length === 0
+    ) {
+      throw new Error("A non-uncertain temporal fit must cite temporal evidence");
+    }
+    if (
+      result.causalAssessment.temporalFit === "pre_existing_explained" &&
+      transitionEvidence.length === 0
+    ) {
+      throw new Error(
+        "pre_existing_explained requires independent transition/trigger evidence",
+      );
+    }
+    if (
+      result.causalAssessment.propagationFit === "supported" &&
+      propagationEvidence.length === 0
+    ) {
+      throw new Error("Supported propagation must cite propagation evidence");
+    }
+    if (
+      result.causalAssessment.materialUnobservedGap &&
+      result.causalAssessment.propagationFit === "supported" &&
+      gapBridgeEvidence.length === 0
+    ) {
+      throw new Error(
+        "Supported propagation across a material unobserved gap requires gap-bridge evidence",
+      );
+    }
     if (result.status === "probable" && result.causalAssessment.temporalFit === "uncertain") {
       throw new Error("A probable conclusion requires a non-uncertain temporal fit");
     }
@@ -1026,6 +1086,10 @@ export class RcaService {
       causalAssessment: {
         ...result.causalAssessment,
         unresolvedContradictions: [...new Set(contradictions)],
+        temporalEvidenceIds: temporalEvidence,
+        transitionEvidenceIds: transitionEvidence,
+        propagationEvidenceIds: propagationEvidence,
+        gapBridgeEvidenceIds: gapBridgeEvidence,
       },
     };
     investigation.status =
@@ -1406,7 +1470,12 @@ export class RcaService {
             "",
             "## Causal Assessment",
             `- Temporal fit: ${result.causalAssessment.temporalFit}`,
+            `- Temporal evidence: ${result.causalAssessment.temporalEvidenceIds?.join(", ") || "none"}`,
+            `- Transition evidence: ${result.causalAssessment.transitionEvidenceIds?.join(", ") || "none"}`,
             `- Propagation fit: ${result.causalAssessment.propagationFit}`,
+            `- Propagation evidence: ${result.causalAssessment.propagationEvidenceIds?.join(", ") || "none"}`,
+            `- Material unobserved gap: ${result.causalAssessment.materialUnobservedGap ?? false}`,
+            `- Gap-bridge evidence: ${result.causalAssessment.gapBridgeEvidenceIds?.join(", ") || "none"}`,
             `- Unresolved contradictions: ${
               result.causalAssessment.unresolvedContradictions.length
                 ? result.causalAssessment.unresolvedContradictions.join("; ")
