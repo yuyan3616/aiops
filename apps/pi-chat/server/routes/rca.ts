@@ -20,6 +20,17 @@ export function createRcaRoutes(rcaService: RcaService) {
   app.get("/investigations/:investigationId", async (ctx) => {
     return ctx.json(await rcaService.get(ctx.req.param("investigationId")));
   });
+  app.get("/investigations/:investigationId/report", async (ctx) => {
+    const investigationId = ctx.req.param("investigationId");
+    const report = await rcaService.getReport(investigationId);
+    ctx.header("Content-Type", "text/markdown; charset=utf-8");
+    ctx.header(
+      "Content-Disposition",
+      `attachment; filename="RCA-${investigationId}.md"`,
+    );
+    ctx.header("Cache-Control", "private, no-store");
+    return ctx.body(report);
+  });
   app.post("/investigations/:investigationId/cancel", async (ctx) => {
     return ctx.json({ cancelled: await rcaService.cancel(ctx.req.param("investigationId")) });
   });
