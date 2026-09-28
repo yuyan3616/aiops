@@ -125,7 +125,7 @@ export default function App() {
     send(text, conversationId ? undefined : draftConfig, selectedSkills);
   };
 
-  const startNew = () => {
+  const startNew = async () => {
     navigate("/");
     setSidebarOpen(false);
     setSelectedSkills([]);
