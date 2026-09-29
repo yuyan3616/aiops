@@ -182,6 +182,20 @@ export class InvestigationVisualizationService {
     return this.enqueue(investigationId, conversationId, true);
   }
 
+  async waitForIdle(investigationId?: string): Promise<void> {
+    if (investigationId) {
+      const job = this.jobs.get(investigationId);
+      if (job) await job;
+      return;
+    }
+
+    // Snapshot + loop instead of a single Promise.all so callers also cover
+    // jobs that were queued by a task settling during the first await.
+    while (this.jobs.size > 0) {
+      await Promise.allSettled([...this.jobs.values()]);
+    }
+  }
+
   async recoverPending(): Promise<string[]> {
     const recovered: string[] = [];
     for (const investigationId of await this.repository.listInvestigationIds()) {
