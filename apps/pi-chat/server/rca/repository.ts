@@ -13,6 +13,7 @@ import { join, relative, resolve } from "node:path";
 
 import { appendLedgerEvent, assertBudgetConsistency, foldBudget, nextLedgerEvent } from "./budget";
 import type { Investigation, InvestigationEvent, RCAResult, ToolCallRecord } from "./types";
+import type { InvestigationVisualizationArtifact } from "./visualization/types";
 
 const terminalInvestigationStatuses = new Set<Investigation["status"]>([
   "completed",
@@ -62,6 +63,7 @@ function preserveTerminalState(current: Investigation, incoming: Investigation):
 export class InvestigationRepository {
   readonly investigationsDir: string;
   private readonly saveQueues = new Map<string, Promise<void>>();
+  private readonly visualizationSaveQueues = new Map<string, Promise<void>>();
 
   constructor(investigationsDir: string) {
     this.investigationsDir = resolve(investigationsDir);
@@ -229,6 +231,79 @@ export class InvestigationRepository {
       JSON.stringify(evaluation, null, 2),
       "utf8",
     );
+  }
+
+  async listInvestigationIds(): Promise<string[]> {
+    try {
+      const entries = await readdir(this.investigationsDir, { withFileTypes: true });
+      return entries
+        .filter((entry) => entry.isDirectory() && /^INV-[A-Za-z0-9-]+$/.test(entry.name))
+        .map((entry) => entry.name)
+        .sort();
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    }
+  }
+
+  async getVisualization(
+    investigationId: string,
+  ): Promise<InvestigationVisualizationArtifact | undefined> {
+    try {
+      const raw = await readFile(
+        join(this.directory(investigationId), "visualization.json"),
+        "utf8",
+      );
+      return JSON.parse(raw) as InvestigationVisualizationArtifact;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    }
+  }
+
+  async saveVisualization(
+    investigationId: string,
+    artifact: InvestigationVisualizationArtifact,
+  ): Promise<void> {
+    if (artifact.investigationId !== investigationId) {
+      throw new Error("Visualization investigation id mismatch");
+    }
+    const snapshot = structuredClone(artifact);
+    const previous = this.visualizationSaveQueues.get(investigationId) ?? Promise.resolve();
+    const next = previous
+      .catch(() => undefined)
+      .then(async () => {
+        const directory = this.directory(investigationId);
+        await mkdir(directory, { recursive: true });
+        const target = join(directory, "visualization.json");
+        const temporary = join(directory, ".visualization-" + randomUUID() + ".tmp");
+        try {
+          const handle = await open(temporary, "wx");
+          try {
+            await handle.writeFile(JSON.stringify(snapshot, null, 2), "utf8");
+            await handle.sync();
+          } finally {
+            await handle.close();
+          }
+          await rename(temporary, target);
+        } catch (error) {
+          await unlink(temporary).catch(() => undefined);
+          throw error;
+        }
+        const directoryHandle = await open(directory, "r");
+        try {
+          await directoryHandle.sync();
+        } finally {
+          await directoryHandle.close();
+        }
+      });
+    const tracked = next.finally(() => {
+      if (this.visualizationSaveQueues.get(investigationId) === tracked) {
+        this.visualizationSaveQueues.delete(investigationId);
+      }
+    });
+    this.visualizationSaveQueues.set(investigationId, tracked);
+    return tracked;
   }
 
   async recoverInterrupted(): Promise<string[]> {

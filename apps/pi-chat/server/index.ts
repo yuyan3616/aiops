@@ -39,6 +39,12 @@ const rcaService = new RcaService(
   modelRuntime,
   rcaTools,
 );
+const recoveredVisualizations = await rcaService.recoverVisualizations();
+if (recoveredVisualizations.length > 0) {
+  process.stderr.write(
+    `Recovered pending RCA visualizations: ${recoveredVisualizations.join(", ")}\n`,
+  );
+}
 const service = new ConversationService(globalConfig, modelRuntime, rcaService);
 
 const app = createApp(service, rcaService);

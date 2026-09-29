@@ -24,6 +24,7 @@ export type EventType =
   | "thinking.completed"
   | "hypothesis.updated"
   | "report.ready"
+  | "visualization.updated"
   | "agent.started"
   | "agent.thinking.delta"
   | "agent.tool.started"
@@ -97,6 +98,36 @@ export interface InvestigationReportArtifact {
   status: "confirmed" | "probable" | "inconclusive";
   summary: string;
   confidence: number;
+}
+
+export type InvestigationVisualizationStatus =
+  | "pending"
+  | "generating"
+  | "ready"
+  | "failed";
+
+export interface InvestigationVisualizationArtifact {
+  schemaVersion: 1;
+  investigationId: string;
+  status: InvestigationVisualizationStatus;
+  sourceHash: string;
+  updatedAt: string;
+  generatedAt?: string;
+  summary: {
+    durationMs?: number;
+    expertCost?: number;
+    expertTokens: number;
+    budget: {
+      used: number;
+      total: number;
+      primaryUsed: number;
+      primaryLimit: number;
+      recoveryUsed: number;
+      recoveryLimit: number;
+    };
+  };
+  mermaid?: string;
+  error?: string;
 }
 
 export interface AgentThreadEvidence {

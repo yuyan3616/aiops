@@ -6,6 +6,7 @@ import type {
   ConversationSummary,
   CreateConversationResponse,
   StreamEvent,
+  InvestigationVisualizationArtifact,
 } from "@shared/types";
 
 async function readResponse<T>(request: Promise<Response>): Promise<T> {
@@ -124,5 +125,31 @@ export function updateConversationConfig(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(update),
     }),
+  );
+}
+
+
+export function getInvestigationVisualization(
+  investigationId: string,
+): Promise<InvestigationVisualizationArtifact> {
+  return readResponse(
+    fetch(
+      "/api/rca/investigations/" +
+        encodeURIComponent(investigationId) +
+        "/visualization",
+    ),
+  );
+}
+
+export function regenerateInvestigationVisualization(
+  investigationId: string,
+): Promise<InvestigationVisualizationArtifact> {
+  return readResponse(
+    fetch(
+      "/api/rca/investigations/" +
+        encodeURIComponent(investigationId) +
+        "/visualization/regenerate",
+      { method: "POST" },
+    ),
   );
 }

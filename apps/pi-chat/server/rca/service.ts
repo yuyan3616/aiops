@@ -13,6 +13,11 @@ import { InvestigationEventBus, type InvestigationEventListener } from "./events
 import { getParquetRuntimeDiagnostics } from "./parquet";
 import { PiExpertRunError, PiExpertRunner, type RecordedAgentToolExecution } from "./pi-expert";
 import { InvestigationRepository } from "./repository";
+import { InvestigationVisualizationService } from "./visualization/service";
+import type {
+  InvestigationVisualizationArtifact,
+  InvestigationVisualizationEvent,
+} from "./visualization/types";
 import { safeRuntimeDetail } from "./runtime-accounting";
 import { AbortableSemaphore } from "./semaphore";
 import {
@@ -258,6 +263,7 @@ function observationFacts(
 
 export class RcaService {
   private readonly repository: InvestigationRepository;
+  private readonly visualizationService: InvestigationVisualizationService;
   private readonly tools?: ObservabilityToolRegistry;
   private readonly expertRunner?: PiExpertRunner;
   private readonly agenticRunning = new Map<string, RunningAgenticInvestigation>();
@@ -280,6 +286,7 @@ export class RcaService {
     tools?: ObservabilityToolRegistry,
   ) {
     this.repository = repository;
+    this.visualizationService = new InvestigationVisualizationService(repository);
     this.tools = tools;
     this.expertRunner = modelRuntime && tools ? new PiExpertRunner(modelRuntime, tools) : undefined;
   }
@@ -1861,11 +1868,22 @@ export class RcaService {
     const report = this.renderReport(investigation);
     await this.saveInvestigation(investigation);
     await this.repository.saveReport(investigationId, investigation.rootCause, report);
+    const visualizationConversationId = this.agenticRunning.get(investigationId)?.conversationId;
     await bus.publish(
       "investigation.completed",
       `RCA ${investigation.rootCause.status}: ${investigation.rootCause.summary}`,
       { result: investigation.rootCause, source: "main-agent" },
     );
+    try {
+      await this.visualizationService.enqueue(
+        investigationId,
+        visualizationConversationId,
+      );
+    } catch (error) {
+      process.stderr.write(
+        `Failed to enqueue RCA visualization for ${investigationId}: ${String(error)}\n`,
+      );
+    }
     this.cleanupAgentic(investigationId);
     return { investigation, report };
   }
@@ -1970,6 +1988,26 @@ export class RcaService {
 
   getReport(investigationId: string): Promise<string> {
     return this.repository.getReport(investigationId);
+  }
+
+  getVisualization(investigationId: string): Promise<InvestigationVisualizationArtifact> {
+    return this.visualizationService.getOrCreate(investigationId);
+  }
+
+  regenerateVisualization(
+    investigationId: string,
+  ): Promise<InvestigationVisualizationArtifact> {
+    return this.visualizationService.regenerate(investigationId);
+  }
+
+  subscribeVisualization(
+    listener: (event: InvestigationVisualizationEvent) => void | Promise<void>,
+  ): () => void {
+    return this.visualizationService.subscribe(listener);
+  }
+
+  recoverVisualizations(): Promise<string[]> {
+    return this.visualizationService.recoverPending();
   }
 
   async cancel(investigationId: string): Promise<boolean> {

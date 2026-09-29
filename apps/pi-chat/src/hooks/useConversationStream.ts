@@ -43,6 +43,7 @@ export function useConversationStream(conversationId?: string) {
     message: string;
   }>({ message: "" });
   const [loading, setLoading] = useState(false);
+  const [visualizationRevision, setVisualizationRevision] = useState(0);
   const [conversationMeta, setConversationMeta] = useState<{
     conversationId?: string;
     conversation?: ConversationSummary;
@@ -55,6 +56,7 @@ export function useConversationStream(conversationId?: string) {
 
   useEffect(() => {
     dispatch({ type: "select", conversationId });
+    setVisualizationRevision(0);
   }, [conversationId]);
 
   const messageItems = [
@@ -88,6 +90,9 @@ export function useConversationStream(conversationId?: string) {
         if (conversation?.id === conversationId) {
           setConversationMeta({ conversationId, conversation });
         }
+      }
+      if (event.type === "visualization.updated") {
+        setVisualizationRevision((current) => current + 1);
       }
       setMessageState((current) => ({
         conversationId,
@@ -292,5 +297,6 @@ export function useConversationStream(conversationId?: string) {
       conversationMeta.conversationId === conversationId
         ? conversationMeta.conversation?.title
         : undefined,
+    visualizationRevision,
   };
 }
