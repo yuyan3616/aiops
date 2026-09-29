@@ -2010,6 +2010,10 @@ export class RcaService {
     return this.visualizationService.recoverPending();
   }
 
+  waitForVisualizationIdle(investigationId?: string): Promise<void> {
+    return this.visualizationService.waitForIdle(investigationId);
+  }
+
   async cancel(investigationId: string): Promise<boolean> {
     const running = this.agenticRunning.get(investigationId);
     if (!running) return false;
