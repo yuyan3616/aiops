@@ -225,7 +225,7 @@ export class RcaChatEventMapper {
             type: "investigation.updated",
             payload: {
               investigationId: this.investigationId,
-              state: "completed",
+              state: result.status === "inconclusive" ? "inconclusive" : "completed",
               rootCauseStatus: result.status,
             },
           },
