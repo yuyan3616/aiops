@@ -24,6 +24,7 @@ export type EventType =
   | "thinking.completed"
   | "hypothesis.updated"
   | "report.ready"
+  | "visualization.updated"
   | "agent.started"
   | "agent.thinking.delta"
   | "agent.tool.started"
