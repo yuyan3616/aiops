@@ -605,7 +605,12 @@ export class ConversationService {
       activeSkillNames: [...selectedSkills],
     };
     this.managedSessions.set(managedSession.id, managedSession);
-    this.bind(managedSession);
+    try {
+      this.bind(managedSession);
+    } catch (error) {
+      this.release(managedSession.id, { dropChannel: false });
+      throw error;
+    }
     return managedSession;
   }
 
