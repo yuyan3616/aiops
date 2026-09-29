@@ -6,6 +6,7 @@ import type {
   ConversationSummary,
   CreateConversationResponse,
   StreamEvent,
+  InvestigationVisualizationArtifact,
 } from "@shared/types";
 
 async function readResponse<T>(request: Promise<Response>): Promise<T> {
