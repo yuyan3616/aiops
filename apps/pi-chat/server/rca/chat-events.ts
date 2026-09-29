@@ -220,25 +220,71 @@ export class RcaChatEventMapper {
       case "investigation.completed": {
         const result = event.payload.result as RCAResult | undefined;
         if (!result) return [];
-        return [{
-          type: "report.ready",
-          payload: {
-            investigationId: this.investigationId,
-            filename: `RCA-${this.investigationId}.md`,
-            status: result.status,
-            summary: result.summary,
-            confidence: result.confidence,
+        return [
+          {
+            type: "investigation.updated",
+            payload: {
+              investigationId: this.investigationId,
+              state: result.status === "inconclusive" ? "inconclusive" : "completed",
+              rootCauseStatus: result.status,
+            },
           },
-        }];
+          {
+            type: "report.ready",
+            payload: {
+              investigationId: this.investigationId,
+              filename: `RCA-${this.investigationId}.md`,
+              status: result.status,
+              summary: result.summary,
+              confidence: result.confidence,
+            },
+          },
+        ];
       }
       case "investigation.started":
-      case "user.intervention":
+        return [{
+          type: "investigation.updated",
+          payload: {
+            investigationId: this.investigationId,
+            state: "running",
+            ...(typeof event.payload.caseId === "string" ? { caseId: event.payload.caseId } : {}),
+          },
+        }];
       case "investigation.interrupted":
+        return [{
+          type: "investigation.updated",
+          payload: {
+            investigationId: this.investigationId,
+            state: "interrupted",
+          },
+        }];
       case "investigation.resumed":
+        return [{
+          type: "investigation.updated",
+          payload: {
+            investigationId: this.investigationId,
+            state: "running",
+          },
+        }];
+      case "investigation.failed":
+        return [{
+          type: "investigation.updated",
+          payload: {
+            investigationId: this.investigationId,
+            state: "failed",
+          },
+        }];
+      case "investigation.cancelled":
+        return [{
+          type: "investigation.updated",
+          payload: {
+            investigationId: this.investigationId,
+            state: "cancelled",
+          },
+        }];
+      case "user.intervention":
       case "observation.created":
       case "round.completed":
-      case "investigation.failed":
-      case "investigation.cancelled":
         return [];
     }
   }

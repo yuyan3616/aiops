@@ -23,6 +23,7 @@ export type EventType =
   | "thinking.delta"
   | "thinking.completed"
   | "hypothesis.updated"
+  | "investigation.updated"
   | "report.ready"
   | "visualization.updated"
   | "agent.started"
@@ -98,6 +99,25 @@ export interface InvestigationReportArtifact {
   status: "confirmed" | "probable" | "inconclusive";
   summary: string;
   confidence: number;
+}
+
+export type ConversationInvestigationState =
+  | "idle"
+  | "unavailable"
+  | "running"
+  | "interrupted"
+  | "completed"
+  | "inconclusive"
+  | "failed"
+  | "cancelled";
+
+export interface ConversationInvestigationSnapshot {
+  state: ConversationInvestigationState;
+  investigationId?: string;
+  caseId?: string;
+  symptom?: string;
+  rounds?: number;
+  rootCauseStatus?: "confirmed" | "probable" | "inconclusive";
 }
 
 export type InvestigationVisualizationStatus =
@@ -215,6 +235,7 @@ export interface ConversationSummary {
 
 export interface ConversationSnapshot {
   conversation: ConversationSummary;
+  rca?: ConversationInvestigationSnapshot;
   messageList: MessageListItem[];
   activeSkillNames: string[];
   model: { provider: string; id: string };

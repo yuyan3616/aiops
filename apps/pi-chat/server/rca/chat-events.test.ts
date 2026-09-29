@@ -174,3 +174,39 @@ test("projects terminal runtime fields and preserves legacy termination fallback
   assert.equal(legacy[0]?.payload.terminationReason, "service_restart");
   assert.equal(legacy[0]?.payload.usage, undefined);
 });
+
+
+test("projects investigation lifecycle for details drawer before report is ready", () => {
+  const mapper = new RcaChatEventMapper("INV-live");
+  const started = mapper.map(
+    event(30, "investigation.started", {
+      caseId: "t039",
+    }),
+  );
+  assert.equal(started[0]?.type, "investigation.updated");
+  assert.equal(started[0]?.payload.investigationId, "INV-live");
+  assert.equal(started[0]?.payload.state, "running");
+
+  const resumed = mapper.map(event(31, "investigation.resumed", {}));
+  assert.equal(resumed[0]?.payload.state, "running");
+
+  const completed = mapper.map(
+    event(32, "investigation.completed", {
+      result: {
+        investigationId: "INV-live",
+        status: "probable",
+        rootCauseEntities: ["email-r2c9g"],
+        summary: "email pod is slow",
+        evidenceIds: ["E01"],
+        rejectedHypotheses: [],
+        confidence: 0.75,
+      },
+    }),
+  );
+  assert.deepEqual(
+    completed.map((item) => item.type),
+    ["investigation.updated", "report.ready"],
+  );
+  assert.equal(completed[0]?.payload.state, "completed");
+  assert.equal(completed[0]?.payload.rootCauseStatus, "probable");
+});

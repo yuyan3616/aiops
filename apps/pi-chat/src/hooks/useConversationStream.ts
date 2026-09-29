@@ -1,6 +1,7 @@
 import type {
   ChatMessage,
   ConversationConfigUpdate,
+  ConversationInvestigationSnapshot,
   ConversationSummary,
   MessageListItem,
   StreamEvent,
@@ -44,6 +45,8 @@ export function useConversationStream(conversationId?: string) {
   }>({ message: "" });
   const [loading, setLoading] = useState(false);
   const [visualizationRevision, setVisualizationRevision] = useState(0);
+  const [investigation, setInvestigation] =
+    useState<ConversationInvestigationSnapshot>();
   const [conversationMeta, setConversationMeta] = useState<{
     conversationId?: string;
     conversation?: ConversationSummary;
@@ -57,6 +60,7 @@ export function useConversationStream(conversationId?: string) {
   useEffect(() => {
     dispatch({ type: "select", conversationId });
     setVisualizationRevision(0);
+    setInvestigation(undefined);
   }, [conversationId]);
 
   const messageItems = [
@@ -94,6 +98,15 @@ export function useConversationStream(conversationId?: string) {
       if (event.type === "visualization.updated") {
         setVisualizationRevision((current) => current + 1);
       }
+      if (event.type === "investigation.updated") {
+        const payload = event.payload as Partial<ConversationInvestigationSnapshot>;
+        if (payload.investigationId && payload.state) {
+          setInvestigation((current) => ({
+            ...(current?.investigationId === payload.investigationId ? current : {}),
+            ...payload,
+          } as ConversationInvestigationSnapshot));
+        }
+      }
       setMessageState((current) => ({
         conversationId,
         items: conversationReducer(current.conversationId === conversationId ? current.items : [], {
@@ -130,6 +143,7 @@ export function useConversationStream(conversationId?: string) {
           conversationId,
           conversation: conversation.conversation,
         });
+        setInvestigation(conversation.rca);
         setSelectedSkills(conversation.activeSkillNames ?? []);
         setErrorState({ conversationId, message: "" });
         syncing = false;
@@ -298,5 +312,6 @@ export function useConversationStream(conversationId?: string) {
         ? conversationMeta.conversation?.title
         : undefined,
     visualizationRevision,
+    investigation,
   };
 }

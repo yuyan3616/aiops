@@ -7,7 +7,10 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 
-import type { InvestigationVisualizationArtifact } from "@shared/types";
+import type {
+  ConversationInvestigationState,
+  InvestigationVisualizationArtifact,
+} from "@shared/types";
 
 import {
   getInvestigationVisualization,
@@ -49,6 +52,7 @@ function costLabel(value: number | undefined): string {
 interface InvestigationDetailDrawerProps {
   open: boolean;
   investigationId?: string;
+  investigationState?: ConversationInvestigationState;
   visualizationRevision: number;
   onClose: () => void;
 }
@@ -56,6 +60,7 @@ interface InvestigationDetailDrawerProps {
 export function InvestigationDetailDrawer({
   open,
   investigationId,
+  investigationState,
   visualizationRevision,
   onClose,
 }: InvestigationDetailDrawerProps) {
@@ -66,8 +71,14 @@ export function InvestigationDetailDrawer({
   const [regenerating, setRegenerating] = useState(false);
   const resizeRef = useRef<{ pointerId: number } | undefined>(undefined);
 
+  const terminalForVisualization =
+    investigationState === "completed" ||
+    investigationState === "inconclusive" ||
+    investigationState === "failed" ||
+    investigationState === "cancelled";
+
   const refresh = useCallback(async () => {
-    if (!open || !investigationId) return;
+    if (!open || !investigationId || !terminalForVisualization) return;
     setLoading(true);
     setRequestError("");
     try {
@@ -78,7 +89,7 @@ export function InvestigationDetailDrawer({
     } finally {
       setLoading(false);
     }
-  }, [investigationId, open]);
+  }, [investigationId, open, terminalForVisualization]);
 
   useEffect(() => {
     setArtifact(undefined);
@@ -86,9 +97,16 @@ export function InvestigationDetailDrawer({
   }, [investigationId]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || !terminalForVisualization) return;
     void refresh();
-  }, [open, investigationId, visualizationRevision, refresh]);
+  }, [
+    open,
+    investigationId,
+    investigationState,
+    visualizationRevision,
+    terminalForVisualization,
+    refresh,
+  ]);
 
   useEffect(() => {
     if (!open || !artifact || (artifact.status !== "pending" && artifact.status !== "generating")) {
@@ -229,7 +247,23 @@ export function InvestigationDetailDrawer({
           )}
         </div>
 
-        {loading && !artifact ? (
+        {investigationState === "running" ? (
+          <div className="investigation-visualization-state">
+            <span className="investigation-visualization-spinner" aria-hidden />
+            <strong>调查进行中</strong>
+            <span>整体排障流程会在 Investigation 完成后异步生成，并自动在这里展示。</span>
+          </div>
+        ) : investigationState === "interrupted" ? (
+          <div className="investigation-visualization-state">
+            <strong>调查已中断</strong>
+            <span>恢复调查并完成收敛后，会生成整体排障流程。</span>
+          </div>
+        ) : investigationState === "unavailable" ? (
+          <div className="investigation-visualization-state investigation-visualization-error">
+            <strong>调查状态暂不可用</strong>
+            <span>当前会话仍保留 Investigation 关联，但持久化状态暂时无法读取。</span>
+          </div>
+        ) : loading && !artifact ? (
           <div className="investigation-visualization-state">
             <strong>正在读取排障流程…</strong>
           </div>

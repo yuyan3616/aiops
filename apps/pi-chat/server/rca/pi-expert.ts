@@ -41,6 +41,22 @@ export interface RecordedAgentToolExecution {
   };
 }
 
+interface CollectedToolEvidence {
+  toolCallId: string;
+  tool: ObservabilityToolName;
+  summary: string;
+  result: unknown;
+}
+
+function boundedFinalizeResult(value: unknown): unknown {
+  const serialized = JSON.stringify(value);
+  if (serialized.length <= 5_000) return value;
+  return {
+    truncated: true,
+    preview: serialized.slice(0, 5_000),
+  };
+}
+
 export interface PiExpertRunContext {
   investigation: Investigation;
   task: RcaTask;
@@ -266,6 +282,7 @@ export class PiExpertRunner {
     sampleProcessMemory();
 
     const perToolCalls = new Map<ObservabilityToolName, number>();
+    const collectedToolEvidence: CollectedToolEvidence[] = [];
     let toolCallCount = 0;
     let toolError: unknown;
     const toolDefinitions = this.tools.createPiTools({
@@ -310,6 +327,12 @@ export class PiExpertRunner {
         }
         sampleProcessMemory();
         const compactResult = compactToolResultForAgent(name, recorded.execution.result);
+        collectedToolEvidence.push({
+          toolCallId: recorded.callId,
+          tool: name,
+          summary: recorded.execution.summary,
+          result: boundedFinalizeResult(compactResult),
+        });
         return {
           content: [
             {
@@ -402,6 +425,104 @@ export class PiExpertRunner {
         })),
     };
 
+    const finalizeWithoutTools = async (): Promise<string> => {
+      const finalizeSettings = SettingsManager.inMemory({
+        compaction: { enabled: false },
+        retry: { enabled: true, maxRetries: 1 },
+      });
+      const finalizeLoader = new DefaultResourceLoader({
+        cwd: process.cwd(),
+        agentDir,
+        settingsManager: finalizeSettings,
+        noExtensions: true,
+        noSkills: true,
+        noPromptTemplates: true,
+        noThemes: true,
+        noContextFiles: true,
+        systemPromptOverride: () =>
+          [
+            buildExpertSystemPrompt(profile, context.brief),
+            "# Finalize Mode",
+            "调查阶段已经结束。当前 Session 没有任何工具，禁止继续搜索、扩展范围或编造新事实。",
+            "只能基于下面提供的 brief、hypotheses 和已收集 tool evidence 生成最终 finding。",
+            "最终响应必须且只能是一个 JSON object；不要 markdown fence，不要解释文字。",
+          ].join("\n\n"),
+      });
+      await finalizeLoader.reload();
+
+      const { session: finalizeSession } = await createAgentSession({
+        cwd: process.cwd(),
+        agentDir,
+        modelRuntime: this.modelRuntime,
+        ...(model ? { model } : {}),
+        resourceLoader: finalizeLoader,
+        settingsManager: finalizeSettings,
+        sessionManager: SessionManager.inMemory(),
+        noTools: "builtin",
+        tools: [],
+        customTools: [],
+      });
+
+      let finalizeOutput = "";
+      let finalizeFailure:
+        | { reason: "aborted" | "provider_error"; detail?: string }
+        | undefined;
+      const unsubscribeFinalize = finalizeSession.subscribe((event) => {
+        if (event.type === "message_end" && event.message.role === "assistant") {
+          const message = event.message as AssistantMessage;
+          usage.record(message);
+          finalizeFailure =
+            message.stopReason === "error" || message.stopReason === "aborted"
+              ? {
+                  reason: message.stopReason === "aborted" ? "aborted" : "provider_error",
+                  detail: message.errorMessage,
+                }
+              : undefined;
+          return;
+        }
+        if (event.type !== "message_update") return;
+        if (event.assistantMessageEvent.type === "text_delta") {
+          finalizeOutput += event.assistantMessageEvent.delta;
+          totalOutputChars += event.assistantMessageEvent.delta.length;
+        } else if (event.assistantMessageEvent.type === "thinking_delta") {
+          thinkingChars += event.assistantMessageEvent.delta.length;
+        }
+      });
+      const abortFinalize = () => finalizeSession.abort();
+      context.signal?.addEventListener("abort", abortFinalize, { once: true });
+
+      try {
+        await finalizeSession.prompt(
+          [
+            "请根据已经完成的调查生成规定的 JSON finding。",
+            "只能引用 collectedToolEvidence 中真实存在的 toolCallId。",
+            "negative/no-anomaly 结果同样是有效 finding。",
+            "",
+            JSON.stringify(
+              {
+                brief: context.brief,
+                caseId: context.task.caseId,
+                alert: prompt.alert,
+                currentHypotheses: prompt.currentHypotheses,
+                collectedToolEvidence,
+              },
+              null,
+              2,
+            ),
+          ].join("\n"),
+        );
+        if (context.signal?.aborted) {
+          throw new DOMException("Investigation cancelled", "AbortError");
+        }
+        if (finalizeFailure) throw new AssistantRunFailure(finalizeFailure);
+        return finalizeOutput;
+      } finally {
+        context.signal?.removeEventListener("abort", abortFinalize);
+        unsubscribeFinalize();
+        finalizeSession.dispose();
+      }
+    };
+
     let parsed: Record<string, unknown>;
     try {
       try {
@@ -424,18 +545,19 @@ export class PiExpertRunner {
           repairAttempted = true;
           parseFailure = error instanceof SyntaxError ? "json_invalid" : "json_missing";
           parseFailureDetail = error instanceof Error ? error.message : String(error);
-          output = "";
-          lastMessageFailure = undefined;
-          await session.prompt(
-            "调查工作已经完成，不要再调用工具。现在只返回规定的 JSON finding，并且只能使用已经收集到的 evidence 和 toolCallId。negative/no-anomaly 结果同样是有效 finding。不要重新开始调查，也不要扩大搜索范围。",
-          );
           sampleProcessMemory();
-          if (context.signal?.aborted)
-            throw new DOMException("Investigation cancelled", "AbortError");
-          if (lastMessageFailure) throw new AssistantRunFailure(lastMessageFailure);
+
+          // Never repair inside the original tool-capable Session. A fresh no-tools
+          // Session makes the investigation -> finalize boundary deterministic and
+          // prevents a model that exhausted its tool budget from entering another tool loop.
+          const finalizeOutput = await finalizeWithoutTools();
           try {
-            parsed = extractJson(output);
+            parsed = extractJson(finalizeOutput);
           } catch (repairError) {
+            parseFailure =
+              repairError instanceof SyntaxError ? "json_invalid" : "json_missing";
+            parseFailureDetail =
+              repairError instanceof Error ? repairError.message : String(repairError);
             invalidOutput = true;
             throw repairError;
           }
