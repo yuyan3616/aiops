@@ -126,3 +126,29 @@ export function updateConversationConfig(
     }),
   );
 }
+
+
+export function getInvestigationVisualization(
+  investigationId: string,
+): Promise<InvestigationVisualizationArtifact> {
+  return readResponse(
+    fetch(
+      "/api/rca/investigations/" +
+        encodeURIComponent(investigationId) +
+        "/visualization",
+    ),
+  );
+}
+
+export function regenerateInvestigationVisualization(
+  investigationId: string,
+): Promise<InvestigationVisualizationArtifact> {
+  return readResponse(
+    fetch(
+      "/api/rca/investigations/" +
+        encodeURIComponent(investigationId) +
+        "/visualization/regenerate",
+      { method: "POST" },
+    ),
+  );
+}
