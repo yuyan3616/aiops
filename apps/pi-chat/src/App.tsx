@@ -1,7 +1,8 @@
 import { Composer } from "@components/Composer";
 import { ConversationSidebar } from "@components/ConversationSidebar";
 import { EmptyConversation } from "@components/EmptyConversation";
-import { LoadingIndicator } from "@components/LoadingIndicator";\nimport { InvestigationDetailDrawer } from "@components/rca/InvestigationDetailDrawer";
+import { LoadingIndicator } from "@components/LoadingIndicator";
+import { InvestigationDetailDrawer } from "@components/rca/InvestigationDetailDrawer";
 import { MessageItem } from "@components/MessageItem";
 import { Button } from "@components/ui/button";
 import { Skeleton } from "@components/ui/skeleton";
@@ -37,7 +38,8 @@ export default function App() {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [bootstrap, setBootstrap] = useState<BootstrapData>({ models: [], skills: [] });
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);\n  const [detailOpen, setDetailOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [detailOpen, setDetailOpen] = useState(false);
 
   const messageBottomRef = useRef<HTMLDivElement>(null);
   const autoFollowRef = useRef(true);
