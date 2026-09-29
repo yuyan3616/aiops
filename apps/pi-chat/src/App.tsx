@@ -54,6 +54,7 @@ export default function App() {
     selectedSkills,
     setSelectedSkills,
     conversationTitle: streamedConversationTitle,
+    visualizationRevision,
   } = useConversationStream(conversationId);
   const { draftConfig, model, models, thinkingLevel, thinkingLevels, changeModel, changeThinking } =
     useConversationConfig(conversationId, bootstrap.models);
@@ -73,6 +74,7 @@ export default function App() {
     window.scrollTo(0, 0);
     autoFollowRef.current = true;
     lastScrollYRef.current = 0;
+    setDetailOpen(false);
   }, [conversationId]);
 
   useEffect(() => {
