@@ -50,3 +50,25 @@ test("conversation history exposes assistant provider failures instead of an emp
     "模型服务认证失败，当前 API Key 可能已失效或被禁用，请检查模型配置后重新发送。",
   );
 });
+
+test("persisted assistant thinking is completed so history opens collapsed", () => {
+  type Entry = ConstructorParameters<typeof ConversationViewBuilder>[0][number];
+  const entry = {
+    type: "message",
+    id: "assistant-with-thinking",
+    timestamp: 1000,
+    message: {
+      role: "assistant",
+      content: [
+        { type: "thinking", thinking: "检查告警时间和调用链" },
+        { type: "text", text: "分析完成" },
+      ],
+    },
+  } as unknown as Entry;
+
+  const thinking = new ConversationViewBuilder([entry])
+    .build()
+    .find((item) => item.kind === "thinking");
+  assert.equal(thinking?.kind === "thinking" ? thinking.thinking.text : "", "检查告警时间和调用链");
+  assert.equal(thinking?.kind === "thinking" ? thinking.thinking.completed : false, true);
+});
