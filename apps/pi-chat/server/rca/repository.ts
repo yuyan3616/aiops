@@ -12,7 +12,8 @@ import {
 import { join, relative, resolve } from "node:path";
 
 import { appendLedgerEvent, assertBudgetConsistency, foldBudget, nextLedgerEvent } from "./budget";
-import type { Investigation, InvestigationEvent, RCAResult, ToolCallRecord } from "./types";\nimport type { InvestigationVisualizationArtifact } from "./visualization/types";
+import type { Investigation, InvestigationEvent, RCAResult, ToolCallRecord } from "./types";
+import type { InvestigationVisualizationArtifact } from "./visualization/types";
 
 const terminalInvestigationStatuses = new Set<Investigation["status"]>([
   "completed",
@@ -61,7 +62,8 @@ function preserveTerminalState(current: Investigation, incoming: Investigation):
 
 export class InvestigationRepository {
   readonly investigationsDir: string;
-  private readonly saveQueues = new Map<string, Promise<void>>();\n  private readonly visualizationSaveQueues = new Map<string, Promise<void>>();
+  private readonly saveQueues = new Map<string, Promise<void>>();
+  private readonly visualizationSaveQueues = new Map<string, Promise<void>>();
 
   constructor(investigationsDir: string) {
     this.investigationsDir = resolve(investigationsDir);
