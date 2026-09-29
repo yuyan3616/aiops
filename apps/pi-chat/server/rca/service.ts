@@ -1573,7 +1573,9 @@ export class RcaService {
               : error.providerTransient
                 ? "provider_error"
                 : error.diagnostics.failureReason === "json_invalid" ||
-                    error.diagnostics.failureReason === "json_missing"
+                    error.diagnostics.failureReason === "json_missing" ||
+                    error.diagnostics.failureReason === "finding_invalid" ||
+                    error.diagnostics.failureReason === "finding_missing"
                   ? "invalid_output"
                   : "runtime_error",
             detail: safeRuntimeDetail(error),

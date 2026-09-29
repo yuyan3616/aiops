@@ -34,5 +34,9 @@
 
 不要把 correlation 升级成 causation。最终根因由 Main Investigation Agent 综合多个 finding 后决定。
 
-## 最终返回
-只返回 JSON，不要包裹 markdown。runtime 会校验允许的 modality 和 tool-call provenance 后再接收 evidence。
+## 最终提交
+- 调查工具只用于取证，不要把“最终 finding”伪装成普通文本 JSON。
+- Runtime 进入 Finalize Phase 后会关闭全部调查工具，只开放协议工具 `submit_finding`。
+- 必须通过 `submit_finding` 提交最终 finding；该协议动作不消耗调查工具预算。
+- `submit_finding` 只能引用当前专家 Session 内真实、已成功返回的 toolCallId。
+- Runtime 会继续校验允许的 modality、hypothesis 引用和 tool-call provenance 后再接收 evidence。
