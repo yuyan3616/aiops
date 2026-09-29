@@ -27,9 +27,11 @@ function findingContract(profile: ExpertProfile): string {
   return `## Runtime 约束
 
 允许使用的 evidence modality：${profile.modalities.join(", ")}。
-专家工具调用上限：${profile.maxToolCalls}。
+调查工具调用上限：${profile.maxToolCalls}。
 
-必须严格返回下面的 JSON 结构：
+调查阶段只负责有边界地取证。Runtime 进入 Finalize Phase 后，会把 active tools 切换为唯一的协议工具 submit_finding。
+
+submit_finding 的参数结构：
 {
   "status": "succeeded|failed|inconclusive|blocked",
   "strength": "strong|moderate|weak|inconclusive",
@@ -38,7 +40,7 @@ function findingContract(profile: ExpertProfile): string {
   "conclusions": ["1-5 条对当前 brief 的直接回答"],
   "evidenceClaims": [
     {
-      "toolCallId": "真实工具调用返回的 Cxx",
+      "toolCallId": "当前 Session 内真实工具调用返回的 Cxx",
       "modality": "一个允许的 modality",
       "entity": "可选 entity",
       "summary": "该工具结果能够建立什么事实",
@@ -50,7 +52,9 @@ function findingContract(profile: ExpertProfile): string {
   "candidateMechanism": "可选 mechanism",
   "suggestedFollowUps": ["只填写超出当前 evidence 范围的后续建议"],
   "blockedOn": "仅当 status=blocked 时填写"
-}`;
+}
+
+不要用普通 assistant 文本代替 submit_finding。`;
 }
 
 export function buildExpertSystemPrompt(profile: ExpertProfile, brief: InvestigationBrief): string {
