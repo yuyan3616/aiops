@@ -63,7 +63,7 @@ export function MermaidFlowViewer({ source }: { source: string }) {
         transform: TransformState;
       }
     | undefined
-  >();
+  >(undefined);
   const autoFitRef = useRef(true);
   const [svg, setSvg] = useState("");
   const [error, setError] = useState("");
