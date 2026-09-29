@@ -1,6 +1,7 @@
-import type { AssistantMessage } from "@earendil-works/pi-ai";
+import { Type, type AssistantMessage } from "@earendil-works/pi-ai";
 import {
   createAgentSession,
+  defineTool,
   DefaultResourceLoader,
   getAgentDir,
   SessionManager,
@@ -38,22 +39,6 @@ export interface RecordedAgentToolExecution {
     result: unknown;
     summary: string;
     rawRef?: string;
-  };
-}
-
-interface CollectedToolEvidence {
-  toolCallId: string;
-  tool: ObservabilityToolName;
-  summary: string;
-  result: unknown;
-}
-
-function boundedFinalizeResult(value: unknown): unknown {
-  const serialized = JSON.stringify(value);
-  if (serialized.length <= 5_000) return value;
-  return {
-    truncated: true,
-    preview: serialized.slice(0, 5_000),
   };
 }
 
@@ -151,22 +136,6 @@ class AssistantRunFailure extends Error {
   }
 }
 
-function extractJson(output: string): Record<string, unknown> {
-  const trimmed = output.trim();
-  let value: unknown;
-  try {
-    value = JSON.parse(trimmed);
-  } catch {
-    const match = trimmed.match(/\{[\s\S]*\}/);
-    if (!match) throw new Error("Sub-agent did not return a JSON finding");
-    value = JSON.parse(match[0]);
-  }
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new SyntaxError("Sub-agent finding must be a JSON object");
-  }
-  return value as Record<string, unknown>;
-}
-
 function strings(value: unknown, max = 20): string[] {
   if (!Array.isArray(value)) return [];
   return value
@@ -195,6 +164,71 @@ function mb(bytes: number): number {
 }
 
 type AgentSessionFactory = typeof createAgentSession;
+
+const SUBMIT_FINDING_TOOL = "submit_finding";
+
+function findingToolParameters() {
+  const hypothesisRefs = Type.Array(Type.String({ minLength: 1, maxLength: 64 }), {
+    maxItems: 20,
+  });
+  return Type.Object(
+    {
+      status: Type.Union([
+        Type.Literal("succeeded"),
+        Type.Literal("failed"),
+        Type.Literal("inconclusive"),
+        Type.Literal("blocked"),
+      ]),
+      strength: Type.Union([
+        Type.Literal("strong"),
+        Type.Literal("moderate"),
+        Type.Literal("weak"),
+        Type.Literal("inconclusive"),
+      ]),
+      verdict: Type.Union([
+        Type.Literal("supports"),
+        Type.Literal("contradicts"),
+        Type.Literal("no-signal"),
+        Type.Literal("mixed"),
+        Type.Literal("inconclusive"),
+      ]),
+      summary: Type.String({ minLength: 1, maxLength: 1500 }),
+      conclusions: Type.Array(Type.String({ minLength: 1, maxLength: 1000 }), {
+        maxItems: 5,
+      }),
+      evidenceClaims: Type.Array(
+        Type.Object(
+          {
+            toolCallId: Type.String({ minLength: 1, maxLength: 64 }),
+            modality: Type.Union([
+              Type.Literal("metric"),
+              Type.Literal("log"),
+              Type.Literal("trace"),
+              Type.Literal("event"),
+              Type.Literal("alert"),
+              Type.Literal("topology"),
+            ]),
+            entity: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
+            summary: Type.String({ minLength: 1, maxLength: 1000 }),
+            supports: hypothesisRefs,
+            contradicts: hypothesisRefs,
+          },
+          { additionalProperties: false },
+        ),
+        { maxItems: 20 },
+      ),
+      candidateEntities: Type.Array(Type.String({ minLength: 1, maxLength: 200 }), {
+        maxItems: 20,
+      }),
+      candidateMechanism: Type.Optional(Type.String({ minLength: 1, maxLength: 1000 })),
+      suggestedFollowUps: Type.Array(Type.String({ minLength: 1, maxLength: 1000 }), {
+        maxItems: 10,
+      }),
+      blockedOn: Type.Optional(Type.String({ minLength: 1, maxLength: 1000 })),
+    },
+    { additionalProperties: false },
+  );
+}
 
 export class PiExpertRunner {
   private readonly modelRuntime: ModelRuntime;
@@ -290,22 +324,27 @@ export class PiExpertRunner {
     sampleProcessMemory();
 
     const perToolCalls = new Map<ObservabilityToolName, number>();
-    const collectedToolEvidence: CollectedToolEvidence[] = [];
+    const recordedToolCallIds = new Set<string>();
     let toolCallCount = 0;
     let toolError: unknown;
+    let activateFinalizePhase: (() => void) | undefined;
+    let submittedFindingPayload: Record<string, unknown> | undefined;
+    let submissionValidationError: string | undefined;
+
     const toolDefinitions = this.tools.createPiTools({
       names: profile.tools,
       execute: async (name, _toolCallId, parameters) => {
         if (toolCallCount >= profile.maxToolCalls) {
+          activateFinalizePhase?.();
           throw new Error(
-            `${profile.label} 的工具调用预算已用完。请基于已经收集的 observation 直接收敛。`,
+            `${profile.label} 的调查工具预算已用完。请停止取证并提交最终 finding。`,
           );
         }
         const toolBudget = profile.toolBudgets?.[name];
         const currentToolCalls = perToolCalls.get(name) ?? 0;
         if (toolBudget !== undefined && currentToolCalls >= toolBudget) {
           throw new Error(
-            `${profile.label} 的 ${name} 调用预算已用完。请基于已经收集的 observation 直接收敛。`,
+            `${profile.label} 的 ${name} 调用预算已用完。请基于已经收集的 observation 收敛。`,
           );
         }
         perToolCalls.set(name, currentToolCalls + 1);
@@ -334,13 +373,16 @@ export class PiExpertRunner {
           throw error;
         }
         sampleProcessMemory();
+        recordedToolCallIds.add(recorded.callId);
         const compactResult = compactToolResultForAgent(name, recorded.execution.result);
-        collectedToolEvidence.push({
-          toolCallId: recorded.callId,
-          tool: name,
-          summary: recorded.execution.summary,
-          result: boundedFinalizeResult(compactResult),
-        });
+
+        // The protocol action is not part of the investigation budget. Once the
+        // final allowed investigation call completes, the next agent turn sees
+        // only submit_finding.
+        if (toolCallCount >= profile.maxToolCalls) {
+          activateFinalizePhase?.();
+        }
+
         return {
           content: [
             {
@@ -364,6 +406,54 @@ export class PiExpertRunner {
       },
     });
 
+    const validHypotheses = new Set(context.brief.hypothesisIds);
+    const validModalities = new Set(profile.modalities);
+    const submitFindingTool = defineTool({
+      name: SUBMIT_FINDING_TOOL,
+      label: "Submit finding",
+      description:
+        "提交当前专家调查的最终结构化 finding。仅在 Finalize Phase 使用；该协议动作不消耗调查工具预算。",
+      promptSnippet: "Submit the final expert finding as validated structured data",
+      promptGuidelines: [
+        "Finalize Phase 中必须调用 submit_finding，不能用普通 assistant 文本代替。",
+        "evidenceClaims 只能引用当前 Session 已成功返回的 toolCallId。",
+      ],
+      parameters: findingToolParameters(),
+      async execute(_toolCallId, params) {
+        try {
+          for (const claim of params.evidenceClaims) {
+            if (!recordedToolCallIds.has(claim.toolCallId)) {
+              throw new Error(
+                `submit_finding 引用了不存在或未成功完成的 toolCallId: ${claim.toolCallId}`,
+              );
+            }
+            if (!validModalities.has(claim.modality as EvidenceModality)) {
+              throw new Error(
+                `submit_finding 使用了当前 Profile 不允许的 modality: ${claim.modality}`,
+              );
+            }
+            for (const hypothesisId of [...claim.supports, ...claim.contradicts]) {
+              if (!validHypotheses.has(hypothesisId)) {
+                throw new Error(
+                  `submit_finding 引用了当前 brief 之外的 hypothesis: ${hypothesisId}`,
+                );
+              }
+            }
+          }
+          submittedFindingPayload = params as unknown as Record<string, unknown>;
+          submissionValidationError = undefined;
+          return {
+            content: [{ type: "text" as const, text: "Finding submitted." }],
+            details: { accepted: true },
+            terminate: true,
+          };
+        } catch (error) {
+          submissionValidationError = safeRuntimeDetail(error);
+          throw error;
+        }
+      },
+    });
+
     const { session } = await this.createSession({
       cwd: process.cwd(),
       agentDir,
@@ -373,19 +463,26 @@ export class PiExpertRunner {
       settingsManager,
       sessionManager: SessionManager.inMemory(),
       noTools: "builtin",
-      tools: toolDefinitions.map((tool) => tool.name),
-      customTools: toolDefinitions,
+      customTools: [...toolDefinitions, submitFindingTool],
     });
+
+    const investigationToolNames = toolDefinitions.map((tool) => tool.name);
+    let finalizePhase = false;
+    activateFinalizePhase = () => {
+      if (finalizePhase) return;
+      finalizePhase = true;
+      session.setActiveToolsByName([SUBMIT_FINDING_TOOL]);
+    };
+    session.setActiveToolsByName(investigationToolNames);
 
     const sessionId = session.sessionManager.getSessionId();
     const usage = new AgentUsageAccumulator();
-    let output = "";
     let totalOutputChars = 0;
     let thinkingChars = 0;
     let repairAttempted = false;
     let repairSucceeded = false;
-    let parseFailure: "json_missing" | "json_invalid" | undefined;
-    let parseFailureDetail: string | undefined;
+    let protocolFailure: "finding_missing" | "finding_invalid" | undefined;
+    let protocolFailureDetail: string | undefined;
     let invalidOutput = false;
     let lastMessageFailure: { reason: "aborted" | "provider_error"; detail?: string } | undefined;
     const unsubscribe = session.subscribe((event) => {
@@ -403,11 +500,12 @@ export class PiExpertRunner {
       }
       if (event.type !== "message_update") return;
       if (event.assistantMessageEvent.type === "text_delta") {
-        output += event.assistantMessageEvent.delta;
         totalOutputChars += event.assistantMessageEvent.delta.length;
       } else if (event.assistantMessageEvent.type === "thinking_delta") {
         thinkingChars += event.assistantMessageEvent.delta.length;
-        void context.onThinking?.(event.assistantMessageEvent.delta);
+        if (!finalizePhase) {
+          void context.onThinking?.(event.assistantMessageEvent.delta);
+        }
       }
     });
     const abort = () => session.abort();
@@ -433,144 +531,74 @@ export class PiExpertRunner {
         })),
     };
 
-    const finalizeWithoutTools = async (): Promise<string> => {
-      const finalizeSettings = SettingsManager.inMemory({
-        compaction: { enabled: false },
-        retry: { enabled: true, maxRetries: 1 },
-      });
-      const finalizeLoader = new DefaultResourceLoader({
-        cwd: process.cwd(),
-        agentDir,
-        settingsManager: finalizeSettings,
-        noExtensions: true,
-        noSkills: true,
-        noPromptTemplates: true,
-        noThemes: true,
-        noContextFiles: true,
-        systemPromptOverride: () =>
-          [
-            buildExpertSystemPrompt(profile, context.brief),
-            "# Finalize Mode",
-            "调查阶段已经结束。当前 Session 没有任何工具，禁止继续搜索、扩展范围或编造新事实。",
-            "只能基于下面提供的 brief、hypotheses 和已收集 tool evidence 生成最终 finding。",
-            "最终响应必须且只能是一个 JSON object；不要 markdown fence，不要解释文字。",
-          ].join("\n\n"),
-      });
-      await finalizeLoader.reload();
-
-      const { session: finalizeSession } = await this.createSession({
-        cwd: process.cwd(),
-        agentDir,
-        modelRuntime: this.modelRuntime,
-        ...(model ? { model } : {}),
-        resourceLoader: finalizeLoader,
-        settingsManager: finalizeSettings,
-        sessionManager: SessionManager.inMemory(),
-        noTools: "builtin",
-        tools: [],
-        customTools: [],
-      });
-
-      let finalizeOutput = "";
-      let finalizeFailure:
-        | { reason: "aborted" | "provider_error"; detail?: string }
-        | undefined;
-      const unsubscribeFinalize = finalizeSession.subscribe((event) => {
-        if (event.type === "message_end" && event.message.role === "assistant") {
-          const message = event.message as AssistantMessage;
-          usage.record(message);
-          finalizeFailure =
-            message.stopReason === "error" || message.stopReason === "aborted"
-              ? {
-                  reason: message.stopReason === "aborted" ? "aborted" : "provider_error",
-                  detail: message.errorMessage,
-                }
-              : undefined;
-          return;
-        }
-        if (event.type !== "message_update") return;
-        if (event.assistantMessageEvent.type === "text_delta") {
-          finalizeOutput += event.assistantMessageEvent.delta;
-          totalOutputChars += event.assistantMessageEvent.delta.length;
-        } else if (event.assistantMessageEvent.type === "thinking_delta") {
-          thinkingChars += event.assistantMessageEvent.delta.length;
-        }
-      });
-      const abortFinalize = () => finalizeSession.abort();
-      context.signal?.addEventListener("abort", abortFinalize, { once: true });
-
-      try {
-        await finalizeSession.prompt(
-          [
-            "请根据已经完成的调查生成规定的 JSON finding。",
-            "只能引用 collectedToolEvidence 中真实存在的 toolCallId。",
-            "negative/no-anomaly 结果同样是有效 finding。",
-            "",
-            JSON.stringify(
-              {
-                brief: context.brief,
-                caseId: context.task.caseId,
-                alert: prompt.alert,
-                currentHypotheses: prompt.currentHypotheses,
-                collectedToolEvidence,
-              },
-              null,
-              2,
-            ),
-          ].join("\n"),
-        );
-        if (context.signal?.aborted) {
-          throw new DOMException("Investigation cancelled", "AbortError");
-        }
-        if (finalizeFailure) throw new AssistantRunFailure(finalizeFailure);
-        return finalizeOutput;
-      } finally {
-        context.signal?.removeEventListener("abort", abortFinalize);
-        unsubscribeFinalize();
-        finalizeSession.dispose();
-      }
-    };
-
-    let parsed: Record<string, unknown>;
+    let parsed!: Record<string, unknown>;
     try {
       try {
         sampleProcessMemory();
         lastMessageFailure = undefined;
         await session.prompt(
-          `调查下面这个 brief。只在确有需要时使用工具，完成后返回规定的 JSON finding。分析过程和 finding 的自然语言内容优先使用中文；工具名、字段名和枚举值保持原样。\n\n${JSON.stringify(
+          `调查下面这个 brief。只在确有需要时使用调查工具，expected outputs 已回答、证据预算耗尽或路径被证伪时停止继续取证。不要输出最终 JSON；Runtime 会进入 Finalize Phase，并通过 submit_finding 接收最终结构化 finding。分析过程优先使用中文；工具名、字段名和枚举值保持原样。\n\n${JSON.stringify(
             prompt,
             null,
             2,
           )}`,
         );
         sampleProcessMemory();
-        if (context.signal?.aborted)
+        if (context.signal?.aborted) {
           throw new DOMException("Investigation cancelled", "AbortError");
+        }
         if (lastMessageFailure) throw new AssistantRunFailure(lastMessageFailure);
-        try {
-          parsed = extractJson(output);
-        } catch (error) {
-          repairAttempted = true;
-          parseFailure = error instanceof SyntaxError ? "json_invalid" : "json_missing";
-          parseFailureDetail = error instanceof Error ? error.message : String(error);
-          sampleProcessMemory();
 
-          // Never repair inside the original tool-capable Session. A fresh no-tools
-          // Session makes the investigation -> finalize boundary deterministic and
-          // prevents a model that exhausted its tool budget from entering another tool loop.
-          const finalizeOutput = await finalizeWithoutTools();
-          try {
-            parsed = extractJson(finalizeOutput);
-          } catch (repairError) {
-            parseFailure =
-              repairError instanceof SyntaxError ? "json_invalid" : "json_missing";
-            parseFailureDetail =
-              repairError instanceof Error ? repairError.message : String(repairError);
+        if (!submittedFindingPayload) {
+          activateFinalizePhase();
+          lastMessageFailure = undefined;
+          await session.prompt(
+            [
+              "调查阶段已经结束。现在是 Finalize Phase。",
+              "不要继续搜索、不要扩展范围，也不要输出普通 JSON 或解释文字。",
+              "唯一允许的结束方式是调用 submit_finding。",
+              "只能基于当前 Session 已经观察到的工具结果；negative/no-anomaly 结果同样是有效 finding。",
+            ].join("\n"),
+          );
+          sampleProcessMemory();
+          if (context.signal?.aborted) {
+            throw new DOMException("Investigation cancelled", "AbortError");
+          }
+          if (lastMessageFailure) throw new AssistantRunFailure(lastMessageFailure);
+        }
+
+        if (!submittedFindingPayload) {
+          repairAttempted = true;
+          protocolFailure = submissionValidationError ? "finding_invalid" : "finding_missing";
+          protocolFailureDetail =
+            submissionValidationError ?? "Sub-agent did not call submit_finding in Finalize Phase.";
+          lastMessageFailure = undefined;
+          await session.prompt(
+            [
+              "你尚未成功提交 finding。",
+              submissionValidationError
+                ? `上一次 submit_finding 被拒绝：${submissionValidationError}`
+                : "上一次响应没有调用 submit_finding。",
+              "现在只调用一次 submit_finding，并修正参数；不要输出其他内容。",
+            ].join("\n"),
+          );
+          sampleProcessMemory();
+          if (context.signal?.aborted) {
+            throw new DOMException("Investigation cancelled", "AbortError");
+          }
+          if (lastMessageFailure) throw new AssistantRunFailure(lastMessageFailure);
+          if (!submittedFindingPayload) {
             invalidOutput = true;
-            throw repairError;
+            protocolFailure = submissionValidationError ? "finding_invalid" : "finding_missing";
+            protocolFailureDetail =
+              submissionValidationError ??
+              "Sub-agent did not call submit_finding after protocol retry.";
+            throw new Error(protocolFailureDetail);
           }
           repairSucceeded = true;
         }
+
+        parsed = submittedFindingPayload;
       } catch (error) {
         const reason: AgentTermination["reason"] =
           context.signal?.aborted || (error instanceof DOMException && error.name === "AbortError")
@@ -601,18 +629,21 @@ export class PiExpertRunner {
                 reason === "aborted"
                   ? "aborted"
                   : reason === "invalid_output"
-                    ? (parseFailure ?? "json_invalid")
+                    ? (protocolFailure ?? "finding_invalid")
                     : reason === "provider_error"
                       ? "model_error"
                       : "unknown",
-              failureDetail: detail,
+              failureDetail:
+                reason === "invalid_output" && protocolFailureDetail
+                  ? safeRuntimeDetail(protocolFailureDetail)
+                  : detail,
             },
           ),
           termination: {
             reason,
             detail,
             ...(reason === "provider_error" &&
-            parseFailure === undefined &&
+            protocolFailure === undefined &&
             isProviderTransientFailure(error)
               ? { providerTransient: true }
               : {}),
@@ -624,6 +655,7 @@ export class PiExpertRunner {
       unsubscribe();
       session.dispose();
     }
+
     const finalizeFinding = (): PiExpertRunResult => {
       const validHypotheses = new Set(context.brief.hypothesisIds);
       const validModalities = new Set(profile.modalities);
