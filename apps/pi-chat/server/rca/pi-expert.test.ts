@@ -14,7 +14,7 @@ import type {
 } from "./types";
 import type { ObservabilityToolRegistry } from "./tools";
 
-type SessionFactoryOptions = Parameters<typeof createAgentSession>[0];
+type SessionFactoryOptions = NonNullable<Parameters<typeof createAgentSession>[0]>;
 type CreatedSession = Awaited<ReturnType<typeof createAgentSession>>;
 type FakeEventListener = (event: unknown) => void;
 
@@ -60,7 +60,14 @@ test("event-topology 工具调用满 12 次后使用 no-tools Finalize 并返回
         session: fakeSession("investigation-session", async (_prompt) => {
           const tool = (options.customTools ?? []).find(
             (item) => item.name === "query_events",
-          );
+          ) as unknown as
+            | {
+                execute: (
+                  toolCallId: string,
+                  parameters: Record<string, unknown>,
+                ) => Promise<unknown>;
+              }
+            | undefined;
           assert.ok(tool, "investigation session should expose query_events");
 
           for (let i = 0; i < 12; i++) {
