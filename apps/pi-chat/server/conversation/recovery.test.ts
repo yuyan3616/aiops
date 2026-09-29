@@ -82,6 +82,11 @@ function interruptedInvestigation(): Investigation {
 
 test("reconciles stale running RCA agent and nested tools from persisted investigation state", () => {
   const investigation = interruptedInvestigation();
+  investigation.expertTasks[0]!.usage = {
+    turns: 1, inputTokens: 10, outputTokens: 2, cacheReadTokens: 0,
+    cacheWriteTokens: 0, totalTokens: 12, contextTokens: 12,
+  };
+  investigation.expertTasks[0]!.termination = { reason: "runtime_error" };
   const items: MessageListItem[] = [{
     kind: "agent",
     id: "INV-test:agent:T01",
@@ -129,6 +134,8 @@ test("reconciles stale running RCA agent and nested tools from persisted investi
   if (reconciled[0]?.kind !== "agent") return;
   assert.equal(reconciled[0].agent.status, "failed");
   assert.equal(reconciled[0].agent.interruptedByRestart, true);
+  assert.equal(reconciled[0].agent.usage?.totalTokens, 12);
+  assert.equal(reconciled[0].agent.termination?.reason, "runtime_error");
   assert.equal(reconciled[0].agent.tools[0]?.status, "error");
   assert.equal(
     (reconciled[0].agent.tools[0]?.details as { interruptedByRestart?: boolean })
@@ -210,4 +217,3 @@ test("restores a report card for a completed persisted investigation", () => {
   assert.equal(reconciled[0].report.filename, "RCA-INV-test.md");
   assert.equal(reconciled[0].report.confidence, 0.88);
 });
-

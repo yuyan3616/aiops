@@ -74,7 +74,7 @@ function compactInvestigation(
       hypothesisIds: item.hypothesisIds,
       evidenceIds: item.evidenceIds,
       finding: item.finding,
-      diagnostics: item.diagnostics,
+      termination: item.termination?.reason ?? item.terminationReason,
       budgetClass: item.budgetClass,
       recoveryOfTaskId: item.recoveryOfTaskId,
       recoveryEligible: item.recoveryEligible,
@@ -400,7 +400,10 @@ export function createRcaMainAgentTools(options: RcaMainAgentToolsOptions): Tool
           model: options.getModelRef(),
           dispatchOperationId: `${conversationId}:${_toolCallId}`,
         });
-        return toolResult(dispatch);
+        return toolResult({
+          ...dispatch,
+          findings: dispatch.findings.map(({ diagnostics: _diagnostics, ...finding }) => finding),
+        });
       });
     },
   });

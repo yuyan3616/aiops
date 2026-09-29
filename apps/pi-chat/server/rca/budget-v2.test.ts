@@ -90,6 +90,16 @@ async function setup(id: string, runner: (context: unknown) => Promise<unknown>)
 
 const success = async () => ({
   sessionId: "test-session",
+  usage: {
+    turns: 1,
+    inputTokens: 100,
+    outputTokens: 20,
+    cacheReadTokens: 50,
+    cacheWriteTokens: 0,
+    totalTokens: 170,
+    contextTokens: 170,
+  },
+  termination: { reason: "completed" as const },
   diagnostics: {
     toolCallCount: 0,
     thinkingChars: 0,
@@ -98,6 +108,55 @@ const success = async () => ({
     repairSucceeded: false,
   },
   finding,
+});
+
+test("persists runtime accounting without changing Primary disposition", async (t) => {
+  const state = await setup("INV-v2-usage", success);
+  t.after(() => rm(state.directory, { recursive: true, force: true }));
+  await state.service.dispatchAgentic("INV-v2-usage", [brief("accounting")], {
+    dispatchOperationId: "op-usage",
+  });
+  const task = (await state.repository.get("INV-v2-usage")).expertTasks[0];
+  assert.equal(task?.status, "completed");
+  assert.equal(task?.usage?.totalTokens, 170);
+  assert.deepEqual(task?.termination, { reason: "completed" });
+  assert.equal(task?.terminationReason, undefined);
+  assert.equal(task?.recoveryEligible, false);
+});
+
+test("provider result retains existing transient Recovery rule", async (t) => {
+  const state = await setup("INV-v2-runtime-failure", async () => ({
+    sessionId: "provider-session",
+    usage: {
+      turns: 1,
+      inputTokens: 12,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      totalTokens: 12,
+      contextTokens: 0,
+    },
+    diagnostics: {
+      toolCallCount: 0,
+      thinkingChars: 0,
+      outputChars: 0,
+      repairAttempted: false,
+      repairSucceeded: false,
+      failureReason: "model_error",
+    },
+    termination: { reason: "provider_error", providerTransient: true, detail: "503" },
+  }));
+  t.after(() => rm(state.directory, { recursive: true, force: true }));
+  await state.service.dispatchAgentic("INV-v2-runtime-failure", [brief("outage")], {
+    dispatchOperationId: "op-outage",
+  });
+  const persisted = await state.repository.get("INV-v2-runtime-failure");
+  const task = persisted.expertTasks[0];
+  assert.equal(task?.status, "failed");
+  assert.equal(task?.terminationReason, "provider_transient_error");
+  assert.equal(task?.recoveryEligible, true);
+  assert.equal(task?.usage?.inputTokens, 12);
+  assert.equal(foldBudget(persisted).projection.primary.used, 0);
 });
 
 test("concurrent dispatches cannot oversubscribe and same operation cannot start twice", async (t) => {
@@ -282,6 +341,8 @@ test("steering fences a late model result and preserves a physical slot until se
   await state.service.recordUserIntervention("INV-v2-steer", "New deploy context");
   const midway = await state.repository.get("INV-v2-steer");
   assert.equal(midway.expertTasks[0]?.status, "cancelled");
+  assert.equal(midway.expertTasks[0]?.termination?.reason, "aborted");
+  assert.equal(midway.expertTasks[0]?.recoveryEligible, undefined);
   assert.equal(foldBudget(midway).projection.primary.reserved, 0);
   resolveRun(await success());
   await dispatch;
