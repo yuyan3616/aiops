@@ -42,7 +42,8 @@ export function useConversationStream(conversationId?: string) {
     conversationId?: string;
     message: string;
   }>({ message: "" });
-  const [loading, setLoading] = useState(false);\n  const [visualizationRevision, setVisualizationRevision] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [visualizationRevision, setVisualizationRevision] = useState(0);
   const [conversationMeta, setConversationMeta] = useState<{
     conversationId?: string;
     conversation?: ConversationSummary;
