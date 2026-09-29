@@ -1,7 +1,7 @@
 import { Composer } from "@components/Composer";
 import { ConversationSidebar } from "@components/ConversationSidebar";
 import { EmptyConversation } from "@components/EmptyConversation";
-import { LoadingIndicator } from "@components/LoadingIndicator";
+import { LoadingIndicator } from "@components/LoadingIndicator";\nimport { InvestigationDetailDrawer } from "@components/rca/InvestigationDetailDrawer";
 import { MessageItem } from "@components/MessageItem";
 import { Button } from "@components/ui/button";
 import { Skeleton } from "@components/ui/skeleton";
@@ -15,7 +15,7 @@ import type {
   ThinkingLevel,
   MessageListItem,
 } from "@shared/types";
-import { Menu, PanelLeftOpen } from "lucide-react";
+import { Menu, PanelLeftOpen, Workflow } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
@@ -37,7 +37,7 @@ export default function App() {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [bootstrap, setBootstrap] = useState<BootstrapData>({ models: [], skills: [] });
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);\n  const [detailOpen, setDetailOpen] = useState(false);
 
   const messageBottomRef = useRef<HTMLDivElement>(null);
   const autoFollowRef = useRef(true);
@@ -136,6 +136,11 @@ export default function App() {
     streamedConversationTitle ??
     conversations.find((item) => item.id === conversationId)?.title ??
     "新会话";
+  const latestReport = [...messageItems]
+    .reverse()
+    .find((item) => item.kind === "report");
+  const investigationId =
+    latestReport?.kind === "report" ? latestReport.report.investigationId : undefined;
   return (
     <div className="app-shell">
       <ConversationSidebar
@@ -195,6 +200,18 @@ export default function App() {
             <Menu size={18} />
           </Button>
           <span className="conversation-title">{conversationTitle}</span>
+          <div className="topbar-actions">
+            {investigationId && (
+              <Button
+                className="investigation-detail-trigger"
+                variant="outline"
+                onClick={() => setDetailOpen(true)}
+              >
+                <Workflow size={15} />
+                排障详情
+              </Button>
+            )}
+          </div>
         </header>
         <main className={"chat-area " + (isEmpty ? "empty-chat-area" : "")}>
           {historyLoading ? (
@@ -253,6 +270,12 @@ export default function App() {
           }}
         />
       </section>
+      <InvestigationDetailDrawer
+        open={detailOpen}
+        investigationId={investigationId}
+        visualizationRevision={visualizationRevision}
+        onClose={() => setDetailOpen(false)}
+      />
     </div>
   );
 }
