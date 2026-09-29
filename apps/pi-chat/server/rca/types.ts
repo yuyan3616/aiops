@@ -137,7 +137,14 @@ export interface AgentRunDiagnostics {
   parquetRowsScanned?: number;
   maxConcurrentParquetScansObserved?: number;
   activeParquetScansAtEnd?: number;
-  failureReason?: "json_missing" | "json_invalid" | "aborted" | "model_error" | "unknown";
+  failureReason?:
+    | "json_missing"
+    | "json_invalid"
+    | "finding_missing"
+    | "finding_invalid"
+    | "aborted"
+    | "model_error"
+    | "unknown";
   failureDetail?: string;
 }
 
