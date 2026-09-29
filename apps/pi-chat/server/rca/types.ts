@@ -141,6 +141,34 @@ export interface AgentRunDiagnostics {
   failureDetail?: string;
 }
 
+export interface AgentUsage {
+  turns: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  totalTokens: number;
+  // Latest valid Assistant response, not a cumulative or exact final context size.
+  contextTokens: number;
+  // Pi's estimated USD cost; absent when pricing is unavailable.
+  cost?: number;
+}
+
+export type AgentTerminationReason =
+  | "completed"
+  | "aborted"
+  | "provider_error"
+  | "invalid_output"
+  | "tool_error"
+  | "runtime_error";
+
+export interface AgentTermination {
+  reason: AgentTerminationReason;
+  detail?: string;
+  /** Verified provider retryability; Service still applies its own Recovery policy. */
+  providerTransient?: boolean;
+}
+
 export interface AgentExpertFinding {
   status: ExpertFindingStatus;
   strength: FindingStrength;
@@ -168,7 +196,9 @@ export interface ExpertTask {
   implementation?: "deterministic" | "pi-session";
   sessionId?: string;
   finding?: AgentExpertFinding;
+  usage?: AgentUsage;
   diagnostics?: AgentRunDiagnostics;
+  termination?: AgentTermination;
   interruptedByRestart?: boolean;
   budgetClass?: BudgetClass;
   budgetReservationId?: string;

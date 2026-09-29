@@ -358,6 +358,12 @@ export function conversationReducer(
                     ? payload.status
                     : "completed",
                 ...(typeof payload.summary === "string" ? { summary: payload.summary } : {}),
+                ...(payload.usage ? { usage: payload.usage as AgentThreadRun["usage"] } : {}),
+                ...(payload.diagnostics ? { diagnostics: payload.diagnostics as AgentThreadRun["diagnostics"] } : {}),
+                ...(payload.termination ? { termination: payload.termination as AgentThreadRun["termination"] } : {}),
+                ...(typeof payload.terminationReason === "string"
+                  ? { terminationReason: payload.terminationReason } : {}),
+                ...(payload.interruptedByRestart === true ? { interruptedByRestart: true } : {}),
               },
             }
           : item,

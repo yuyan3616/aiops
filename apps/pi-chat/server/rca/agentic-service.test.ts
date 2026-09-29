@@ -91,6 +91,36 @@ test("Main Agent RCA tools expose explicit investigation controls instead of a b
   assert.equal(names.includes("investigate_rca_case"), false);
 });
 
+test("Main Agent compact state excludes runtime accounting and diagnostics", async () => {
+  const current = investigation("INV-compact-runtime");
+  current.expertTasks.push({
+    id: "T01", expert: "trace", objective: "trace latency", status: "failed",
+    hypothesisIds: [], toolCallIds: [], evidenceIds: [], createdAt: current.startedAt,
+    usage: { turns: 2, inputTokens: 100, outputTokens: 20, cacheReadTokens: 10,
+      cacheWriteTokens: 0, totalTokens: 130, contextTokens: 80 },
+    diagnostics: { toolCallCount: 0, thinkingChars: 0, outputChars: 0,
+      repairAttempted: false, repairSucceeded: false },
+    termination: { reason: "provider_error", detail: "unavailable" },
+  });
+  const definitions = createRcaMainAgentTools({
+    rcaService: { get: async () => current } as unknown as RcaService,
+    conversationId: "conversation-compact",
+    getModelRef: () => ({ provider: "test", id: "test" }),
+    onProjection: () => {},
+    onLinkInvestigation: () => {},
+  });
+  const tool = definitions.find((item) => item.name === "get_investigation_state")!;
+  const execute = tool.execute as unknown as (
+    callId: string, parameters: { investigationId: string },
+  ) => Promise<{ content: Array<{ text: string }> }>;
+  const response = await execute("call-compact", { investigationId: current.id });
+  const task = (JSON.parse(response.content[0]!.text) as { expertTasks: Array<Record<string, unknown>> })
+    .expertTasks[0]!;
+  assert.equal(task.termination, "provider_error");
+  assert.equal(task.usage, undefined);
+  assert.equal(task.diagnostics, undefined);
+});
+
 test("screen_rca_candidates delegates a bounded candidate set to the RCA service", async () => {
   let received:
     | { investigationId: string; candidates: string[]; topNPerCandidate: number }

@@ -30,6 +30,23 @@ function stateLabel(agent: AgentThreadRun): string {
   }[agent.status];
 }
 
+const terminationLabels: Record<string, string> = {
+  completed: "正常完成",
+  aborted: "已中止",
+  provider_error: "模型服务错误",
+  invalid_output: "输出格式无效",
+  tool_error: "工具执行错误",
+  runtime_error: "运行时错误",
+  provider_transient_error: "模型服务暂时不可用",
+  service_restart: "服务重启中断",
+  user_superseded: "用户更新了调查",
+  investigation_cancelled: "调查已取消",
+};
+
+function formatTokens(value: number): string {
+  return value >= 1000 ? `${(value / 1000).toFixed(1)}k` : value.toLocaleString();
+}
+
 function timelineSteps(agent: AgentThreadRun): AgentStep[] {
   if (agent.steps?.length) return agent.steps;
   const legacy: AgentStep[] = [];
@@ -115,14 +132,20 @@ export function AgentThreadCard({ agent }: { agent: AgentThreadRun }) {
           <span className="agent-thread-objective">{agent.objective}</span>
         </span>
         <span className="agent-thread-meta">
-          {agent.tools.length} tools · {agent.evidence.length} evidence
+          {agent.usage
+            ? `${agent.usage.turns} turns · ${formatTokens(agent.usage.totalTokens)} tokens · ${agent.tools.length} tools${agent.usage.cost !== undefined ? ` · $${agent.usage.cost.toFixed(4)}` : ""}`
+            : `${agent.tools.length} tools · ${agent.evidence.length} evidence`}
         </span>
         {icon}
         <ChevronRight size={17} className="agent-thread-chevron" />
       </button>
 
       {open && (
-        <div className="agent-thread-overlay" role="presentation" onMouseDown={() => setOpen(false)}>
+        <div
+          className="agent-thread-overlay"
+          role="presentation"
+          onMouseDown={() => setOpen(false)}
+        >
           <aside
             className="agent-thread-drawer"
             role="dialog"
@@ -153,6 +176,49 @@ export function AgentThreadCard({ agent }: { agent: AgentThreadRun }) {
                 <label>调查目标</label>
                 <p>{agent.objective}</p>
               </section>
+
+              {(agent.usage ||
+                agent.diagnostics ||
+                agent.termination ||
+                agent.terminationReason) && (
+                <section className="agent-thread-brief">
+                  <label>运行信息</label>
+                  {agent.usage && (
+                    <p>
+                      模型响应 {agent.usage.turns} 次 · Input{" "}
+                      {agent.usage.inputTokens.toLocaleString()} · Output{" "}
+                      {agent.usage.outputTokens.toLocaleString()} · Cache Read{" "}
+                      {agent.usage.cacheReadTokens.toLocaleString()} · Cache Write{" "}
+                      {agent.usage.cacheWriteTokens.toLocaleString()} · 最近响应上下文{" "}
+                      {agent.usage.contextTokens.toLocaleString()}
+                      {agent.usage.cost !== undefined &&
+                        ` · Pi 估算 $${agent.usage.cost.toFixed(4)}`}
+                    </p>
+                  )}
+                  {agent.diagnostics && (
+                    <p>
+                      工具调用 {agent.diagnostics.toolCallCount}
+                      {agent.diagnostics.parquetRowsScanned !== undefined &&
+                        ` · 扫描 ${agent.diagnostics.parquetRowsScanned.toLocaleString()} 行`}
+                      {agent.diagnostics.rssPeakMb !== undefined &&
+                        ` · Peak RSS ${agent.diagnostics.rssPeakMb} MB`}
+                      {agent.diagnostics.repairAttempted &&
+                        ` · JSON Repair ${agent.diagnostics.repairSucceeded ? "成功" : "失败"}`}
+                    </p>
+                  )}
+                  {(agent.termination || agent.terminationReason) && (
+                    <p>
+                      结束原因：
+                      {terminationLabels[
+                        agent.termination?.reason ?? agent.terminationReason ?? ""
+                      ] ??
+                        agent.termination?.reason ??
+                        agent.terminationReason}
+                      {agent.termination?.detail && ` · ${agent.termination.detail}`}
+                    </p>
+                  )}
+                </section>
+              )}
 
               <section>
                 <div className="agent-thread-section-title">

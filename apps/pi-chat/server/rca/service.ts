@@ -13,6 +13,7 @@ import { InvestigationEventBus, type InvestigationEventListener } from "./events
 import { getParquetRuntimeDiagnostics } from "./parquet";
 import { PiExpertRunError, PiExpertRunner, type RecordedAgentToolExecution } from "./pi-expert";
 import { InvestigationRepository } from "./repository";
+import { safeRuntimeDetail } from "./runtime-accounting";
 import { AbortableSemaphore } from "./semaphore";
 import {
   compactToolResultForAgent,
@@ -23,6 +24,7 @@ import {
 import type {
   AgentExpertFinding,
   AgentRunDiagnostics,
+  AgentTermination,
   CausalAssessment,
   Evidence,
   EvidenceModality,
@@ -147,6 +149,7 @@ export interface DispatchedFinding {
   finding: AgentExpertFinding;
   evidenceIds: string[];
   observationIds: string[];
+  termination?: AgentTermination["reason"];
   diagnostics?: AgentRunDiagnostics;
 }
 
@@ -379,7 +382,9 @@ export class RcaService {
   ): Promise<Investigation> {
     const investigation = await this.repository.get(investigationId);
     if (investigation.schemaVersion === 2 && !locked) {
-      return this.withInvestigationLock(investigationId, () => this.resumeAgentic(investigationId, options, true));
+      return this.withInvestigationLock(investigationId, () =>
+        this.resumeAgentic(investigationId, options, true),
+      );
     }
     if (investigation.status !== "interrupted" && investigation.status !== "running") {
       throw new Error(
@@ -971,6 +976,18 @@ export class RcaService {
             checkCancelled(dispatchSignal);
             task.sessionId = run.sessionId;
             task.diagnostics = run.diagnostics;
+            task.usage = run.usage;
+            task.termination = run.termination;
+            if (run.termination.reason !== "completed" || !run.finding) {
+              throw new PiExpertRunError(
+                run.termination.detail ?? run.termination.reason,
+                run.diagnostics,
+                run.sessionId,
+                run.termination.providerTransient === true,
+                run.usage,
+                run.termination,
+              );
+            }
 
             const finding = await this.acceptAgentFinding(investigation, task, run.finding, bus);
             checkCancelled(dispatchSignal);
@@ -992,15 +1009,36 @@ export class RcaService {
               finding,
               evidenceIds: [...task.evidenceIds],
               observationIds,
+              ...(task.termination ? { termination: task.termination.reason } : {}),
               ...(task.diagnostics ? { diagnostics: task.diagnostics } : {}),
             };
           } catch (error) {
             const softInterrupted =
               dispatchController.signal.aborted && !running.controller.signal.aborted;
-            const cancelled = dispatchSignal.aborted || isAbortError(error);
+            const cancelled =
+              dispatchSignal.aborted ||
+              isAbortError(error) ||
+              (error instanceof PiExpertRunError && error.termination?.reason === "aborted");
             if (error instanceof PiExpertRunError) {
               task.diagnostics = error.diagnostics;
               if (error.sessionId) task.sessionId = error.sessionId;
+              if (error.usage) task.usage = error.usage;
+              task.termination = error.termination ?? {
+                reason: cancelled
+                  ? "aborted"
+                  : error.providerTransient
+                    ? "provider_error"
+                    : error.diagnostics.failureReason === "json_invalid" ||
+                        error.diagnostics.failureReason === "json_missing"
+                      ? "invalid_output"
+                      : "runtime_error",
+                detail: safeRuntimeDetail(error),
+              };
+            } else {
+              task.termination = {
+                reason: cancelled ? "aborted" : "runtime_error",
+                detail: safeRuntimeDetail(error),
+              };
             }
             if (cancelled && task.status === "cancelled") {
               throw error;
@@ -1012,9 +1050,7 @@ export class RcaService {
               strength: "inconclusive",
               summary: softInterrupted
                 ? "Dispatch superseded by user intervention."
-                : error instanceof Error
-                  ? error.message
-                  : String(error),
+                : safeRuntimeDetail(error),
               conclusions: [],
               evidenceClaims: [],
               candidateEntities: [],
@@ -1045,6 +1081,7 @@ export class RcaService {
               finding,
               evidenceIds: [],
               observationIds,
+              ...(task.termination ? { termination: task.termination.reason } : {}),
               ...(task.diagnostics ? { diagnostics: task.diagnostics } : {}),
             };
           }
@@ -1368,6 +1405,7 @@ export class RcaService {
       observationIds: (investigation.observations ?? [])
         .filter((item) => item.expertTaskId === task.id)
         .map((item) => item.id),
+      ...(task.termination ? { termination: task.termination.reason } : {}),
       ...(task.diagnostics ? { diagnostics: task.diagnostics } : {}),
     };
   }
@@ -1456,11 +1494,21 @@ export class RcaService {
       const cancelled =
         signal.aborted ||
         draft.status !== "running" ||
+        outcome.run?.termination?.reason === "aborted" ||
         (outcome.error !== undefined && isAbortError(outcome.error));
       const run = outcome.run;
-      if (run && !cancelled) {
+      if (run) {
         task.sessionId = run.sessionId;
         task.diagnostics = run.diagnostics;
+        task.usage = run.usage;
+        task.termination = cancelled ? { reason: "aborted" } : run.termination;
+      }
+      if (
+        run &&
+        !cancelled &&
+        (!run.termination || run.termination.reason === "completed") &&
+        run.finding
+      ) {
         let finding = run.finding;
         const validHypotheses = new Set(draft.hypotheses.map((item) => item.id));
         const taskCalls = new Set(task.toolCallIds);
@@ -1511,15 +1559,30 @@ export class RcaService {
         if (error instanceof PiExpertRunError) {
           task.diagnostics = error.diagnostics;
           task.sessionId = error.sessionId;
+          if (error.usage) task.usage = error.usage;
+          task.termination = error.termination ?? {
+            reason: cancelled
+              ? "aborted"
+              : error.providerTransient
+                ? "provider_error"
+                : error.diagnostics.failureReason === "json_invalid" ||
+                    error.diagnostics.failureReason === "json_missing"
+                  ? "invalid_output"
+                  : "runtime_error",
+            detail: safeRuntimeDetail(error),
+          };
         }
+        task.termination ??= {
+          reason: cancelled ? "aborted" : "runtime_error",
+          detail: safeRuntimeDetail(error ?? "Expert did not start"),
+        };
         task.status = cancelled ? "cancelled" : "failed";
         task.terminationReason = cancelled
           ? "user_superseded"
-          : error instanceof PiExpertRunError && error.providerTransient
+          : run?.termination.providerTransient ||
+              (error instanceof PiExpertRunError && error.providerTransient)
             ? "provider_transient_error"
-            : error instanceof PiExpertRunError &&
-                (error.diagnostics.failureReason === "json_invalid" ||
-                  error.diagnostics.failureReason === "json_missing")
+            : task.termination.reason === "invalid_output"
               ? "invalid_output"
               : "unknown";
         task.finding = {
@@ -1528,9 +1591,7 @@ export class RcaService {
           verdict: "inconclusive",
           summary: cancelled
             ? "Dispatch superseded or investigation cancelled."
-            : error instanceof Error
-              ? error.message
-              : String(error ?? "Expert did not start"),
+            : (task.termination.detail ?? safeRuntimeDetail(error ?? "Expert did not start")),
           conclusions: [],
           evidenceClaims: [],
           candidateEntities: [],
@@ -1832,6 +1893,7 @@ export class RcaService {
           task.completedAt = now();
           task.taskGeneration = (task.taskGeneration ?? 0) + 1;
           task.terminationReason = "user_superseded";
+          task.termination = { reason: "aborted" };
           const reservation = foldBudget(draft).reservations.get(task.budgetReservationId ?? "");
           if (reservation && !reservation.terminal) {
             appendLedgerEvent(
@@ -2456,6 +2518,7 @@ export class RcaService {
           task.completedAt = now();
           task.taskGeneration = (task.taskGeneration ?? 0) + 1;
           task.terminationReason = "investigation_cancelled";
+          task.termination = { reason: "aborted" };
           const reservation = foldBudget(draft).reservations.get(task.budgetReservationId ?? "");
           if (reservation && !reservation.terminal)
             appendLedgerEvent(
@@ -2507,6 +2570,7 @@ export class RcaService {
     for (const task of investigation.expertTasks) {
       if (task.status !== "running" && task.status !== "pending") continue;
       task.status = "cancelled";
+      task.termination = { reason: "aborted" };
       task.completedAt = cancelledAt;
       cancelledTasks.push(task);
     }

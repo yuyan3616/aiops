@@ -135,6 +135,25 @@ export interface AgentThreadRun {
   steps?: AgentStep[];
   thinking?: string;
   summary?: string;
+  usage?: {
+    turns: number;
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    cacheWriteTokens: number;
+    totalTokens: number;
+    contextTokens: number;
+    cost?: number;
+  };
+  diagnostics?: {
+    toolCallCount: number;
+    repairAttempted: boolean;
+    repairSucceeded: boolean;
+    parquetRowsScanned?: number;
+    rssPeakMb?: number;
+  };
+  termination?: { reason: string; detail?: string };
+  terminationReason?: string;
   interruptedByRestart?: boolean;
   implementation: "deterministic" | "pi-session";
 }

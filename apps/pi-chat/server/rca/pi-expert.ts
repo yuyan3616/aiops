@@ -1,3 +1,4 @@
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import {
   createAgentSession,
   DefaultResourceLoader,
@@ -13,6 +14,7 @@ import {
   getExpertProfile,
   normalizeFindingForProfile,
 } from "./profiles/registry";
+import { AgentUsageAccumulator, safeRuntimeDetail } from "./runtime-accounting";
 import {
   compactToolResultForAgent,
   type ObservabilityToolName,
@@ -21,6 +23,8 @@ import {
 import type {
   AgentExpertFinding,
   AgentRunDiagnostics,
+  AgentTermination,
+  AgentUsage,
   EvidenceModality,
   Investigation,
   InvestigationBrief,
@@ -51,27 +55,39 @@ export interface PiExpertRunContext {
 }
 
 export interface PiExpertRunResult {
-  finding: AgentExpertFinding;
+  finding?: AgentExpertFinding;
   sessionId: string;
   diagnostics: AgentRunDiagnostics;
+  usage: AgentUsage;
+  termination: AgentTermination;
 }
 
 export class PiExpertRunError extends Error {
   readonly diagnostics: AgentRunDiagnostics;
   readonly sessionId?: string;
   readonly providerTransient: boolean;
+  readonly usage?: AgentUsage;
+  readonly termination?: AgentTermination;
 
   constructor(
     message: string,
     diagnostics: AgentRunDiagnostics,
     sessionId?: string,
     providerTransient = false,
+    usage?: AgentUsage,
+    termination?: AgentTermination,
   ) {
     super(message);
     this.name = "PiExpertRunError";
-    this.diagnostics = diagnostics;
+    this.diagnostics = diagnostics.failureDetail
+      ? { ...diagnostics, failureDetail: safeRuntimeDetail(diagnostics.failureDetail) }
+      : diagnostics;
     this.sessionId = sessionId;
     this.providerTransient = providerTransient;
+    this.usage = usage;
+    this.termination = termination?.detail
+      ? { ...termination, detail: safeRuntimeDetail(termination.detail) }
+      : termination;
   }
 }
 
@@ -93,6 +109,30 @@ function isProviderTransientFailure(error: unknown): boolean {
     value.code === "ECONNRESET" ||
     value.code === "ETIMEDOUT"
   );
+}
+
+function isProviderFailure(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const value = error as {
+    status?: unknown;
+    statusCode?: unknown;
+    retryable?: unknown;
+    code?: unknown;
+  };
+  return (
+    typeof (value.status ?? value.statusCode) === "number" ||
+    value.retryable === true ||
+    (typeof value.code === "string" && /^(?:ECONN|ETIMEDOUT|ENET|EAI_)/.test(value.code))
+  );
+}
+
+class AssistantRunFailure extends Error {
+  readonly reason: "aborted" | "provider_error";
+
+  constructor(failure: { reason: "aborted" | "provider_error"; detail?: string }) {
+    super(failure.detail ?? failure.reason);
+    this.reason = failure.reason;
+  }
 }
 
 function extractJson(output: string): Record<string, unknown> {
@@ -222,6 +262,7 @@ export class PiExpertRunner {
 
     const perToolCalls = new Map<ObservabilityToolName, number>();
     let toolCallCount = 0;
+    let toolError: unknown;
     const toolDefinitions = this.tools.createPiTools({
       names: profile.tools,
       execute: async (name, _toolCallId, parameters) => {
@@ -252,10 +293,16 @@ export class PiExpertRunner {
                   topN: Math.min(typeof parameters.topN === "number" ? parameters.topN : 20, 20),
                 }
               : parameters;
-        const recorded = await context.invoke(name, {
-          ...boundedParameters,
-          caseId: context.task.caseId,
-        });
+        let recorded: RecordedAgentToolExecution;
+        try {
+          recorded = await context.invoke(name, {
+            ...boundedParameters,
+            caseId: context.task.caseId,
+          });
+        } catch (error) {
+          toolError = error;
+          throw error;
+        }
         sampleProcessMemory();
         const compactResult = compactToolResultForAgent(name, recorded.execution.result);
         return {
@@ -295,6 +342,7 @@ export class PiExpertRunner {
     });
 
     const sessionId = session.sessionManager.getSessionId();
+    const usage = new AgentUsageAccumulator();
     let output = "";
     let totalOutputChars = 0;
     let thinkingChars = 0;
@@ -302,7 +350,21 @@ export class PiExpertRunner {
     let repairSucceeded = false;
     let parseFailure: "json_missing" | "json_invalid" | undefined;
     let parseFailureDetail: string | undefined;
+    let invalidOutput = false;
+    let lastMessageFailure: { reason: "aborted" | "provider_error"; detail?: string } | undefined;
     const unsubscribe = session.subscribe((event) => {
+      if (event.type === "message_end" && event.message.role === "assistant") {
+        const message = event.message as AssistantMessage;
+        usage.record(message);
+        lastMessageFailure =
+          message.stopReason === "error" || message.stopReason === "aborted"
+            ? {
+                reason: message.stopReason === "aborted" ? "aborted" : "provider_error",
+                detail: message.errorMessage,
+              }
+            : undefined;
+        return;
+      }
       if (event.type !== "message_update") return;
       if (event.assistantMessageEvent.type === "text_delta") {
         output += event.assistantMessageEvent.delta;
@@ -339,6 +401,7 @@ export class PiExpertRunner {
     try {
       try {
         sampleProcessMemory();
+        lastMessageFailure = undefined;
         await session.prompt(
           `调查下面这个 brief。只在确有需要时使用工具，完成后返回规定的 JSON finding。分析过程和 finding 的自然语言内容优先使用中文；工具名、字段名和枚举值保持原样。\n\n${JSON.stringify(
             prompt,
@@ -347,6 +410,9 @@ export class PiExpertRunner {
           )}`,
         );
         sampleProcessMemory();
+        if (context.signal?.aborted)
+          throw new DOMException("Investigation cancelled", "AbortError");
+        if (lastMessageFailure) throw new AssistantRunFailure(lastMessageFailure);
         try {
           parsed = extractJson(output);
         } catch (error) {
@@ -354,34 +420,69 @@ export class PiExpertRunner {
           parseFailure = error instanceof SyntaxError ? "json_invalid" : "json_missing";
           parseFailureDetail = error instanceof Error ? error.message : String(error);
           output = "";
+          lastMessageFailure = undefined;
           await session.prompt(
             "调查工作已经完成，不要再调用工具。现在只返回规定的 JSON finding，并且只能使用已经收集到的 evidence 和 toolCallId。negative/no-anomaly 结果同样是有效 finding。不要重新开始调查，也不要扩大搜索范围。",
           );
           sampleProcessMemory();
-          parsed = extractJson(output);
+          if (context.signal?.aborted)
+            throw new DOMException("Investigation cancelled", "AbortError");
+          if (lastMessageFailure) throw new AssistantRunFailure(lastMessageFailure);
+          try {
+            parsed = extractJson(output);
+          } catch (repairError) {
+            invalidOutput = true;
+            throw repairError;
+          }
           repairSucceeded = true;
         }
       } catch (error) {
-        const failureReason = context.signal?.aborted
-          ? "aborted"
-          : (parseFailure ?? (error instanceof SyntaxError ? "json_invalid" : "model_error"));
-        const detail = error instanceof Error ? error.message : String(error);
-        throw new PiExpertRunError(
-          detail,
-          runtimeDiagnostics(
+        const reason: AgentTermination["reason"] =
+          context.signal?.aborted || (error instanceof DOMException && error.name === "AbortError")
+            ? "aborted"
+            : invalidOutput
+              ? "invalid_output"
+              : error instanceof AssistantRunFailure
+                ? error.reason
+                : lastMessageFailure
+                  ? lastMessageFailure.reason
+                  : error === toolError
+                    ? "tool_error"
+                    : isProviderFailure(error)
+                      ? "provider_error"
+                      : "runtime_error";
+        const detail = safeRuntimeDetail(error);
+        return {
+          sessionId,
+          usage: usage.snapshot(),
+          diagnostics: runtimeDiagnostics(
             toolCallCount,
             thinkingChars,
             totalOutputChars,
             repairAttempted,
             false,
             {
-              failureReason,
-              failureDetail: detail.slice(0, 1000),
+              failureReason:
+                reason === "aborted"
+                  ? "aborted"
+                  : reason === "invalid_output"
+                    ? (parseFailure ?? "json_invalid")
+                    : reason === "provider_error"
+                      ? "model_error"
+                      : "unknown",
+              failureDetail: detail,
             },
           ),
-          sessionId,
-          parseFailure === undefined && isProviderTransientFailure(error),
-        );
+          termination: {
+            reason,
+            detail,
+            ...(reason === "provider_error" &&
+            parseFailure === undefined &&
+            isProviderTransientFailure(error)
+              ? { providerTransient: true }
+              : {}),
+          },
+        };
       }
     } finally {
       context.signal?.removeEventListener("abort", abort);
@@ -439,6 +540,8 @@ export class PiExpertRunner {
 
     return {
       sessionId,
+      usage: usage.snapshot(),
+      termination: { reason: "completed" },
       diagnostics: runtimeDiagnostics(
         toolCallCount,
         thinkingChars,
@@ -446,7 +549,7 @@ export class PiExpertRunner {
         repairAttempted,
         repairSucceeded,
         repairAttempted && repairSucceeded && parseFailureDetail
-          ? { failureDetail: `initial parse repaired: ${parseFailureDetail.slice(0, 900)}` }
+          ? { failureDetail: `initial parse repaired: ${safeRuntimeDetail(parseFailureDetail)}` }
           : undefined,
       ),
       finding: normalizeFindingForProfile(profile, finding),

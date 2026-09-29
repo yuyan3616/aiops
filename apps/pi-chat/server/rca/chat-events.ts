@@ -209,6 +209,11 @@ export class RcaChatEventMapper {
             agentId: this.agentId(task.id),
             status: task.status,
             summary: event.summary,
+            ...(task.usage ? { usage: task.usage } : {}),
+            ...(task.diagnostics ? { diagnostics: task.diagnostics } : {}),
+            ...(task.termination ? { termination: task.termination } :
+              task.terminationReason ? { terminationReason: task.terminationReason } : {}),
+            ...(task.interruptedByRestart ? { interruptedByRestart: true } : {}),
           },
         }];
       }

@@ -139,6 +139,10 @@ export function reconcileRcaExecutionItems(
         ...item.agent,
         status,
         evidence: mergedEvidence,
+        ...(task.usage ? { usage: task.usage } : {}),
+        ...(task.diagnostics ? { diagnostics: task.diagnostics } : {}),
+        ...(task.termination ? { termination: task.termination } :
+          task.terminationReason ? { terminationReason: task.terminationReason } : {}),
         ...(interruptedByRestart
           ? {
               interruptedByRestart: true,

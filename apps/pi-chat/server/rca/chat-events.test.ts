@@ -153,3 +153,24 @@ test("projects RCA events as structured UI events without synthetic thinking", (
   assert.equal(reportEvent?.payload.filename, "RCA-INV-test.md");
   assert.equal(reportEvent?.payload.confidence, 0.92);
 });
+
+test("projects terminal runtime fields and preserves legacy termination fallback", () => {
+  const mapper = new RcaChatEventMapper("INV-test");
+  const completed = mapper.map(event(1, "expert.completed", {
+    expertTask: {
+      id: "T01", expert: "trace", status: "failed",
+      usage: { turns: 2, inputTokens: 10, outputTokens: 2, cacheReadTokens: 3,
+        cacheWriteTokens: 0, totalTokens: 15, contextTokens: 12 },
+      diagnostics: { toolCallCount: 1, repairAttempted: true, repairSucceeded: false },
+      termination: { reason: "invalid_output" },
+    },
+  }));
+  assert.equal(completed[0]?.type, "agent.completed");
+  assert.equal((completed[0]?.payload.usage as { turns?: number } | undefined)?.turns, 2);
+  assert.deepEqual(completed[0]?.payload.termination, { reason: "invalid_output" });
+  const legacy = mapper.map(event(2, "expert.completed", {
+    expertTask: { id: "T02", expert: "trace", status: "failed", terminationReason: "service_restart" },
+  }));
+  assert.equal(legacy[0]?.payload.terminationReason, "service_restart");
+  assert.equal(legacy[0]?.payload.usage, undefined);
+});
