@@ -88,12 +88,14 @@ export function Composer({
         />
         <div className="composer-toolbar">
           <div className="composer-settings">
-            <SkillSelector
-              busy={busy}
-              skills={skills}
-              selectedSkills={selectedSkills}
-              onSelectedSkillsChange={onSelectedSkillsChange}
-            />
+            {skills.length > 0 && (
+              <SkillSelector
+                busy={busy}
+                skills={skills}
+                selectedSkills={selectedSkills}
+                onSelectedSkillsChange={onSelectedSkillsChange}
+              />
+            )}
             <ModelSelector
               busy={busy}
               model={model}
