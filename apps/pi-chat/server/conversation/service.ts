@@ -213,9 +213,22 @@ export class ConversationService {
         investigations,
       ),
     );
+    const rcaContext = await this.resolveRcaContext(id);
 
     return {
       conversation: this.summary(conversationRecord, managedSession.status),
+      rca: {
+        state: rcaContext.state,
+        ...(rcaContext.investigationId
+          ? { investigationId: rcaContext.investigationId }
+          : {}),
+        ...(rcaContext.caseId ? { caseId: rcaContext.caseId } : {}),
+        ...(rcaContext.symptom ? { symptom: rcaContext.symptom } : {}),
+        ...(rcaContext.rounds !== undefined ? { rounds: rcaContext.rounds } : {}),
+        ...(rcaContext.rootCauseStatus
+          ? { rootCauseStatus: rcaContext.rootCauseStatus }
+          : {}),
+      },
       messageList: messageList,
       activeSkillNames: [...managedSession.activeSkillNames],
       model: {
