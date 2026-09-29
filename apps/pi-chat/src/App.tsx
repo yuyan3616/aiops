@@ -148,7 +148,7 @@ export default function App() {
     latestReport?.kind === "report" ? latestReport.report.investigationId : undefined;
   const investigationId = investigation?.investigationId ?? reportInvestigationId;
   const investigationState =
-    investigation?.investigationId === investigationId
+    investigation && investigation.investigationId === investigationId
       ? investigation.state
       : reportInvestigationId
         ? "completed"
