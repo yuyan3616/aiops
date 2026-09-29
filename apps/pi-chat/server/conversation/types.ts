@@ -28,6 +28,8 @@ export interface ConversationRecord {
 
 export interface ManagedSession {
   id: string;
+  lastAccessAt: number;
+  activeUses: number;
   runtime: AgentSessionRuntime;
   channel: EventChannel;
   unsubscribe?: () => void;

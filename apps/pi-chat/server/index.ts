@@ -34,11 +34,7 @@ if (recoveredInvestigations.length > 0) {
     `Recovered interrupted RCA investigations: ${recoveredInvestigations.join(", ")}\n`,
   );
 }
-const rcaService = new RcaService(
-  investigationRepository,
-  modelRuntime,
-  rcaTools,
-);
+const rcaService = new RcaService(investigationRepository, modelRuntime, rcaTools);
 const recoveredVisualizations = await rcaService.recoverVisualizations();
 if (recoveredVisualizations.length > 0) {
   process.stderr.write(
@@ -65,6 +61,7 @@ let closing = false;
 async function shutdown() {
   if (closing) return;
   closing = true;
+  service.close();
   server.close(() => process.exit(0));
 }
 
