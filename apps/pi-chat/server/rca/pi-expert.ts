@@ -718,8 +718,12 @@ export class PiExpertRunner {
           totalOutputChars,
           repairAttempted,
           repairSucceeded,
-          repairAttempted && repairSucceeded && parseFailureDetail
-            ? { failureDetail: `initial parse repaired: ${safeRuntimeDetail(parseFailureDetail)}` }
+          repairAttempted && repairSucceeded && protocolFailureDetail
+            ? {
+                failureDetail: `initial finding submission repaired: ${safeRuntimeDetail(
+                  protocolFailureDetail,
+                )}`,
+              }
             : undefined,
         ),
         finding: normalizeFindingForProfile(profile, finding),
