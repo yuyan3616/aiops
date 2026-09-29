@@ -481,6 +481,7 @@ test("agentic conclusion requires real evidence and complete hypothesis accounti
         unresolvedContradictions: [],
       },
     });
+    await service.waitForVisualizationIdle(current.id);
     assert.equal(concluded.investigation.status, "completed");
     assert.equal(concluded.investigation.rootCause?.status, "probable");
     assert.match(concluded.report, /E01/);
@@ -695,6 +696,7 @@ test("pre-existing explanations require transition evidence and supported propag
         unresolvedContradictions: ["the exact transport mechanism remains unresolved"],
       },
     });
+    await service.waitForVisualizationIdle(current.id);
     assert.equal(concluded.investigation.rootCause?.status, "probable");
     assert.deepEqual(
       concluded.investigation.rootCause?.causalAssessment?.transitionEvidenceIds,
@@ -749,6 +751,7 @@ test("inconclusive RCA accepts uncertain causal assessment", async () => {
       },
     });
 
+    await service.waitForVisualizationIdle(current.id);
     assert.equal(concluded.investigation.status, "inconclusive");
     assert.equal(concluded.investigation.rootCause?.causalAssessment?.temporalFit, "uncertain");
     assert.match(concluded.report, /Causal Assessment/);
@@ -1077,6 +1080,7 @@ test("interrupted investigation may still conclude from persisted evidence", asy
         unresolvedContradictions: [],
       },
     });
+    await service.waitForVisualizationIdle(current.id);
     assert.equal(concluded.investigation.status, "completed");
     assert.equal(concluded.investigation.rootCause?.status, "probable");
   } finally {
@@ -1276,6 +1280,7 @@ test("conclusion rejects any hypothesis left outside selected rejected or unreso
         unresolvedContradictions: [],
       },
     });
+    await service.waitForVisualizationIdle(current.id);
     assert.equal(concluded.investigation.rootCause?.unresolvedHypotheses?.[0]?.id, "H02");
   } finally {
     await rm(directory, { recursive: true, force: true });

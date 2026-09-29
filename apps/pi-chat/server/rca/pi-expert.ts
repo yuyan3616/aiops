@@ -194,13 +194,21 @@ function mb(bytes: number): number {
   return Math.round((bytes / 1024 / 1024) * 100) / 100;
 }
 
+type AgentSessionFactory = typeof createAgentSession;
+
 export class PiExpertRunner {
   private readonly modelRuntime: ModelRuntime;
   private readonly tools: ObservabilityToolRegistry;
+  private readonly createSession: AgentSessionFactory;
 
-  constructor(modelRuntime: ModelRuntime, tools: ObservabilityToolRegistry) {
+  constructor(
+    modelRuntime: ModelRuntime,
+    tools: ObservabilityToolRegistry,
+    createSession: AgentSessionFactory = createAgentSession,
+  ) {
     this.modelRuntime = modelRuntime;
     this.tools = tools;
+    this.createSession = createSession;
   }
 
   async run(context: PiExpertRunContext): Promise<PiExpertRunResult> {
@@ -356,7 +364,7 @@ export class PiExpertRunner {
       },
     });
 
-    const { session } = await createAgentSession({
+    const { session } = await this.createSession({
       cwd: process.cwd(),
       agentDir,
       modelRuntime: this.modelRuntime,
@@ -450,7 +458,7 @@ export class PiExpertRunner {
       });
       await finalizeLoader.reload();
 
-      const { session: finalizeSession } = await createAgentSession({
+      const { session: finalizeSession } = await this.createSession({
         cwd: process.cwd(),
         agentDir,
         modelRuntime: this.modelRuntime,
