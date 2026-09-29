@@ -9,11 +9,7 @@ import {
   type TextContent,
   type ThinkingLevel,
 } from "@earendil-works/pi-ai";
-import {
-  ModelRuntime,
-  SessionManager,
-  loadSkillsFromDir,
-} from "@earendil-works/pi-coding-agent";
+import { ModelRuntime, SessionManager, loadSkillsFromDir } from "@earendil-works/pi-coding-agent";
 import type { GlobalConfig } from "@server/config";
 import {
   conversationRcaContextFromInvestigation,
@@ -36,14 +32,11 @@ import type {
   SkillOption,
 } from "@shared/types";
 
+import { normalizePromptError, runDetached } from "./async-task";
 import { EventChannel } from "./channel";
 import { applyExternalStreamEvent, mergeMessageLists } from "./external-stream";
-import {
-  reconcileRcaExecutionItems,
-  settleInterruptedRcaSessionTools,
-} from "./recovery";
 import { ConversationViewBuilder, extractImages, extractText, resultText } from "./helper";
-import { normalizePromptError, runDetached } from "./async-task";
+import { reconcileRcaExecutionItems, settleInterruptedRcaSessionTools } from "./recovery";
 import { ConversationRepository } from "./repository";
 import { createRuntime } from "./runtime";
 import {
@@ -82,8 +75,18 @@ export class ConversationService {
   private readonly rcaService: RcaService;
   private readonly titleGenerator: ConversationTitleGenerator;
   readonly ttlMs: number = 30_000;
+  private readonly sessionIdleTtlMs = this.positiveDuration(
+    process.env.PI_CHAT_SESSION_IDLE_TTL_MS,
+    10 * 60_000,
+  );
+  private readonly sessionSweepIntervalMs = this.positiveDuration(
+    process.env.PI_CHAT_SESSION_SWEEP_INTERVAL_MS,
+    60_000,
+  );
+  private readonly sweepTimer: ReturnType<typeof setInterval>;
   private readonly channels = new Map<string, EventChannel>();
   private readonly managedSessions = new Map<string, ManagedSession>();
+  private readonly sessionLocks = new Map<string, Promise<void>>();
   private readonly recordWriteQueues = new Map<string, Promise<void>>();
   private readonly promptPerformance = new Map<string, PromptPerformanceTrace>();
   private readonly pendingTitleRefinements = new Map<string, PendingTitleRefinement>();
@@ -102,6 +105,21 @@ export class ConversationService {
         updatedAt: event.updatedAt,
       });
     });
+    this.sweepTimer = setInterval(() => {
+      void this.sweepIdleSessions().catch((error) => {
+        process.stderr.write(`Session sweep failed: ${String(error)}\n`);
+      });
+    }, this.sessionSweepIntervalMs);
+    this.sweepTimer.unref();
+  }
+
+  close(): void {
+    clearInterval(this.sweepTimer);
+  }
+
+  private positiveDuration(raw: string | undefined, fallback: number): number {
+    const value = Number(raw);
+    return raw !== undefined && Number.isSafeInteger(value) && value > 0 ? value : fallback;
   }
 
   async createConversation() {
@@ -154,44 +172,55 @@ export class ConversationService {
 
     const managedSession = await this.ensureManagedSession(conversationId, validSelectedSkills);
     const session = managedSession.runtime.session;
+    let handedOff = false;
+    try {
+      // Keep the first-turn title deterministic. Starting a second LLM call here competes
+      // with the user-facing prompt for the same provider and hurts time-to-first-token.
+      await this.ensureFallbackTitle(conversationId, cleanedUserInput);
 
-    // Keep the first-turn title deterministic. Starting a second LLM call here competes
-    // with the user-facing prompt for the same provider and hurts time-to-first-token.
-    await this.ensureFallbackTitle(conversationId, cleanedUserInput);
+      const purpose: PromptPerformancePurpose = session.isStreaming ? "steer" : "main_chat";
+      this.beginPromptPerformance(managedSession, purpose, requestStartedAt);
 
-    const purpose: PromptPerformancePurpose = session.isStreaming ? "steer" : "main_chat";
-    this.beginPromptPerformance(managedSession, purpose, requestStartedAt);
+      if (session.isStreaming) {
+        const investigationId = await this.resolveInvestigation(conversationId);
+        const intervention = investigationId
+          ? await this.rcaService.recordUserIntervention(investigationId, cleanedUserInput)
+          : undefined;
 
-    if (session.isStreaming) {
-      const investigationId = await this.resolveInvestigation(conversationId);
-      const intervention = investigationId
-        ? await this.rcaService.recordUserIntervention(investigationId, cleanedUserInput)
-        : undefined;
+        await session.prompt(cleanedUserInput, {
+          streamingBehavior: "steer",
+          source: "rpc",
+        });
 
-      await session.prompt(cleanedUserInput, {
-        streamingBehavior: "steer",
-        source: "rpc",
-      });
-
-      if (investigationId && intervention) {
-        this.rcaService.interruptActiveDispatch(investigationId);
+        if (investigationId && intervention) {
+          this.rcaService.interruptActiveDispatch(investigationId);
+        }
+        return;
       }
-      return;
-    }
 
-    runDetached(
-      () => session.prompt(cleanedUserInput),
-      (cause) => {
-        const message = normalizePromptError(cause);
-        this.finishPromptPerformance(managedSession.id, "error", { error: message });
-        managedSession.error = message;
-        managedSession.streamMessageId = undefined;
-        managedSession.streamThinkingId = undefined;
-        managedSession.channel.publish("runtime.error", { error: message });
-        this.setStatus(managedSession, "error");
-        managedSession.channel.publish("runtime.settled", {});
-      },
-    );
+      runDetached(
+        async () => {
+          try {
+            await session.prompt(cleanedUserInput);
+          } finally {
+            this.done(managedSession);
+          }
+        },
+        (cause) => {
+          const message = normalizePromptError(cause);
+          this.finishPromptPerformance(managedSession.id, "error", { error: message });
+          managedSession.error = message;
+          managedSession.streamMessageId = undefined;
+          managedSession.streamThinkingId = undefined;
+          managedSession.channel.publish("runtime.error", { error: message });
+          this.setStatus(managedSession, "error");
+          managedSession.channel.publish("runtime.settled", {});
+        },
+      );
+      handedOff = true;
+    } finally {
+      if (!handedOff) this.done(managedSession);
+    }
   }
 
   public async snapshot(id: string): Promise<ConversationSnapshot> {
@@ -201,50 +230,47 @@ export class ConversationService {
       throw new Error(`Conversation with id ${id} not found.`);
     }
     const managedSession = await this.ensureManagedSession(id);
-    const session = managedSession.runtime.session;
-    const channel = managedSession.channel;
+    try {
+      const session = managedSession.runtime.session;
+      const channel = managedSession.channel;
 
-    const builder = new ConversationViewBuilder(session.sessionManager.getBranch());
-    const investigations = await this.loadLinkedInvestigations(conversationRecord);
-    const messageList = mergeMessageLists(
-      settleInterruptedRcaSessionTools(builder.build(), investigations, session.isStreaming),
-      reconcileRcaExecutionItems(
-        conversationRecord.externalMessageList ?? [],
-        investigations,
-      ),
-    );
-    const rcaContext = await this.resolveRcaContext(id);
+      const builder = new ConversationViewBuilder(session.sessionManager.getBranch());
+      const investigations = await this.loadLinkedInvestigations(conversationRecord);
+      const messageList = mergeMessageLists(
+        settleInterruptedRcaSessionTools(builder.build(), investigations, session.isStreaming),
+        reconcileRcaExecutionItems(conversationRecord.externalMessageList ?? [], investigations),
+      );
+      const rcaContext = await this.resolveRcaContext(id);
 
-    return {
-      conversation: this.summary(conversationRecord, managedSession.status),
-      rca: {
-        state: rcaContext.state,
-        ...(rcaContext.investigationId
-          ? { investigationId: rcaContext.investigationId }
-          : {}),
-        ...(rcaContext.caseId ? { caseId: rcaContext.caseId } : {}),
-        ...(rcaContext.symptom ? { symptom: rcaContext.symptom } : {}),
-        ...(rcaContext.rounds !== undefined ? { rounds: rcaContext.rounds } : {}),
-        ...(rcaContext.rootCauseStatus
-          ? { rootCauseStatus: rcaContext.rootCauseStatus }
-          : {}),
-      },
-      messageList: messageList,
-      activeSkillNames: [...managedSession.activeSkillNames],
-      model: {
-        provider: session.agent.state.model.provider,
-        id: session.agent.state.model.id,
-      },
-      thinkingLevel: session.agent.state.thinkingLevel as ThinkingLevel,
-      availableThinkingLevels: session.getAvailableThinkingLevels() as ThinkingLevel[],
-      status: managedSession.status,
-      error: managedSession.error,
-      stream: {
-        id: channel.streamId,
-        lastEventId: channel.lastId,
-      },
-      diagnostics: managedSession.diagnostics,
-    };
+      return {
+        conversation: this.summary(conversationRecord, managedSession.status),
+        rca: {
+          state: rcaContext.state,
+          ...(rcaContext.investigationId ? { investigationId: rcaContext.investigationId } : {}),
+          ...(rcaContext.caseId ? { caseId: rcaContext.caseId } : {}),
+          ...(rcaContext.symptom ? { symptom: rcaContext.symptom } : {}),
+          ...(rcaContext.rounds !== undefined ? { rounds: rcaContext.rounds } : {}),
+          ...(rcaContext.rootCauseStatus ? { rootCauseStatus: rcaContext.rootCauseStatus } : {}),
+        },
+        messageList: messageList,
+        activeSkillNames: [...managedSession.activeSkillNames],
+        model: {
+          provider: session.agent.state.model.provider,
+          id: session.agent.state.model.id,
+        },
+        thinkingLevel: session.agent.state.thinkingLevel as ThinkingLevel,
+        availableThinkingLevels: session.getAvailableThinkingLevels() as ThinkingLevel[],
+        status: managedSession.status,
+        error: managedSession.error,
+        stream: {
+          id: channel.streamId,
+          lastEventId: channel.lastId,
+        },
+        diagnostics: managedSession.diagnostics,
+      };
+    } finally {
+      this.done(managedSession);
+    }
   }
 
   async list(): Promise<ConversationSummary[]> {
@@ -272,20 +298,18 @@ export class ConversationService {
     }
 
     for (const record of records) {
-      await this.waitForRecordWrites(record.id);
-      await this.release(record.id);
-
-      if (existsSync(record.sessionFile)) {
-        await rm(record.sessionFile, {
-          force: true,
-        });
-      }
-
-      await rm(record.workspaceDir, {
-        force: true,
-        recursive: true,
+      await this.withSessionLock(record.id, async () => {
+        const current = this.managedSessions.get(record.id);
+        if (current && this.isBusy(current)) {
+          throw new Error(`Cannot delete conversation ${record.id} because it is busy.`);
+        }
+        await this.waitForRecordWrites(record.id);
+        this.release(record.id);
+        if (existsSync(record.sessionFile)) await rm(record.sessionFile, { force: true });
+        await rm(record.workspaceDir, { force: true, recursive: true });
+        await this.conversationRepository.delete(record.id);
+        this.channels.delete(record.id);
       });
-      await this.conversationRepository.delete(record.id);
     }
 
     return records.map((record) => record.id);
@@ -362,15 +386,23 @@ export class ConversationService {
 
   public async abort(conversationId: string) {
     const managedSession = await this.ensureManagedSession(conversationId);
-    if (!this.isBusy(managedSession)) return;
-    this.setStatus(managedSession, "stopping");
-    managedSession.runtime.session.abort();
-    this.setStatus(managedSession, "ready");
+    try {
+      if (!this.isRuntimeBusy(managedSession)) return;
+      this.setStatus(managedSession, "stopping");
+      managedSession.runtime.session.abort();
+      this.setStatus(managedSession, "ready");
+    } finally {
+      this.done(managedSession);
+    }
   }
 
   async getConfig(conversationId: string): Promise<ConversationConfig> {
     const managedSession = await this.ensureManagedSession(conversationId);
-    return this.config(managedSession);
+    try {
+      return this.config(managedSession);
+    } finally {
+      this.done(managedSession);
+    }
   }
 
   getAvailableModels(): ModelOption[] {
@@ -395,32 +427,36 @@ export class ConversationService {
     update: ConversationConfigUpdate,
   ): Promise<ConversationConfig> {
     const managedSession = await this.ensureManagedSession(conversationId);
-    if (this.isBusy(managedSession)) {
-      throw new Error(
-        `Cannot update config for conversation ${conversationId} because it is busy.`,
-      );
-    }
-
-    const session = managedSession.runtime.session;
-    if (update.model) {
-      // session.setModel();
-      const model = this.availableModels(managedSession).find(
-        (item) => item.provider === update.model?.provider && item.id === update.model.id,
-      );
-      if (!model) {
-        throw new Error(`Model ${update.model.provider}/${update.model.id} is not available.`);
+    try {
+      if (managedSession.activeUses > 1 || this.isRuntimeBusy(managedSession)) {
+        throw new Error(
+          `Cannot update config for conversation ${conversationId} because it is busy.`,
+        );
       }
-      await session.setModel(model);
-    }
 
-    if (update.thinkingLevel !== undefined) {
-      if (!session.getAvailableThinkingLevels().includes(update.thinkingLevel as ThinkingLevel)) {
-        throw new Error(`Thinking level ${update.thinkingLevel} is not available`);
+      const session = managedSession.runtime.session;
+      if (update.model) {
+        // session.setModel();
+        const model = this.availableModels(managedSession).find(
+          (item) => item.provider === update.model?.provider && item.id === update.model.id,
+        );
+        if (!model) {
+          throw new Error(`Model ${update.model.provider}/${update.model.id} is not available.`);
+        }
+        await session.setModel(model);
       }
-      session.setThinkingLevel(update.thinkingLevel);
-    }
 
-    return this.config(managedSession);
+      if (update.thinkingLevel !== undefined) {
+        if (!session.getAvailableThinkingLevels().includes(update.thinkingLevel as ThinkingLevel)) {
+          throw new Error(`Thinking level ${update.thinkingLevel} is not available`);
+        }
+        session.setThinkingLevel(update.thinkingLevel);
+      }
+
+      return this.config(managedSession);
+    } finally {
+      this.done(managedSession);
+    }
   }
 
   private config(managedSession: ManagedSession): ConversationConfig {
@@ -451,9 +487,7 @@ export class ConversationService {
     }));
   }
 
-  private async resolveRcaContext(
-    conversationId: string,
-  ): Promise<ConversationRcaContext> {
+  private async resolveRcaContext(conversationId: string): Promise<ConversationRcaContext> {
     await this.waitForRecordWrites(conversationId);
     const record = await this.conversationRepository.get(conversationId);
     if (!record?.activeInvestigationId) return idleConversationRcaContext();
@@ -483,9 +517,7 @@ export class ConversationService {
     );
 
     return new Map(
-      entries.filter(
-        (entry): entry is readonly [string, Investigation] => entry !== undefined,
-      ),
+      entries.filter((entry): entry is readonly [string, Investigation] => entry !== undefined),
     );
   }
 
@@ -531,11 +563,7 @@ export class ConversationService {
         return { provider: fallback.provider, id: fallback.id };
       },
       onProjection: (projection) =>
-        this.publishExternalEvent(
-          conversationRecord.id,
-          projection.type,
-          projection.payload,
-        ),
+        this.publishExternalEvent(conversationRecord.id, projection.type, projection.payload),
       onLinkInvestigation: (investigationId) =>
         this.linkInvestigation(conversationRecord.id, investigationId),
       getRcaContext,
@@ -568,6 +596,8 @@ export class ConversationService {
 
     const managedSession: ManagedSession = {
       id: conversationRecord.id,
+      lastAccessAt: Date.now(),
+      activeUses: 0,
       runtime,
       channel: this.getEventChannel(conversationRecord.id),
       status: runtime.session.isStreaming ? "running" : "ready",
@@ -736,7 +766,40 @@ export class ConversationService {
     managedSession.channel.publish("runtime.status", { status });
   }
 
+  private async withSessionLock<T>(id: string, task: () => Promise<T>): Promise<T> {
+    const previous = this.sessionLocks.get(id);
+    let unlock!: () => void;
+    const current = new Promise<void>((resolve) => {
+      unlock = resolve;
+    });
+    this.sessionLocks.set(id, current);
+    if (previous) await previous;
+    try {
+      return await task();
+    } finally {
+      if (this.sessionLocks.get(id) === current) this.sessionLocks.delete(id);
+      unlock();
+    }
+  }
+
+  private acquire(managedSession: ManagedSession): ManagedSession {
+    managedSession.activeUses++;
+    managedSession.lastAccessAt = Date.now();
+    return managedSession;
+  }
+
+  private done(managedSession: ManagedSession): void {
+    managedSession.activeUses--;
+    managedSession.lastAccessAt = Date.now();
+  }
+
   private async ensureManagedSession(conversationId: string, selectedSkills?: string[]) {
+    return this.withSessionLock(conversationId, async () =>
+      this.acquire(await this.loadManagedSession(conversationId, selectedSkills)),
+    );
+  }
+
+  private async loadManagedSession(conversationId: string, selectedSkills?: string[]) {
     let managedSession = this.managedSessions.get(conversationId);
     if (managedSession) {
       if (!selectedSkills || hasSameStringItems(managedSession.activeSkillNames, selectedSkills)) {
@@ -754,9 +817,13 @@ export class ConversationService {
       // pi sessionManager
       // eventChannel
       const sessionManager = managedSession.runtime.session.sessionManager;
-      this.release(conversationId, { dropChannel: false });
       await this.conversationRepository.update(conversationId, { selectedSkills });
-      return this.createManagedSession(conversationRecord, sessionManager, selectedSkills);
+      this.release(conversationId, { dropChannel: false });
+      return this.createManagedSession(
+        { ...conversationRecord, selectedSkills },
+        sessionManager,
+        selectedSkills,
+      );
     }
     const conversationRecord = await this.conversationRepository.get(conversationId);
     if (!conversationRecord) {
@@ -797,17 +864,11 @@ export class ConversationService {
 
   private publishConversationTitle(record: ConversationRecord): void {
     this.getEventChannel(record.id).publish("conversation.updated", {
-      conversation: this.summary(
-        record,
-        this.managedSessions.get(record.id)?.status ?? "cold",
-      ),
+      conversation: this.summary(record, this.managedSessions.get(record.id)?.status ?? "cold"),
     });
   }
 
-  private async ensureFallbackTitle(
-    conversationId: string,
-    userMessage: string,
-  ): Promise<void> {
+  private async ensureFallbackTitle(conversationId: string, userMessage: string): Promise<void> {
     const record = await this.conversationRepository.get(conversationId);
     if (!record) throw new Error(`Conversation with ID ${conversationId} not found`);
     const meta = this.titleMeta(record);
@@ -853,11 +914,7 @@ export class ConversationService {
 
   private markPromptPerformance(
     conversationId: string,
-    stage:
-      | "agent_start"
-      | "assistant_message_start"
-      | "first_model_delta"
-      | "first_text_delta",
+    stage: "agent_start" | "assistant_message_start" | "first_model_delta" | "first_text_delta",
   ): void {
     const trace = this.promptPerformance.get(conversationId);
     if (!trace) return;
@@ -1021,7 +1078,12 @@ export class ConversationService {
   }
 
   private isBusy(managedSession: ManagedSession): boolean {
+    return managedSession.activeUses > 0 || this.isRuntimeBusy(managedSession);
+  }
+
+  private isRuntimeBusy(managedSession: ManagedSession): boolean {
     return (
+      managedSession.runtime.session.isStreaming ||
       managedSession.runtime.session.agent.state.isStreaming ||
       managedSession.status === "running" ||
       managedSession.status === "stopping" ||
@@ -1029,16 +1091,38 @@ export class ConversationService {
     );
   }
 
-  private async release(id: string, options: { dropChannel?: boolean } = {}) {
+  private release(id: string, options: { dropChannel?: boolean } = {}) {
     const managedSession = this.managedSessions.get(id);
     if (!managedSession) return;
-    managedSession.unsubscribe?.();
-    managedSession.runtime.session.dispose();
-    this.promptPerformance.delete(id);
-    this.pendingTitleRefinements.delete(id);
-    if (options.dropChannel ?? true) {
-      this.channels.delete(id);
+    try {
+      managedSession.unsubscribe?.();
+      managedSession.runtime.session.dispose();
+    } finally {
+      this.promptPerformance.delete(id);
+      this.pendingTitleRefinements.delete(id);
+      if (options.dropChannel ?? true) {
+        this.channels.delete(id);
+      }
+      if (this.managedSessions.get(id) === managedSession) this.managedSessions.delete(id);
     }
-    this.managedSessions.delete(id);
+  }
+
+  private async sweepIdleSessions(): Promise<void> {
+    const now = Date.now();
+    for (const [id, candidate] of this.managedSessions) {
+      if (now - candidate.lastAccessAt < this.sessionIdleTtlMs || this.isBusy(candidate)) continue;
+      await this.withSessionLock(id, async () => {
+        if (
+          this.managedSessions.get(id) !== candidate ||
+          Date.now() - candidate.lastAccessAt < this.sessionIdleTtlMs ||
+          this.isBusy(candidate)
+        )
+          return;
+        this.release(id, { dropChannel: false });
+        process.stdout.write(
+          `[chat.session] ${JSON.stringify({ action: "evicted", conversationId: id })}\n`,
+        );
+      });
+    }
   }
 }
