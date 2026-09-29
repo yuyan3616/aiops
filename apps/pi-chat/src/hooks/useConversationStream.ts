@@ -55,6 +55,7 @@ export function useConversationStream(conversationId?: string) {
 
   useEffect(() => {
     dispatch({ type: "select", conversationId });
+    setVisualizationRevision(0);
   }, [conversationId]);
 
   const messageItems = [
@@ -295,5 +296,6 @@ export function useConversationStream(conversationId?: string) {
       conversationMeta.conversationId === conversationId
         ? conversationMeta.conversation?.title
         : undefined,
+    visualizationRevision,
   };
 }
