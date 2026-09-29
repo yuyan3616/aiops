@@ -64,7 +64,7 @@ export function InvestigationDetailDrawer({
   const [loading, setLoading] = useState(false);
   const [requestError, setRequestError] = useState("");
   const [regenerating, setRegenerating] = useState(false);
-  const resizeRef = useRef<{ pointerId: number }>();
+  const resizeRef = useRef<{ pointerId: number } | undefined>(undefined);
 
   const refresh = useCallback(async () => {
     if (!open || !investigationId) return;
