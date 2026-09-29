@@ -42,7 +42,7 @@ export function useConversationStream(conversationId?: string) {
     conversationId?: string;
     message: string;
   }>({ message: "" });
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(false);\n  const [visualizationRevision, setVisualizationRevision] = useState(0);
   const [conversationMeta, setConversationMeta] = useState<{
     conversationId?: string;
     conversation?: ConversationSummary;
@@ -88,6 +88,9 @@ export function useConversationStream(conversationId?: string) {
         if (conversation?.id === conversationId) {
           setConversationMeta({ conversationId, conversation });
         }
+      }
+      if (event.type === "visualization.updated") {
+        setVisualizationRevision((current) => current + 1);
       }
       setMessageState((current) => ({
         conversationId,
