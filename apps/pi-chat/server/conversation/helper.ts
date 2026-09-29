@@ -153,6 +153,7 @@ export class ConversationViewBuilder {
           thinkingBlock = {
             id: entry.id + ":thinking",
             text: "",
+            completed: true,
           };
           this.messageList.push({
             kind: "thinking",
