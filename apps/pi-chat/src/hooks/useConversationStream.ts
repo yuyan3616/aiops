@@ -302,6 +302,8 @@ export function useConversationStream(conversationId?: string) {
     historyLoading,
     loading,
     error,
+    connectionError,
+    runtimeError,
     send: submit,
     status,
     abort,

@@ -49,7 +49,8 @@ export default function App() {
     messageItems,
     historyLoading,
     loading,
-    error: connectionError,
+    connectionError,
+    runtimeError,
     status,
     send,
     abort,
@@ -257,6 +258,12 @@ export default function App() {
                 />
               ))}
               {(loading || busy) && <LoadingIndicator />}
+              {runtimeError && (
+                <div className="runtime-error-card" role="alert">
+                  <strong>本次回复失败</strong>
+                  <span>{runtimeError}</span>
+                </div>
+              )}
               <div className="message-bottom-spacer" ref={messageBottomRef} aria-hidden />
             </div>
           )}

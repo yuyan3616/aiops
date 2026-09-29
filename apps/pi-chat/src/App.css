@@ -1169,6 +1169,26 @@ button {
     monospace;
 }
 
+.runtime-error-card {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: min(100%, 560px);
+  padding: 9px 11px;
+  border: 1px solid #f2c8c3;
+  border-radius: 8px;
+  background: #fffafa;
+  color: #7a271a;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.runtime-error-card strong {
+  color: #912018;
+  font-size: 13px;
+  font-weight: 600;
+}
+
 .connection-error {
   margin: 16px auto 0;
   width: fit-content;

@@ -1,5 +1,7 @@
 const NO_API_KEY_MESSAGE =
   "当前未配置可用的 LLM/API Key，请先配置模型提供商凭据后再使用普通聊天。";
+const API_KEY_AUTH_MESSAGE =
+  "模型服务认证失败，当前 API Key 可能已失效或被禁用，请检查模型配置后重新发送。";
 const DEFAULT_PROMPT_ERROR_MESSAGE = "模型调用失败，请稍后重试。";
 
 export function normalizePromptError(cause: unknown): string {
@@ -13,6 +15,16 @@ export function normalizePromptError(cause: unknown): string {
 
   if (/no api key found for the selected model/i.test(message)) {
     return NO_API_KEY_MESSAGE;
+  }
+
+  const mentionsApiKey = /api[\s_-]*key/i.test(message);
+  const looksLikeInvalidCredential =
+    /(invalid|disabled|expired|revoked|suspended|incorrect|unauthorized)/i.test(message);
+  const looksLikeAuthFailure =
+    /authentication\s+(?:failed|fails|error)|\b401\b.*unauthorized/i.test(message);
+
+  if ((mentionsApiKey && looksLikeInvalidCredential) || looksLikeAuthFailure) {
+    return API_KEY_AUTH_MESSAGE;
   }
   return message || DEFAULT_PROMPT_ERROR_MESSAGE;
 }
