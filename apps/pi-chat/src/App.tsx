@@ -57,6 +57,7 @@ export default function App() {
     setSelectedSkills,
     conversationTitle: streamedConversationTitle,
     visualizationRevision,
+    investigation,
   } = useConversationStream(conversationId);
   const { draftConfig, model, models, thinkingLevel, thinkingLevels, changeModel, changeThinking } =
     useConversationConfig(conversationId, bootstrap.models);
@@ -143,8 +144,15 @@ export default function App() {
   const latestReport = [...messageItems]
     .reverse()
     .find((item) => item.kind === "report");
-  const investigationId =
+  const reportInvestigationId =
     latestReport?.kind === "report" ? latestReport.report.investigationId : undefined;
+  const investigationId = investigation?.investigationId ?? reportInvestigationId;
+  const investigationState =
+    investigation?.investigationId === investigationId
+      ? investigation.state
+      : reportInvestigationId
+        ? "completed"
+        : undefined;
   return (
     <div className="app-shell">
       <ConversationSidebar
@@ -277,6 +285,7 @@ export default function App() {
       <InvestigationDetailDrawer
         open={detailOpen}
         investigationId={investigationId}
+        investigationState={investigationState}
         visualizationRevision={visualizationRevision}
         onClose={() => setDetailOpen(false)}
       />
