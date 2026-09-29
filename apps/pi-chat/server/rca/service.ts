@@ -12,7 +12,12 @@ import {
 import { InvestigationEventBus, type InvestigationEventListener } from "./events";
 import { getParquetRuntimeDiagnostics } from "./parquet";
 import { PiExpertRunError, PiExpertRunner, type RecordedAgentToolExecution } from "./pi-expert";
-import { InvestigationRepository } from "./repository";\nimport { InvestigationVisualizationService } from "./visualization/service";\nimport type { InvestigationVisualizationArtifact, InvestigationVisualizationEvent } from "./visualization/types";
+import { InvestigationRepository } from "./repository";
+import { InvestigationVisualizationService } from "./visualization/service";
+import type {
+  InvestigationVisualizationArtifact,
+  InvestigationVisualizationEvent,
+} from "./visualization/types";
 import { safeRuntimeDetail } from "./runtime-accounting";
 import { AbortableSemaphore } from "./semaphore";
 import {
