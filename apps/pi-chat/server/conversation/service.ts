@@ -94,6 +94,14 @@ export class ConversationService {
     this.conversationRepository = new ConversationRepository(globalConfig);
     this.rcaService = rcaService;
     this.titleGenerator = new ConversationTitleGenerator(modelRuntime);
+    this.rcaService.subscribeVisualization((event) => {
+      if (!event.conversationId) return;
+      this.getEventChannel(event.conversationId).publish("visualization.updated", {
+        investigationId: event.investigationId,
+        status: event.status,
+        updatedAt: event.updatedAt,
+      });
+    });
   }
 
   async createConversation() {
