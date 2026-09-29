@@ -17,121 +17,15 @@ import type { ObservabilityToolRegistry } from "./tools";
 type SessionFactoryOptions = NonNullable<Parameters<typeof createAgentSession>[0]>;
 type CreatedSession = Awaited<ReturnType<typeof createAgentSession>>;
 type FakeEventListener = (event: unknown) => void;
+type FakeTool = {
+  name: string;
+  execute: (
+    toolCallId: string,
+    parameters: Record<string, unknown>,
+  ) => Promise<unknown>;
+};
 
-function fakeSession(
-  id: string,
-  runPrompt: (
-    prompt: string,
-    emit: (event: unknown) => void,
-  ) => Promise<void>,
-): CreatedSession["session"] {
-  const listeners = new Set<FakeEventListener>();
-  const session = {
-    sessionManager: {
-      getSessionId: () => id,
-    },
-    subscribe(listener: FakeEventListener) {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
-    },
-    async prompt(prompt: string) {
-      await runPrompt(prompt, (event) => {
-        for (const listener of listeners) listener(event);
-      });
-    },
-    abort() {},
-    dispose() {},
-  };
-  return session as unknown as CreatedSession["session"];
-}
-
-test("event-topology 工具调用满 12 次后使用 no-tools Finalize 并返回 finding", async () => {
-  const sessionOptions: SessionFactoryOptions[] = [];
-  let sessionNumber = 0;
-
-  const createSession = (async (
-    options: SessionFactoryOptions,
-  ): Promise<CreatedSession> => {
-    sessionOptions.push(options);
-    sessionNumber += 1;
-
-    if (sessionNumber === 1) {
-      return {
-        session: fakeSession("investigation-session", async (_prompt) => {
-          const tool = (options.customTools ?? []).find(
-            (item) => item.name === "query_events",
-          ) as unknown as
-            | {
-                execute: (
-                  toolCallId: string,
-                  parameters: Record<string, unknown>,
-                ) => Promise<unknown>;
-              }
-            | undefined;
-          assert.ok(tool, "investigation session should expose query_events");
-
-          for (let i = 0; i < 12; i++) {
-            await tool.execute("model-tool-" + (i + 1), {
-              caseId: "t039",
-              from: "2026-04-28T01:18:30.000Z",
-              to: "2026-04-28T01:27:55.000Z",
-              limit: 1,
-            });
-          }
-
-          // Deliberately emit no text_delta. This reproduces the old failure:
-          // the expert used its whole tool budget but did not submit JSON.
-        }),
-      } as CreatedSession;
-    }
-
-    return {
-      session: fakeSession("finalize-session", async (_prompt, emit) => {
-        emit({
-          type: "message_update",
-          assistantMessageEvent: {
-            type: "text_delta",
-            delta: JSON.stringify({
-              status: "succeeded",
-              strength: "moderate",
-              verdict: "supports",
-              summary: "Event evidence supports H01 after bounded investigation.",
-              conclusions: ["The collected event signal is relevant."],
-              evidenceClaims: [
-                {
-                  toolCallId: "C12",
-                  modality: "event",
-                  summary: "The twelfth recorded event query returned the relevant signal.",
-                  supports: ["H01"],
-                  contradicts: [],
-                },
-              ],
-              candidateEntities: ["email-r2c9g"],
-              suggestedFollowUps: [],
-            }),
-          },
-        });
-      }),
-    } as CreatedSession;
-  }) as typeof createAgentSession;
-
-  const tools = {
-    createPiTools(options: {
-      names?: string[];
-      execute?: (
-        name: string,
-        toolCallId: string,
-        parameters: Record<string, unknown>,
-      ) => Promise<unknown>;
-    }) {
-      return (options.names ?? []).map((name) => ({
-        name,
-        execute: (toolCallId: string, parameters: Record<string, unknown>) =>
-          options.execute?.(name, toolCallId, parameters),
-      }));
-    },
-  } as unknown as ObservabilityToolRegistry;
-
+function fixture() {
   const investigation = {
     id: "INV-test",
     caseId: "t039",
@@ -186,12 +80,126 @@ test("event-topology 工具调用满 12 次后使用 no-tools Finalize 并返回
     availableModalities: ["event", "topology", "alert"],
   } as RcaTask;
 
+  return { investigation, brief, task };
+}
+
+function fakeRegistry(): ObservabilityToolRegistry {
+  return {
+    createPiTools(options: {
+      names?: string[];
+      execute?: (
+        name: string,
+        toolCallId: string,
+        parameters: Record<string, unknown>,
+      ) => Promise<unknown>;
+    }) {
+      return (options.names ?? []).map((name) => ({
+        name,
+        label: name,
+        description: name,
+        parameters: {},
+        execute: (toolCallId: string, parameters: Record<string, unknown>) =>
+          options.execute?.(name, toolCallId, parameters),
+      }));
+    },
+  } as unknown as ObservabilityToolRegistry;
+}
+
+function successfulFinding(toolCallId?: string) {
+  return {
+    status: "succeeded",
+    strength: toolCallId ? "moderate" : "inconclusive",
+    verdict: toolCallId ? "supports" : "no-signal",
+    summary: toolCallId
+      ? "Event evidence supports H01 after bounded investigation."
+      : "No additional event evidence was required.",
+    conclusions: [toolCallId ? "The collected event signal is relevant." : "No signal."],
+    evidenceClaims: toolCallId
+      ? [
+          {
+            toolCallId,
+            modality: "event",
+            summary: "The recorded event query returned the relevant signal.",
+            supports: ["H01"],
+            contradicts: [],
+          },
+        ]
+      : [],
+    candidateEntities: toolCallId ? ["email-r2c9g"] : [],
+    suggestedFollowUps: [],
+  };
+}
+
+test("event-topology 工具调用满 12 次后在同一 Session 切换到 submit_finding", async () => {
+  const sessionOptions: SessionFactoryOptions[] = [];
+  const activeToolTransitions: string[][] = [];
+  let activeTools: string[] = [];
+  let promptCount = 0;
+
+  const createSession = (async (
+    options: SessionFactoryOptions,
+  ): Promise<CreatedSession> => {
+    sessionOptions.push(options);
+    const listeners = new Set<FakeEventListener>();
+    const tools = (options.customTools ?? []) as unknown as FakeTool[];
+    const queryEvents = tools.find((item) => item.name === "query_events");
+    const submitFinding = tools.find((item) => item.name === "submit_finding");
+    assert.ok(queryEvents, "session should register query_events");
+    assert.ok(submitFinding, "session should register submit_finding");
+
+    const session = {
+      sessionManager: {
+        getSessionId: () => "single-expert-session",
+      },
+      setActiveToolsByName(names: string[]) {
+        activeTools = [...names];
+        activeToolTransitions.push([...names]);
+      },
+      subscribe(listener: FakeEventListener) {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      async prompt() {
+        promptCount += 1;
+        assert.equal(promptCount, 1, "max-budget handoff should finish in the original run");
+        assert.equal(activeTools.includes("query_events"), true);
+        assert.equal(activeTools.includes("submit_finding"), false);
+
+        for (let i = 0; i < 12; i++) {
+          await queryEvents.execute("model-tool-" + (i + 1), {
+            caseId: "t039",
+            from: "2026-04-28T01:18:30.000Z",
+            to: "2026-04-28T01:27:55.000Z",
+            limit: 1,
+          });
+        }
+
+        assert.deepEqual(activeTools, ["submit_finding"]);
+
+        await assert.rejects(
+          () =>
+            submitFinding.execute("submit-invalid", {
+              ...successfulFinding("C99"),
+            }),
+          /toolCallId/,
+        );
+
+        const submitted = (await submitFinding.execute(
+          "submit-valid",
+          successfulFinding("C12"),
+        )) as { terminate?: boolean };
+        assert.equal(submitted.terminate, true);
+      },
+      abort() {},
+      dispose() {},
+    };
+
+    return { session } as unknown as CreatedSession;
+  }) as typeof createAgentSession;
+
+  const { investigation, brief, task } = fixture();
   let recorded = 0;
-  const runner = new PiExpertRunner(
-    {} as ModelRuntime,
-    tools,
-    createSession,
-  );
+  const runner = new PiExpertRunner({} as ModelRuntime, fakeRegistry(), createSession);
   const result = await runner.run({
     investigation,
     task,
@@ -218,14 +226,71 @@ test("event-topology 工具调用满 12 次后使用 no-tools Finalize 并返回
 
   assert.equal(recorded, 12);
   assert.equal(result.diagnostics.toolCallCount, 12);
-  assert.equal(result.diagnostics.repairAttempted, true);
-  assert.equal(result.diagnostics.repairSucceeded, true);
+  assert.equal(result.diagnostics.repairAttempted, false);
+  assert.equal(result.diagnostics.repairSucceeded, false);
   assert.equal(result.termination.reason, "completed");
   assert.equal(result.finding?.status, "succeeded");
   assert.equal(result.finding?.evidenceClaims[0]?.toolCallId, "C12");
 
-  assert.equal(sessionOptions.length, 2);
-  assert.ok((sessionOptions[0]?.tools?.length ?? 0) > 0);
-  assert.equal(sessionOptions[1]?.tools?.length ?? 0, 0);
-  assert.equal(sessionOptions[1]?.customTools?.length ?? 0, 0);
+  assert.equal(sessionOptions.length, 1);
+  assert.equal(promptCount, 1);
+  assert.deepEqual(activeToolTransitions.at(-1), ["submit_finding"]);
+});
+
+test("专家提前结束取证时仍在同一 Session 进入 Finalize Phase", async () => {
+  const sessionOptions: SessionFactoryOptions[] = [];
+  let activeTools: string[] = [];
+  let promptCount = 0;
+
+  const createSession = (async (
+    options: SessionFactoryOptions,
+  ): Promise<CreatedSession> => {
+    sessionOptions.push(options);
+    const listeners = new Set<FakeEventListener>();
+    const tools = (options.customTools ?? []) as unknown as FakeTool[];
+    const submitFinding = tools.find((item) => item.name === "submit_finding");
+    assert.ok(submitFinding);
+
+    const session = {
+      sessionManager: {
+        getSessionId: () => "single-expert-session",
+      },
+      setActiveToolsByName(names: string[]) {
+        activeTools = [...names];
+      },
+      subscribe(listener: FakeEventListener) {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      async prompt() {
+        promptCount += 1;
+        if (promptCount === 1) {
+          assert.equal(activeTools.includes("submit_finding"), false);
+          return;
+        }
+        assert.deepEqual(activeTools, ["submit_finding"]);
+        await submitFinding.execute("submit-final", successfulFinding());
+      },
+      abort() {},
+      dispose() {},
+    };
+    return { session } as unknown as CreatedSession;
+  }) as typeof createAgentSession;
+
+  const { investigation, brief, task } = fixture();
+  const runner = new PiExpertRunner({} as ModelRuntime, fakeRegistry(), createSession);
+  const result = await runner.run({
+    investigation,
+    task,
+    brief,
+    invoke: async () => {
+      throw new Error("No investigation tool should be called");
+    },
+  });
+
+  assert.equal(sessionOptions.length, 1);
+  assert.equal(promptCount, 2);
+  assert.equal(result.diagnostics.toolCallCount, 0);
+  assert.equal(result.termination.reason, "completed");
+  assert.equal(result.finding?.verdict, "no-signal");
 });
