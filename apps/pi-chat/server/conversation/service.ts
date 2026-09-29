@@ -36,6 +36,11 @@ import { normalizePromptError, runDetached } from "./async-task";
 import { EventChannel } from "./channel";
 import { applyExternalStreamEvent, mergeMessageLists } from "./external-stream";
 import { ConversationViewBuilder, extractImages, extractText, resultText } from "./helper";
+import {
+  createPersonalModelRuntime,
+  personalModelFingerprint,
+  type PersonalModelInput,
+} from "./personal-model";
 import { reconcileRcaExecutionItems, settleInterruptedRcaSessionTools } from "./recovery";
 import { ConversationRepository } from "./repository";
 import { createRuntime } from "./runtime";
@@ -66,6 +71,7 @@ interface PendingTitleRefinement {
     rootCauseEntities: string[];
   };
   modelRef: TitleModelRef;
+  modelRuntime: ModelRuntime;
 }
 
 export class ConversationService {
@@ -73,7 +79,6 @@ export class ConversationService {
   private conversationRepository: ConversationRepository;
   private modelRuntime: ModelRuntime;
   private readonly rcaService: RcaService;
-  private readonly titleGenerator: ConversationTitleGenerator;
   readonly ttlMs: number = 30_000;
   private readonly sessionIdleTtlMs = this.positiveDuration(
     process.env.PI_CHAT_SESSION_IDLE_TTL_MS,
@@ -90,13 +95,16 @@ export class ConversationService {
   private readonly recordWriteQueues = new Map<string, Promise<void>>();
   private readonly promptPerformance = new Map<string, PromptPerformanceTrace>();
   private readonly pendingTitleRefinements = new Map<string, PendingTitleRefinement>();
+  private readonly personalRuntimes = new Map<
+    string,
+    Awaited<ReturnType<typeof createPersonalModelRuntime>>
+  >();
 
   constructor(globalConfig: GlobalConfig, modelRuntime: ModelRuntime, rcaService: RcaService) {
     this.globalConfig = globalConfig;
     this.modelRuntime = modelRuntime;
     this.conversationRepository = new ConversationRepository(globalConfig);
     this.rcaService = rcaService;
-    this.titleGenerator = new ConversationTitleGenerator(modelRuntime);
     this.rcaService.subscribeVisualization((event) => {
       if (!event.conversationId) return;
       this.getEventChannel(event.conversationId).publish("visualization.updated", {
@@ -115,6 +123,7 @@ export class ConversationService {
 
   close(): void {
     clearInterval(this.sweepTimer);
+    this.personalRuntimes.clear();
   }
 
   private positiveDuration(raw: string | undefined, fallback: number): number {
@@ -122,7 +131,8 @@ export class ConversationService {
     return raw !== undefined && Number.isSafeInteger(value) && value > 0 ? value : fallback;
   }
 
-  async createConversation() {
+  async createConversation(personalModel?: PersonalModelInput) {
+    const personal = personalModel ? await createPersonalModelRuntime(personalModel) : undefined;
     const conversationId = randomUUID();
     const conversationWorkspaceDir = join(this.globalConfig.workspacesDir, conversationId);
     await mkdir(conversationWorkspaceDir, { recursive: true });
@@ -150,12 +160,32 @@ export class ConversationService {
       createdAt: currentDate,
       updatedAt: currentDate,
       selectedSkills: [],
+      ...(personal ? { personalModel: true } : {}),
     };
     await this.conversationRepository.save(conversationRecord);
-    return this.createManagedSession(conversationRecord, sessionManager);
+    if (personal) this.personalRuntimes.set(conversationId, personal);
+    try {
+      const managed = await this.createManagedSession(conversationRecord, sessionManager);
+      if (personal) {
+        const model = personal.runtime.getModel(personal.provider, personal.modelId);
+        if (!model) throw new Error("Personal model is not available");
+        await managed.runtime.session.setModel(model);
+      }
+      return managed;
+    } catch (error) {
+      this.release(conversationId);
+      this.personalRuntimes.delete(conversationId);
+      await this.conversationRepository.delete(conversationId);
+      throw error;
+    }
   }
 
-  async send(conversationId: string, userInput: string, skills?: string[]) {
+  async send(
+    conversationId: string,
+    userInput: string,
+    skills?: string[],
+    personalModel?: PersonalModelInput,
+  ) {
     const requestStartedAt = Date.now();
     const cleanedUserInput = userInput.trim();
     if (!cleanedUserInput || cleanedUserInput.length === 0) {
@@ -170,6 +200,18 @@ export class ConversationService {
     const availableSkillsSet = new Set(availableSkillList);
     const validSelectedSkills = (skills ?? []).filter((skill) => availableSkillsSet.has(skill));
 
+    const record = await this.conversationRepository.get(conversationId);
+    if (!record) throw new Error("Conversation not found");
+    if (personalModel) {
+      if (
+        this.personalRuntimes.get(conversationId)?.fingerprint !==
+        personalModelFingerprint(personalModel)
+      ) {
+        await this.enablePersonalModel(record, personalModel, validSelectedSkills);
+      }
+    } else if (record.personalModel) {
+      throw new Error("PERSONAL_MODEL_REQUIRED");
+    }
     const managedSession = await this.ensureManagedSession(conversationId, validSelectedSkills);
     const session = managedSession.runtime.session;
     let handedOff = false;
@@ -207,7 +249,10 @@ export class ConversationService {
           }
         },
         (cause) => {
-          const message = normalizePromptError(cause);
+          const message =
+            personalModel || record.personalModel
+              ? "自带模型调用失败，请检查模型地址、凭证和额度后重试。"
+              : normalizePromptError(cause);
           this.finishPromptPerformance(managedSession.id, "error", { error: message });
           managedSession.error = message;
           managedSession.streamMessageId = undefined;
@@ -221,6 +266,51 @@ export class ConversationService {
     } finally {
       if (!handedOff) this.done(managedSession);
     }
+  }
+
+  private async enablePersonalModel(
+    record: ConversationRecord,
+    input: PersonalModelInput,
+    selectedSkills: string[],
+  ): Promise<void> {
+    await this.withSessionLock(record.id, async () => {
+      const current = this.managedSessions.get(record.id);
+      if (current && this.isBusy(current)) {
+        throw new Error("Cannot change model while investigation is running");
+      }
+      const personal = await createPersonalModelRuntime(input);
+      const sessionManager =
+        current?.runtime.session.sessionManager ??
+        (existsSync(record.sessionFile)
+          ? SessionManager.open(
+              record.sessionFile,
+              this.globalConfig.sessionsDir,
+              record.workspaceDir,
+            )
+          : SessionManager.create(record.workspaceDir, this.globalConfig.sessionsDir, {
+              id: record.id,
+            }));
+      if (current) this.release(record.id, { dropChannel: false });
+      this.personalRuntimes.set(record.id, personal);
+      try {
+        const managed = await this.createManagedSession(
+          { ...record, personalModel: true, selectedSkills },
+          sessionManager,
+          selectedSkills,
+        );
+        const model = personal.runtime.getModel(personal.provider, personal.modelId);
+        if (!model) throw new Error("Personal model is not available");
+        await managed.runtime.session.setModel(model);
+        await this.conversationRepository.update(record.id, {
+          personalModel: true,
+          selectedSkills,
+        });
+      } catch (error) {
+        this.release(record.id, { dropChannel: false });
+        this.personalRuntimes.delete(record.id);
+        throw error;
+      }
+    });
   }
 
   public async snapshot(id: string): Promise<ConversationSnapshot> {
@@ -267,6 +357,7 @@ export class ConversationService {
           lastEventId: channel.lastId,
         },
         diagnostics: managedSession.diagnostics,
+        personalModel: conversationRecord.personalModel === true,
       };
     } finally {
       this.done(managedSession);
@@ -305,6 +396,7 @@ export class ConversationService {
         }
         await this.waitForRecordWrites(record.id);
         this.release(record.id);
+        this.personalRuntimes.delete(record.id);
         if (existsSync(record.sessionFile)) await rm(record.sessionFile, { force: true });
         await rm(record.workspaceDir, { force: true, recursive: true });
         await this.conversationRepository.delete(record.id);
@@ -399,7 +491,8 @@ export class ConversationService {
   async getConfig(conversationId: string): Promise<ConversationConfig> {
     const managedSession = await this.ensureManagedSession(conversationId);
     try {
-      return this.config(managedSession);
+      const record = await this.conversationRepository.get(conversationId);
+      return { ...this.config(managedSession), personalModel: record?.personalModel === true };
     } finally {
       this.done(managedSession);
     }
@@ -436,6 +529,11 @@ export class ConversationService {
 
       const session = managedSession.runtime.session;
       if (update.model) {
+        if (this.personalRuntimes.has(conversationId)) {
+          throw new Error(
+            "Personal model is active; start a new conversation to use a system model",
+          );
+        }
         // session.setModel();
         const model = this.availableModels(managedSession).find(
           (item) => item.provider === update.model?.provider && item.id === update.model.id,
@@ -469,6 +567,7 @@ export class ConversationService {
       models: this.modelOptions(managedSession),
       thinkingLevel: session.agent.state.thinkingLevel,
       availableThinkingLevels: session.getAvailableThinkingLevels(),
+      personalModel: this.personalRuntimes.has(managedSession.id),
     };
   }
 
@@ -522,6 +621,11 @@ export class ConversationService {
   }
 
   private availableModels(managedSession: ManagedSession) {
+    const personal = this.personalRuntimes.get(managedSession.id);
+    if (personal) {
+      const model = personal.runtime.getModel(personal.provider, personal.modelId);
+      return model ? [model] : [];
+    }
     const scopedModels = managedSession.runtime.session.scopedModels;
     return scopedModels.length > 0
       ? scopedModels.map((item) => item.model)
@@ -547,6 +651,8 @@ export class ConversationService {
   ) {
     console.log("createManagedSession", selectedSkills);
     const getRcaContext = () => this.resolveRcaContext(conversationRecord.id);
+    const conversationModelRuntime =
+      this.personalRuntimes.get(conversationRecord.id)?.runtime ?? this.modelRuntime;
     const rcaMainTools = createRcaMainAgentTools({
       rcaService: this.rcaService,
       conversationId: conversationRecord.id,
@@ -558,10 +664,11 @@ export class ConversationService {
             id: managed.runtime.session.agent.state.model.id,
           };
         }
-        const fallback = this.modelRuntime.getAvailableSnapshot()[0];
+        const fallback = conversationModelRuntime.getAvailableSnapshot()[0];
         if (!fallback) throw new Error("No model is available for RCA sub-agents");
         return { provider: fallback.provider, id: fallback.id };
       },
+      getModelRuntime: () => conversationModelRuntime,
       onProjection: (projection) =>
         this.publishExternalEvent(conversationRecord.id, projection.type, projection.payload),
       onLinkInvestigation: (investigationId) =>
@@ -580,6 +687,7 @@ export class ConversationService {
             provider: managed.runtime.session.agent.state.model.provider,
             id: managed.runtime.session.agent.state.model.id,
           },
+          modelRuntime: conversationModelRuntime,
         });
       },
     });
@@ -588,7 +696,7 @@ export class ConversationService {
       globalConfig: this.globalConfig,
       conversationRecord,
       sessionManager,
-      modelRuntime: this.modelRuntime,
+      modelRuntime: conversationModelRuntime,
       selectedSkills,
       customTools: rcaMainTools,
       getRcaContext,
@@ -693,7 +801,9 @@ export class ConversationService {
           const text = extractText(message.content);
           const error =
             message.errorMessage || message.stopReason === "error"
-              ? normalizePromptError(message.errorMessage)
+              ? this.personalRuntimes.has(managedSession.id)
+                ? "自带模型调用失败，请检查模型地址、凭证和额度后重试。"
+                : normalizePromptError(message.errorMessage)
               : undefined;
 
           if (text || error) {
@@ -989,6 +1099,7 @@ export class ConversationService {
             managedSession.id,
             pending.input,
             pending.modelRef,
+            pending.modelRuntime,
           );
           this.writePerformanceLog({
             conversationId: managedSession.id,
@@ -1021,13 +1132,14 @@ export class ConversationService {
       rootCauseEntities: string[];
     },
     modelRef: TitleModelRef,
+    modelRuntime: ModelRuntime,
   ): Promise<void> {
     const record = await this.conversationRepository.get(conversationId);
     if (!record) return;
     const meta = this.titleMeta(record);
     if (meta.locked || meta.generation >= 2) return;
 
-    const generated = await this.titleGenerator.generate(
+    const generated = await new ConversationTitleGenerator(modelRuntime).generate(
       {
         userMessage: record.title,
         currentTitle: record.title,
@@ -1124,6 +1236,7 @@ export class ConversationService {
         )
           return;
         this.release(id, { dropChannel: false });
+        this.personalRuntimes.delete(id);
         process.stdout.write(
           `[chat.session] ${JSON.stringify({ action: "evicted", conversationId: id })}\n`,
         );

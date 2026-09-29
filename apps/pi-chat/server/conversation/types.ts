@@ -24,6 +24,8 @@ export interface ConversationRecord {
   investigationIds?: string[];
   externalMessageList?: MessageListItem[];
   externalSequence?: number;
+  /** Persisted routing marker only. Personal credentials are never stored. */
+  personalModel?: boolean;
 }
 
 export interface ManagedSession {

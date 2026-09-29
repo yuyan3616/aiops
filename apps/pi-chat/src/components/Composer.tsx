@@ -32,6 +32,7 @@ export function Composer({
   onThinkingChange,
   showScrollButton,
   onScrollToBottom,
+  personalModelName,
 }: {
   busy: boolean;
   model?: { provider: string; id: string };
@@ -41,12 +42,13 @@ export function Composer({
   skills: SkillOption[];
   selectedSkills: string[];
   onSelectedSkillsChange(skills: string[]): void;
-  onSend(text: string, skills: string[]): void;
+  onSend(text: string, skills: string[]): boolean;
   onAbort(): Promise<void>;
   onModelChange(value: string): Promise<void>;
   onThinkingChange(value: ThinkingLevel): Promise<void>;
   showScrollButton: boolean;
   onScrollToBottom(): void;
+  personalModelName?: string;
 }) {
   const [input, setInput] = useState("");
   const hasInput = Boolean(input.trim());
@@ -56,8 +58,7 @@ export function Composer({
   const submit = () => {
     const text = input.trim();
     if (!text) return;
-    setInput("");
-    onSend(text, selectedSkills);
+    if (onSend(text, selectedSkills)) setInput("");
   };
 
   return (
@@ -96,15 +97,19 @@ export function Composer({
                 onSelectedSkillsChange={onSelectedSkillsChange}
               />
             )}
-            <ModelSelector
-              busy={busy}
-              model={model}
-              models={models}
-              thinkingLevel={thinkingLevel}
-              thinkingLevels={thinkingLevels}
-              onModelChange={onModelChange}
-              onThinkingChange={onThinkingChange}
-            />
+            {personalModelName ? (
+              <span className="model-selector-name">{personalModelName} · 自带模型</span>
+            ) : (
+              <ModelSelector
+                busy={busy}
+                model={model}
+                models={models}
+                thinkingLevel={thinkingLevel}
+                thinkingLevels={thinkingLevels}
+                onModelChange={onModelChange}
+                onThinkingChange={onThinkingChange}
+              />
+            )}
           </div>
           <TooltipProvider delayDuration={300}>
             <Tooltip>
@@ -117,11 +122,7 @@ export function Composer({
                     disabled={sendDisabled}
                     aria-label={stopAction ? "停止调查" : busy ? "补充当前调查" : "发送消息"}
                   >
-                    {stopAction ? (
-                      <Square size={14} fill="currentColor" />
-                    ) : (
-                      <ArrowUp size={18} />
-                    )}
+                    {stopAction ? <Square size={14} fill="currentColor" /> : <ArrowUp size={18} />}
                   </Button>
                 </span>
               </TooltipTrigger>

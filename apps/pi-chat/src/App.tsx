@@ -2,8 +2,9 @@ import { Composer } from "@components/Composer";
 import { ConversationSidebar } from "@components/ConversationSidebar";
 import { EmptyConversation } from "@components/EmptyConversation";
 import { LoadingIndicator } from "@components/LoadingIndicator";
-import { InvestigationDetailDrawer } from "@components/rca/InvestigationDetailDrawer";
 import { MessageItem } from "@components/MessageItem";
+import { PersonalModelDialog } from "@components/PersonalModelDialog";
+import { InvestigationDetailDrawer } from "@components/rca/InvestigationDetailDrawer";
 import { Button } from "@components/ui/button";
 import { Skeleton } from "@components/ui/skeleton";
 import { useConversationStream } from "@hooks/useConversationStream";
@@ -13,6 +14,7 @@ import type {
   ConversationConfigUpdate,
   ConversationSummary,
   ModelOption,
+  PersonalModelInput,
   ThinkingLevel,
   MessageListItem,
 } from "@shared/types";
@@ -40,6 +42,10 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [detailOpen, setDetailOpen] = useState(false);
+  const [modelDialogOpen, setModelDialogOpen] = useState(false);
+  const [personalModel, setPersonalModel] = useState<PersonalModelInput>();
+  const [bootstrapLoaded, setBootstrapLoaded] = useState(false);
+  const previousConversationRef = useRef(conversationId);
 
   const messageBottomRef = useRef<HTMLDivElement>(null);
   const autoFollowRef = useRef(true);
@@ -60,8 +66,27 @@ export default function App() {
     visualizationRevision,
     investigation,
   } = useConversationStream(conversationId);
-  const { draftConfig, model, models, thinkingLevel, thinkingLevels, changeModel, changeThinking } =
-    useConversationConfig(conversationId, bootstrap.models);
+  const {
+    draftConfig,
+    model,
+    models,
+    thinkingLevel,
+    thinkingLevels,
+    requiresPersonal,
+    changeModel,
+    changeThinking,
+  } = useConversationConfig(conversationId, bootstrap.models);
+  const needsPersonalModel = requiresPersonal || (bootstrapLoaded && bootstrap.models.length === 0);
+
+  useEffect(() => {
+    const previous = previousConversationRef.current;
+    previousConversationRef.current = conversationId;
+    // Keep the Key for the first navigation from a new draft into its created conversation.
+    if (previous && previous !== conversationId) {
+      setPersonalModel(undefined);
+      setModelDialogOpen(false);
+    }
+  }, [conversationId]);
 
   const busy =
     status === "running" ||
@@ -91,8 +116,12 @@ export default function App() {
 
   useEffect(() => {
     (async () => {
-      const bootstrapData = await getBootstrap();
-      setBootstrap({ ...bootstrapData });
+      try {
+        const bootstrapData = await getBootstrap();
+        setBootstrap({ ...bootstrapData });
+      } finally {
+        setBootstrapLoaded(true);
+      }
     })();
   }, []);
 
@@ -134,12 +163,24 @@ export default function App() {
 
   const submit = (value: string) => {
     const text = value.trim();
-    if (!text) return;
+    if (!text) return false;
+    if (needsPersonalModel && !personalModel) {
+      setModelDialogOpen(true);
+      return false;
+    }
     autoFollowRef.current = true;
-    send(text, conversationId ? undefined : draftConfig, selectedSkills);
+    send(
+      text,
+      conversationId || personalModel ? undefined : draftConfig,
+      selectedSkills,
+      personalModel,
+    );
+    return true;
   };
 
   const startNew = async () => {
+    setPersonalModel(undefined);
+    setModelDialogOpen(false);
     navigate("/");
     setSidebarOpen(false);
     setSelectedSkills([]);
@@ -150,9 +191,7 @@ export default function App() {
     streamedConversationTitle ??
     conversations.find((item) => item.id === conversationId)?.title ??
     "新会话";
-  const latestReport = [...messageItems]
-    .reverse()
-    .find((item) => item.kind === "report");
+  const latestReport = [...messageItems].reverse().find((item) => item.kind === "report");
   const reportInvestigationId =
     latestReport?.kind === "report" ? latestReport.report.investigationId : undefined;
   const investigationId = investigation?.investigationId ?? reportInvestigationId;
@@ -173,6 +212,10 @@ export default function App() {
         onCollapse={() => setSidebarCollapsed(true)}
         onNew={startNew}
         onSelect={async (id) => {
+          if (id !== conversationId) {
+            setPersonalModel(undefined);
+            setModelDialogOpen(false);
+          }
           navigate("/conversation/" + id);
           setSidebarOpen(false);
         }}
@@ -222,6 +265,9 @@ export default function App() {
           </Button>
           <span className="conversation-title">{conversationTitle}</span>
           <div className="topbar-actions">
+            <Button variant="outline" onClick={() => setModelDialogOpen(true)}>
+              {personalModel ? "修改自带模型" : "使用自带模型"}
+            </Button>
             {investigationId && (
               <Button
                 className="investigation-detail-trigger"
@@ -277,8 +323,21 @@ export default function App() {
           )}
           {connectionError && <div className="connection-error">{connectionError}</div>}
         </main>
+        {(needsPersonalModel || runtimeError) && !personalModel && (
+          <div className="personal-model-notice" role="status">
+            <span>
+              {runtimeError
+                ? "模型调用失败。如果系统凭证不可用，可以配置自己的模型后重试。"
+                : "当前会话需要配置你自己的模型连接，才能继续使用。"}
+            </span>
+            <button type="button" onClick={() => setModelDialogOpen(true)}>
+              配置模型
+            </button>
+          </div>
+        )}
         <Composer
           busy={busy}
+          personalModelName={personalModel?.modelId}
           model={model}
           models={models}
           thinkingLevel={thinkingLevel}
@@ -304,6 +363,16 @@ export default function App() {
         visualizationRevision={visualizationRevision}
         onClose={() => setDetailOpen(false)}
       />
+      {modelDialogOpen && (
+        <PersonalModelDialog
+          open
+          onClose={() => setModelDialogOpen(false)}
+          onSave={(config) => {
+            setPersonalModel(config);
+            setModelDialogOpen(false);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -387,5 +456,14 @@ function useConversationConfig(conversationId: string | undefined, bootstrapMode
     );
   };
 
-  return { draftConfig, model, models, thinkingLevel, thinkingLevels, changeModel, changeThinking };
+  return {
+    draftConfig,
+    model,
+    models,
+    thinkingLevel,
+    thinkingLevels,
+    requiresPersonal: config?.personalModel === true,
+    changeModel,
+    changeThinking,
+  };
 }

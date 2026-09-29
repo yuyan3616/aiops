@@ -11,7 +11,10 @@ export function createConversationRoutes(
   const conversationApp = new Hono();
 
   conversationApp.post("/", async (ctx) => {
-    const managedSession = await conversationService.createConversation();
+    const body = await jsonBody<{
+      personalModel?: { baseUrl: string; modelId: string; apiKey: string };
+    }>(ctx.req.raw);
+    const managedSession = await conversationService.createConversation(body.personalModel);
     const snapshot = await conversationService.snapshot(managedSession.id);
     return ctx.json(snapshot);
   });
@@ -23,9 +26,7 @@ export function createConversationRoutes(
 
   conversationApp.post("/batch-delete", async (ctx) => {
     const body = await jsonBody<{ ids?: unknown }>(ctx.req.raw);
-    const deletedIds = await conversationService.deleteMany(
-      normalizeConversationIds(body.ids),
-    );
+    const deletedIds = await conversationService.deleteMany(normalizeConversationIds(body.ids));
     return ctx.json({ deletedIds });
   });
 
@@ -87,6 +88,18 @@ export function createConversationRoutes(
     const { conversationId } = ctx.req.param();
     const userInput = formData.get("text") as string;
     const skillsRaw = formData.get("skills") as string | null;
+    const personalRaw = formData.get("personalModel");
+    let personalModel: { baseUrl: string; modelId: string; apiKey: string } | undefined;
+    if (personalRaw !== null) {
+      if (typeof personalRaw !== "string" || personalRaw.length > 2_048) {
+        throw new Error("Invalid personal model configuration");
+      }
+      try {
+        personalModel = JSON.parse(personalRaw);
+      } catch {
+        throw new Error("Invalid personal model configuration");
+      }
+    }
     let skills: string[] = [];
     if (skillsRaw) {
       try {
@@ -96,7 +109,17 @@ export function createConversationRoutes(
       }
     }
 
-    await conversationService.send(conversationId, userInput, skills);
+    try {
+      await conversationService.send(conversationId, userInput, skills, personalModel);
+    } catch (error) {
+      if (error instanceof Error && error.message === "PERSONAL_MODEL_REQUIRED") {
+        return ctx.json(
+          { error: "请重新配置当前会话的自带模型后发送。", code: "PERSONAL_MODEL_REQUIRED" },
+          428,
+        );
+      }
+      throw error;
+    }
     return ctx.json({ accepted: true }, 202);
   });
 

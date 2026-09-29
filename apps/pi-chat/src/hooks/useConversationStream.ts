@@ -5,6 +5,7 @@ import type {
   ConversationSummary,
   MessageListItem,
   StreamEvent,
+  PersonalModelInput,
 } from "@shared/types";
 import { useRef, useState, useEffect, useReducer } from "react";
 import { useNavigate } from "react-router-dom";
@@ -24,6 +25,7 @@ interface PendingSend {
   text: string;
   message: ChatMessage;
   skills?: string[];
+  personalModel?: PersonalModelInput;
 }
 
 interface ConversationItemsState {
@@ -45,8 +47,7 @@ export function useConversationStream(conversationId?: string) {
   }>({ message: "" });
   const [loading, setLoading] = useState(false);
   const [visualizationRevision, setVisualizationRevision] = useState(0);
-  const [investigation, setInvestigation] =
-    useState<ConversationInvestigationSnapshot>();
+  const [investigation, setInvestigation] = useState<ConversationInvestigationSnapshot>();
   const [conversationMeta, setConversationMeta] = useState<{
     conversationId?: string;
     conversation?: ConversationSummary;
@@ -101,10 +102,13 @@ export function useConversationStream(conversationId?: string) {
       if (event.type === "investigation.updated") {
         const payload = event.payload as Partial<ConversationInvestigationSnapshot>;
         if (payload.investigationId && payload.state) {
-          setInvestigation((current) => ({
-            ...(current?.investigationId === payload.investigationId ? current : {}),
-            ...payload,
-          } as ConversationInvestigationSnapshot));
+          setInvestigation(
+            (current) =>
+              ({
+                ...(current?.investigationId === payload.investigationId ? current : {}),
+                ...payload,
+              }) as ConversationInvestigationSnapshot,
+          );
         }
       }
       setMessageState((current) => ({
@@ -180,7 +184,7 @@ export function useConversationStream(conversationId?: string) {
               { type: "optimistic-user", message: pending.message },
             ),
           }));
-          void send(conversationId, pending.text, pending.skills);
+          void send(conversationId, pending.text, pending.skills, pending.personalModel);
         },
         cursor.lastEventId,
       );
@@ -195,7 +199,12 @@ export function useConversationStream(conversationId?: string) {
     };
   }, [conversationId]);
 
-  async function send(conversationId: string, text: string, skills?: string[]) {
+  async function send(
+    conversationId: string,
+    text: string,
+    skills?: string[],
+    personalModel?: PersonalModelInput,
+  ) {
     setLoading(true);
     setErrorState({
       conversationId,
@@ -203,7 +212,7 @@ export function useConversationStream(conversationId?: string) {
     });
 
     try {
-      await sendMessage(conversationId, text, skills);
+      await sendMessage(conversationId, text, skills, personalModel);
     } catch (error) {
       setErrorState({
         conversationId,
@@ -218,6 +227,7 @@ export function useConversationStream(conversationId?: string) {
     value: string,
     initialConfig?: ConversationConfigUpdate,
     skills?: string[],
+    personalModel?: PersonalModelInput,
   ) {
     const text = value.trim();
     if (!text || loading) return;
@@ -236,7 +246,7 @@ export function useConversationStream(conversationId?: string) {
         message: "",
       });
       try {
-        const created = await createConversation();
+        const created = await createConversation(personalModel);
         const conversationId = created.conversation.id;
         if (initialConfig?.model || initialConfig?.thinkingLevel !== undefined) {
           await updateConversationConfig(conversationId, initialConfig);
@@ -246,6 +256,7 @@ export function useConversationStream(conversationId?: string) {
           text,
           message,
           skills,
+          personalModel,
         };
         navigate(`/conversation/${conversationId}`);
       } catch (error) {
@@ -267,13 +278,11 @@ export function useConversationStream(conversationId?: string) {
       }),
     }));
 
-    await send(conversationId, text, skills);
+    await send(conversationId, text, skills, personalModel);
   }
   const status = runtime.conversationId === conversationId ? runtime.status : "cold";
-  const connectionError =
-    errorState.conversationId === conversationId ? errorState.message : "";
-  const runtimeError =
-    runtime.conversationId === conversationId ? runtime.error ?? "" : "";
+  const connectionError = errorState.conversationId === conversationId ? errorState.message : "";
+  const runtimeError = runtime.conversationId === conversationId ? (runtime.error ?? "") : "";
   const error = connectionError || runtimeError;
   const historyLoading = Boolean(conversationId && historyState.conversationId !== conversationId);
 

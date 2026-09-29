@@ -7,6 +7,7 @@ import type {
   CreateConversationResponse,
   StreamEvent,
   InvestigationVisualizationArtifact,
+  PersonalModelInput,
 } from "@shared/types";
 
 async function readResponse<T>(request: Promise<Response>): Promise<T> {
@@ -20,18 +21,32 @@ async function readResponse<T>(request: Promise<Response>): Promise<T> {
   return (await response.json()) as T;
 }
 
-export function createConversation(): Promise<CreateConversationResponse> {
-  return readResponse(fetch("/api/conversation", { method: "POST" }));
+export function createConversation(
+  personalModel?: PersonalModelInput,
+): Promise<CreateConversationResponse> {
+  return readResponse(
+    fetch("/api/conversation", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(personalModel ? { personalModel } : {}),
+    }),
+  );
 }
 
 export function getBootstrap(): Promise<BootstrapData> {
   return readResponse(fetch("/api/system/bootstrap"));
 }
 
-export function sendMessage(id: string, text: string, skills: string[] = []): Promise<unknown> {
+export function sendMessage(
+  id: string,
+  text: string,
+  skills: string[] = [],
+  personalModel?: PersonalModelInput,
+): Promise<unknown> {
   const form = new FormData();
   form.set("text", text);
   form.set("skills", JSON.stringify(skills));
+  if (personalModel) form.set("personalModel", JSON.stringify(personalModel));
   return readResponse(
     fetch("/api/conversation/" + encodeURIComponent(id) + "/messages", {
       method: "POST",
@@ -128,16 +143,11 @@ export function updateConversationConfig(
   );
 }
 
-
 export function getInvestigationVisualization(
   investigationId: string,
 ): Promise<InvestigationVisualizationArtifact> {
   return readResponse(
-    fetch(
-      "/api/rca/investigations/" +
-        encodeURIComponent(investigationId) +
-        "/visualization",
-    ),
+    fetch("/api/rca/investigations/" + encodeURIComponent(investigationId) + "/visualization"),
   );
 }
 

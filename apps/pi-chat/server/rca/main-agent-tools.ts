@@ -1,5 +1,9 @@
 import { Type } from "@earendil-works/pi-ai";
-import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import {
+  defineTool,
+  type ModelRuntime,
+  type ToolDefinition,
+} from "@earendil-works/pi-coding-agent";
 
 import { foldBudget } from "./budget";
 import { RcaChatEventMapper, type ChatStreamProjection } from "./chat-events";
@@ -21,6 +25,7 @@ export interface RcaMainAgentToolsOptions {
   rcaService: RcaService;
   conversationId: string;
   getModelRef: () => { provider: string; id: string };
+  getModelRuntime?: () => ModelRuntime;
   onProjection: (projection: ChatStreamProjection) => void | Promise<void>;
   onLinkInvestigation: (investigationId: string) => void | Promise<void>;
   getRcaContext?: () => ConversationRcaContext | Promise<ConversationRcaContext>;
@@ -398,6 +403,7 @@ export function createRcaMainAgentTools(options: RcaMainAgentToolsOptions): Tool
       return serializeMutation(async () => {
         const dispatch = await rcaService.dispatchAgentic(parameters.investigationId, briefs, {
           model: options.getModelRef(),
+          modelRuntime: options.getModelRuntime?.(),
           dispatchOperationId: `${conversationId}:${_toolCallId}`,
         });
         return toolResult({

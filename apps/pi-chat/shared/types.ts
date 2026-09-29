@@ -120,11 +120,7 @@ export interface ConversationInvestigationSnapshot {
   rootCauseStatus?: "confirmed" | "probable" | "inconclusive";
 }
 
-export type InvestigationVisualizationStatus =
-  | "pending"
-  | "generating"
-  | "ready"
-  | "failed";
+export type InvestigationVisualizationStatus = "pending" | "generating" | "ready" | "failed";
 
 export interface InvestigationVisualizationArtifact {
   schemaVersion: 1;
@@ -245,6 +241,7 @@ export interface ConversationSnapshot {
   error?: string;
   stream: { id: string; lastEventId: number };
   diagnostics: string[];
+  personalModel?: boolean;
 }
 
 export interface CreateConversationResponse {
@@ -280,6 +277,13 @@ export interface ConversationConfig {
   models: ModelOption[];
   thinkingLevel: ThinkingLevel;
   availableThinkingLevels: ThinkingLevel[];
+  personalModel?: boolean;
+}
+
+export interface PersonalModelInput {
+  baseUrl: string;
+  modelId: string;
+  apiKey: string;
 }
 
 export interface ConversationConfigUpdate {

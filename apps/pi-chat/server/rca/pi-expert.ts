@@ -47,6 +47,7 @@ export interface PiExpertRunContext {
   task: RcaTask;
   brief: InvestigationBrief;
   model?: { provider: string; id: string };
+  modelRuntime?: ModelRuntime;
   signal?: AbortSignal;
   invoke: (
     tool: ObservabilityToolName,
@@ -270,8 +271,9 @@ export class PiExpertRunner {
     });
     await resourceLoader.reload();
 
+    const modelRuntime = context.modelRuntime ?? this.modelRuntime;
     const model = context.model
-      ? this.modelRuntime.getModel(context.model.provider, context.model.id)
+      ? modelRuntime.getModel(context.model.provider, context.model.id)
       : undefined;
     if (context.model && !model) {
       throw new Error(
@@ -336,9 +338,7 @@ export class PiExpertRunner {
       execute: async (name, _toolCallId, parameters) => {
         if (toolCallCount >= profile.maxToolCalls) {
           activateFinalizePhase?.();
-          throw new Error(
-            `${profile.label} 的调查工具预算已用完。请停止取证并提交最终 finding。`,
-          );
+          throw new Error(`${profile.label} 的调查工具预算已用完。请停止取证并提交最终 finding。`);
         }
         const toolBudget = profile.toolBudgets?.[name];
         const currentToolCalls = perToolCalls.get(name) ?? 0;
@@ -457,7 +457,7 @@ export class PiExpertRunner {
     const { session } = await this.createSession({
       cwd: process.cwd(),
       agentDir,
-      modelRuntime: this.modelRuntime,
+      modelRuntime,
       ...(model ? { model } : {}),
       resourceLoader,
       settingsManager,

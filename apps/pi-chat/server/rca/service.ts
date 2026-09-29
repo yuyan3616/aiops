@@ -13,11 +13,6 @@ import { InvestigationEventBus, type InvestigationEventListener } from "./events
 import { getParquetRuntimeDiagnostics } from "./parquet";
 import { PiExpertRunError, PiExpertRunner, type RecordedAgentToolExecution } from "./pi-expert";
 import { InvestigationRepository } from "./repository";
-import { InvestigationVisualizationService } from "./visualization/service";
-import type {
-  InvestigationVisualizationArtifact,
-  InvestigationVisualizationEvent,
-} from "./visualization/types";
 import { safeRuntimeDetail } from "./runtime-accounting";
 import { AbortableSemaphore } from "./semaphore";
 import {
@@ -45,6 +40,11 @@ import type {
   RuntimeResourceSnapshot,
   ToolCallRecord,
 } from "./types";
+import { InvestigationVisualizationService } from "./visualization/service";
+import type {
+  InvestigationVisualizationArtifact,
+  InvestigationVisualizationEvent,
+} from "./visualization/types";
 
 interface RunningAgenticInvestigation {
   conversationId?: string;
@@ -125,6 +125,8 @@ export interface AgenticResumeOptions {
 
 export interface AgenticDispatchOptions {
   model?: { provider: string; id: string };
+  /** Ephemeral, conversation-scoped runtime; never part of persisted task data. */
+  modelRuntime?: ModelRuntime;
   dispatchOperationId?: string;
 }
 
@@ -969,6 +971,7 @@ export class RcaService {
               task: rcaTask,
               brief,
               model: options.model,
+              modelRuntime: options.modelRuntime,
               signal: dispatchSignal,
               invoke: (tool, arguments_) =>
                 this.invokeRecordedTool(investigation, bus, tool, arguments_, task, dispatchSignal),
@@ -1468,6 +1471,7 @@ export class RcaService {
         task: rcaTask,
         brief: task.brief!,
         model: options.model,
+        modelRuntime: options.modelRuntime,
         signal,
         invoke: (tool, args) => this.invokeRecordedToolV2(id, taskId, bus, tool, args, signal),
         onThinking: (delta) =>
@@ -1877,10 +1881,7 @@ export class RcaService {
       { result: investigation.rootCause, source: "main-agent" },
     );
     try {
-      await this.visualizationService.enqueue(
-        investigationId,
-        visualizationConversationId,
-      );
+      await this.visualizationService.enqueue(investigationId, visualizationConversationId);
     } catch (error) {
       process.stderr.write(
         `Failed to enqueue RCA visualization for ${investigationId}: ${String(error)}\n`,
@@ -1996,9 +1997,7 @@ export class RcaService {
     return this.visualizationService.getOrCreate(investigationId);
   }
 
-  regenerateVisualization(
-    investigationId: string,
-  ): Promise<InvestigationVisualizationArtifact> {
+  regenerateVisualization(investigationId: string): Promise<InvestigationVisualizationArtifact> {
     return this.visualizationService.regenerate(investigationId);
   }
 

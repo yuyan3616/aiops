@@ -37,6 +37,7 @@ function service(): PrivateService {
     recordWriteQueues: new Map(),
     promptPerformance: new Map(),
     pendingTitleRefinements: new Map(),
+    personalRuntimes: new Map(),
     sessionIdleTtlMs: 100,
   });
   return instance;
