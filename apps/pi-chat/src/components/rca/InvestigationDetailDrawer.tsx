@@ -68,7 +68,7 @@ export function InvestigationDetailDrawer({
 
   const refresh = useCallback(async () => {
     if (!open || !investigationId) return;
-    setLoading((current) => current || !artifact);
+    setLoading(true);
     setRequestError("");
     try {
       const next = await getInvestigationVisualization(investigationId);
@@ -78,12 +78,17 @@ export function InvestigationDetailDrawer({
     } finally {
       setLoading(false);
     }
-  }, [artifact, investigationId, open]);
+  }, [investigationId, open]);
+
+  useEffect(() => {
+    setArtifact(undefined);
+    setRequestError("");
+  }, [investigationId]);
 
   useEffect(() => {
     if (!open) return;
     void refresh();
-  }, [open, investigationId, visualizationRevision]);
+  }, [open, investigationId, visualizationRevision, refresh]);
 
   useEffect(() => {
     if (!open || !artifact || (artifact.status !== "pending" && artifact.status !== "generating")) {
