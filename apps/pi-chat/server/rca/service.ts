@@ -263,6 +263,7 @@ function observationFacts(
 
 export class RcaService {
   private readonly repository: InvestigationRepository;
+  private readonly visualizationService: InvestigationVisualizationService;
   private readonly tools?: ObservabilityToolRegistry;
   private readonly expertRunner?: PiExpertRunner;
   private readonly agenticRunning = new Map<string, RunningAgenticInvestigation>();
@@ -285,6 +286,7 @@ export class RcaService {
     tools?: ObservabilityToolRegistry,
   ) {
     this.repository = repository;
+    this.visualizationService = new InvestigationVisualizationService(repository);
     this.tools = tools;
     this.expertRunner = modelRuntime && tools ? new PiExpertRunner(modelRuntime, tools) : undefined;
   }
