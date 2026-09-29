@@ -137,13 +137,18 @@ class AssistantRunFailure extends Error {
 
 function extractJson(output: string): Record<string, unknown> {
   const trimmed = output.trim();
+  let value: unknown;
   try {
-    return JSON.parse(trimmed) as Record<string, unknown>;
+    value = JSON.parse(trimmed);
   } catch {
     const match = trimmed.match(/\{[\s\S]*\}/);
     if (!match) throw new Error("Sub-agent did not return a JSON finding");
-    return JSON.parse(match[0]) as Record<string, unknown>;
+    value = JSON.parse(match[0]);
   }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new SyntaxError("Sub-agent finding must be a JSON object");
+  }
+  return value as Record<string, unknown>;
 }
 
 function strings(value: unknown, max = 20): string[] {
@@ -489,70 +494,92 @@ export class PiExpertRunner {
       unsubscribe();
       session.dispose();
     }
-    const validHypotheses = new Set(context.brief.hypothesisIds);
-    const validModalities = new Set(profile.modalities);
-    const claims = Array.isArray(parsed.evidenceClaims) ? parsed.evidenceClaims : [];
-    const evidenceClaims = claims
-      .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"))
-      .map((item) => ({
-        toolCallId: typeof item.toolCallId === "string" ? item.toolCallId : "",
-        modality: item.modality as EvidenceModality,
-        ...(typeof item.entity === "string" && item.entity.trim()
-          ? { entity: item.entity.trim().slice(0, 200) }
-          : {}),
+    const finalizeFinding = (): PiExpertRunResult => {
+      const validHypotheses = new Set(context.brief.hypothesisIds);
+      const validModalities = new Set(profile.modalities);
+      const claims = Array.isArray(parsed.evidenceClaims) ? parsed.evidenceClaims : [];
+      const evidenceClaims = claims
+        .filter((item): item is Record<string, unknown> =>
+          Boolean(item && typeof item === "object"),
+        )
+        .map((item) => ({
+          toolCallId: typeof item.toolCallId === "string" ? item.toolCallId : "",
+          modality: item.modality as EvidenceModality,
+          ...(typeof item.entity === "string" && item.entity.trim()
+            ? { entity: item.entity.trim().slice(0, 200) }
+            : {}),
+          summary:
+            typeof item.summary === "string" && item.summary.trim()
+              ? item.summary.trim().slice(0, 1000)
+              : "Evidence from the referenced tool call.",
+          supports: strings(item.supports).filter((id) => validHypotheses.has(id)),
+          contradicts: strings(item.contradicts).filter((id) => validHypotheses.has(id)),
+        }))
+        .filter((claim) => claim.toolCallId.length > 0 && validModalities.has(claim.modality));
+
+      const verdict =
+        parsed.verdict === "supports" ||
+        parsed.verdict === "contradicts" ||
+        parsed.verdict === "no-signal" ||
+        parsed.verdict === "mixed" ||
+        parsed.verdict === "inconclusive"
+          ? parsed.verdict
+          : "inconclusive";
+
+      const finding: AgentExpertFinding = {
+        status: findingStatus(parsed.status),
+        strength: strength(parsed.strength),
+        verdict,
         summary:
-          typeof item.summary === "string" && item.summary.trim()
-            ? item.summary.trim().slice(0, 1000)
-            : "Evidence from the referenced tool call.",
-        supports: strings(item.supports).filter((id) => validHypotheses.has(id)),
-        contradicts: strings(item.contradicts).filter((id) => validHypotheses.has(id)),
-      }))
-      .filter((claim) => claim.toolCallId.length > 0 && validModalities.has(claim.modality));
+          typeof parsed.summary === "string" && parsed.summary.trim()
+            ? parsed.summary.trim().slice(0, 1500)
+            : "Sub-agent completed without a concise summary.",
+        conclusions: strings(parsed.conclusions, 5),
+        evidenceClaims,
+        candidateEntities: strings(parsed.candidateEntities, 20),
+        ...(typeof parsed.candidateMechanism === "string" && parsed.candidateMechanism.trim()
+          ? { candidateMechanism: parsed.candidateMechanism.trim().slice(0, 1000) }
+          : {}),
+        suggestedFollowUps: strings(parsed.suggestedFollowUps, 10),
+        ...(typeof parsed.blockedOn === "string" && parsed.blockedOn.trim()
+          ? { blockedOn: parsed.blockedOn.trim().slice(0, 1000) }
+          : {}),
+      };
 
-    const verdict =
-      parsed.verdict === "supports" ||
-      parsed.verdict === "contradicts" ||
-      parsed.verdict === "no-signal" ||
-      parsed.verdict === "mixed" ||
-      parsed.verdict === "inconclusive"
-        ? parsed.verdict
-        : "inconclusive";
-
-    const finding: AgentExpertFinding = {
-      status: findingStatus(parsed.status),
-      strength: strength(parsed.strength),
-      verdict,
-      summary:
-        typeof parsed.summary === "string" && parsed.summary.trim()
-          ? parsed.summary.trim().slice(0, 1500)
-          : "Sub-agent completed without a concise summary.",
-      conclusions: strings(parsed.conclusions, 5),
-      evidenceClaims,
-      candidateEntities: strings(parsed.candidateEntities, 20),
-      ...(typeof parsed.candidateMechanism === "string" && parsed.candidateMechanism.trim()
-        ? { candidateMechanism: parsed.candidateMechanism.trim().slice(0, 1000) }
-        : {}),
-      suggestedFollowUps: strings(parsed.suggestedFollowUps, 10),
-      ...(typeof parsed.blockedOn === "string" && parsed.blockedOn.trim()
-        ? { blockedOn: parsed.blockedOn.trim().slice(0, 1000) }
-        : {}),
+      return {
+        sessionId,
+        usage: usage.snapshot(),
+        termination: { reason: "completed" },
+        diagnostics: runtimeDiagnostics(
+          toolCallCount,
+          thinkingChars,
+          totalOutputChars,
+          repairAttempted,
+          repairSucceeded,
+          repairAttempted && repairSucceeded && parseFailureDetail
+            ? { failureDetail: `initial parse repaired: ${safeRuntimeDetail(parseFailureDetail)}` }
+            : undefined,
+        ),
+        finding: normalizeFindingForProfile(profile, finding),
+      };
     };
-
-    return {
-      sessionId,
-      usage: usage.snapshot(),
-      termination: { reason: "completed" },
-      diagnostics: runtimeDiagnostics(
-        toolCallCount,
-        thinkingChars,
-        totalOutputChars,
-        repairAttempted,
-        repairSucceeded,
-        repairAttempted && repairSucceeded && parseFailureDetail
-          ? { failureDetail: `initial parse repaired: ${safeRuntimeDetail(parseFailureDetail)}` }
-          : undefined,
-      ),
-      finding: normalizeFindingForProfile(profile, finding),
-    };
+    try {
+      return finalizeFinding();
+    } catch (error) {
+      const detail = safeRuntimeDetail(error);
+      return {
+        sessionId,
+        usage: usage.snapshot(),
+        diagnostics: runtimeDiagnostics(
+          toolCallCount,
+          thinkingChars,
+          totalOutputChars,
+          repairAttempted,
+          repairSucceeded,
+          { failureReason: "unknown", failureDetail: detail },
+        ),
+        termination: { reason: "runtime_error", detail },
+      };
+    }
   }
 }
