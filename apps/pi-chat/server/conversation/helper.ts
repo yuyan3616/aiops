@@ -8,6 +8,9 @@ import type {
   ThinkingBlock,
   ToolRun,
 } from "@shared/types";
+
+import { normalizePromptError } from "./async-task";
+
 type ContentPart = TextContent | ThinkingContent | ImageContent | ToolCall;
 
 type SessionMessage = SessionMessageEntry["message"];
@@ -137,7 +140,7 @@ export class ConversationViewBuilder {
       text,
       images: extractImages(content),
       timestamp: entry.timestamp,
-      ...(message.errorMessage ? { error: message.errorMessage } : {}),
+      ...(message.errorMessage ? { error: normalizePromptError(message.errorMessage) } : {}),
     };
 
     let thinkingBlock: ThinkingBlock | undefined;

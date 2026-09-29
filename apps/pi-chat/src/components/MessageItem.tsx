@@ -64,15 +64,24 @@ export function MessageItem({
   }
 
   const user = item.message.role === "user";
+  const messageError = !user ? item.message.error?.trim() : undefined;
   return (
     <>
       {!user && identity}
       <article className={"message-row " + (user ? "user-row" : "")}>
         <div className="message-column">
-          <div className={"bubble " + (user ? "user-bubble" : "assistant-bubble")}>
-            <Markdown content={item.message.text} />
-          </div>
-          {showActions && (
+          {item.message.text && (
+            <div className={"bubble " + (user ? "user-bubble" : "assistant-bubble")}>
+              <Markdown content={item.message.text} />
+            </div>
+          )}
+          {messageError && (
+            <div className="runtime-error-card" role="alert">
+              <strong>本次回复失败</strong>
+              <span>{messageError}</span>
+            </div>
+          )}
+          {showActions && item.message.text && (
             <MessageActions message={item.message} timestamp={item.message.timestamp} />
           )}
         </div>

@@ -73,6 +73,14 @@ export default function App() {
     if (item.kind === "thinking") return total + item.thinking.text.length;
     return total;
   }, 0);
+  const latestConversationMessage = [...messageItems]
+    .reverse()
+    .find((item) => item.kind === "message");
+  const runtimeErrorRepresented =
+    Boolean(runtimeError) &&
+    latestConversationMessage?.kind === "message" &&
+    latestConversationMessage.message.role === "assistant" &&
+    latestConversationMessage.message.error === runtimeError;
 
   useLayoutEffect(() => {
     window.scrollTo(0, 0);
@@ -258,7 +266,7 @@ export default function App() {
                 />
               ))}
               {(loading || busy) && <LoadingIndicator />}
-              {runtimeError && (
+              {runtimeError && !runtimeErrorRepresented && (
                 <div className="runtime-error-card" role="alert">
                   <strong>本次回复失败</strong>
                   <span>{runtimeError}</span>

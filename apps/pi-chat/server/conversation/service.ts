@@ -650,6 +650,39 @@ export class ConversationService {
             }
           }
           break;
+        case "message_end": {
+          const message = event.message;
+          if (message.role !== "assistant") break;
+
+          const streamId = managedSession.streamMessageId ?? randomUUID();
+          const text = extractText(message.content);
+          const error =
+            message.errorMessage || message.stopReason === "error"
+              ? normalizePromptError(message.errorMessage)
+              : undefined;
+
+          if (text || error) {
+            managedSession.channel.publish("message.completed", {
+              streamId,
+              message: {
+                id: streamId,
+                role: "assistant",
+                text,
+                images: [],
+                timestamp: message.timestamp,
+                ...(error ? { error } : {}),
+              },
+            });
+          }
+
+          if (error) {
+            this.finishPromptPerformance(managedSession.id, "error", { error });
+            managedSession.error = error;
+            managedSession.channel.publish("runtime.error", { error });
+            this.setStatus(managedSession, "error");
+          }
+          break;
+        }
         case "entry_appended":
           break;
         case "tool_execution_start":
@@ -677,14 +710,18 @@ export class ConversationService {
             details: event.result?.details,
           });
           break;
-        case "agent_settled":
+        case "agent_settled": {
+          const failed = managedSession.status === "error";
           managedSession.streamMessageId = undefined;
           managedSession.streamThinkingId = undefined;
-          this.finishPromptPerformance(managedSession.id, "agent_settled");
-          this.setStatus(managedSession, "ready");
+          if (!failed) {
+            this.finishPromptPerformance(managedSession.id, "agent_settled");
+            this.setStatus(managedSession, "ready");
+            this.flushPendingTitleRefinement(managedSession);
+          }
           managedSession.channel.publish("runtime.settled", {});
-          this.flushPendingTitleRefinement(managedSession);
           break;
+        }
         default:
           break;
       }

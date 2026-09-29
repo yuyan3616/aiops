@@ -223,3 +223,32 @@ test("conversationReducer adds a downloadable RCA report artifact", () => {
   assert.equal(items[0].report.confidence, 0.91);
 });
 
+
+
+test("conversationReducer keeps a completed assistant error message visible", () => {
+  const items = conversationReducer([], {
+    type: "event",
+    event: {
+      id: 30,
+      streamId: "s1",
+      type: "message.completed",
+      payload: {
+        streamId: "assistant-stream",
+        message: {
+          id: "assistant-stream",
+          role: "assistant",
+          text: "",
+          images: [],
+          error:
+            "模型服务认证失败，当前 API Key 可能已失效或被禁用，请检查模型配置后重新发送。",
+        },
+      },
+    } as StreamEvent,
+  });
+
+  assert.equal(items.length, 1);
+  assert.equal(items[0]?.kind, "message");
+  if (items[0]?.kind !== "message") return;
+  assert.equal(items[0].message.text, "");
+  assert.match(items[0].message.error ?? "", /API Key/);
+});
