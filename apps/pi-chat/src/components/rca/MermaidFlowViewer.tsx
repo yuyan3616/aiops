@@ -90,16 +90,13 @@ export function MermaidFlowViewer({ source }: { source: string }) {
     svgElement.style.height = naturalHeight + "px";
     svgElement.style.maxWidth = "none";
 
-    const padding = 36;
+    const padding = 28;
     const availableWidth = Math.max(80, viewport.clientWidth - padding * 2);
-    const availableHeight = Math.max(80, viewport.clientHeight - padding * 2);
-    const scale = clampScale(
-      Math.min(1.25, availableWidth / naturalWidth, availableHeight / naturalHeight),
-    );
+    const scale = clampScale(Math.min(1.1, availableWidth / naturalWidth));
     setTransform({
       scale,
       x: (viewport.clientWidth - naturalWidth * scale) / 2,
-      y: (viewport.clientHeight - naturalHeight * scale) / 2,
+      y: padding,
     });
     autoFitRef.current = true;
   }, []);
@@ -136,7 +133,9 @@ export function MermaidFlowViewer({ source }: { source: string }) {
           flowchart: {
             htmlLabels: true,
             useMaxWidth: false,
-            curve: "basis",
+            curve: "linear",
+            nodeSpacing: 18,
+            rankSpacing: 28,
           },
         });
         const rendered = await mermaid.render(
@@ -247,7 +246,7 @@ export function MermaidFlowViewer({ source }: { source: string }) {
             autoFitRef.current = true;
             fit();
           }}
-          aria-label="适应窗口"
+          aria-label="适应宽度"
         >
           <Maximize2 size={16} />
         </Button>
