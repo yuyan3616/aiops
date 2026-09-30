@@ -35,7 +35,11 @@ export interface RuntimeExecutionReservation {
  * 同一个 Idempotency-Key 仍能找到原来的 execution/conversation。
  */
 export class RuntimeExecutionRepository {
-  constructor(private readonly executionsDir: string) {}
+  private readonly executionsDir: string;
+
+  constructor(executionsDir: string) {
+    this.executionsDir = executionsDir;
+  }
 
   async reserve(idempotencyKey: string, caseId: string): Promise<RuntimeExecutionReservation> {
     const idempotencyKeyHash = this.hashIdempotencyKey(idempotencyKey);
