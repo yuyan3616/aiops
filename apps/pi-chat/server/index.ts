@@ -5,6 +5,8 @@ import { serve } from "@hono/node-server";
 import { createApp } from "@server/app";
 import { ConversationService } from "@server/conversation/service";
 import { RCA100Adapter } from "@server/rca/adapter";
+import { RuntimeExecutionRepository } from "@server/rca/execution-repository";
+import { RuntimeExecutionService } from "@server/rca/execution-service";
 import { InvestigationRepository } from "@server/rca/repository";
 import { RcaService } from "@server/rca/service";
 import { ObservabilityToolRegistry } from "@server/rca/tools";
@@ -47,8 +49,14 @@ if (recoveredVisualizations.length > 0) {
   );
 }
 const service = new ConversationService(globalConfig, modelRuntime, rcaService);
+const runtimeExecutionRepository = new RuntimeExecutionRepository(globalConfig.rcaExecutionsDir);
+const runtimeExecutionService = new RuntimeExecutionService(
+  runtimeExecutionRepository,
+  service,
+  rcaService,
+);
 
-const app = createApp(service, rcaService);
+const app = createApp(service, rcaService, runtimeExecutionService);
 const host = process.env.PI_CHAT_HOST ?? "127.0.0.1";
 const port = Number(process.env.PI_CHAT_PORT ?? 4328);
 const server = serve(
