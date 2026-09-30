@@ -64,7 +64,7 @@ export class RuntimeExecutionService {
     return this.withExecutionLock(runtimeExecutionId, async () => {
       const record = await this.requireRecord(runtimeExecutionId);
       const refreshed = await this.refreshFromInvestigation(record);
-      return this.view(refreshed);
+      return this.view(await this.repository.save(refreshed));
     });
   }
 
@@ -75,7 +75,7 @@ export class RuntimeExecutionService {
       record = await this.refreshFromInvestigation(record);
 
       if (record.status === "settled" || record.status === "failed" || record.status === "cancelled") {
-        return this.view(record);
+        return this.view(await this.repository.save(record));
       }
 
       if (record.investigationId) {
@@ -88,7 +88,7 @@ export class RuntimeExecutionService {
         status: "cancelled",
         lastError: undefined,
       };
-      await this.repository.save(record);
+      record = await this.repository.save(record);
       return this.view(record);
     });
   }
@@ -212,7 +212,7 @@ export class RuntimeExecutionService {
         ? { lastError: investigation.error }
         : { lastError: undefined }),
     };
-    return this.repository.save(refreshed);
+    return refreshed;
   }
 
   private executionMarker(runtimeExecutionId: string): string {
