@@ -46,8 +46,14 @@ public class MybatisTaskRepository implements TaskRepository {
     }
 
     @Override
-    public boolean update(ManagementTask task) {
-        return mapper.updateById(toEntity(task)) == 1;
+    public ManagementTask update(ManagementTask task) {
+        var entity = toEntity(task);
+        if (mapper.updateById(entity) != 1) {
+            throw new IllegalStateException(
+                    "Management task update lost optimistic-lock race: " + task.taskId()
+            );
+        }
+        return toDomain(entity);
     }
 
     private ManagementTask toDomain(ManagementTaskEntity entity) {
