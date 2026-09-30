@@ -172,6 +172,8 @@ public class TaskExecutionPersistenceService {
     @Transactional
     public ManagementExecution markDispatching(String executionId) {
         var execution = executionRepository.lockById(requireId(executionId, "executionId"));
+        var task = taskRepository.lockById(execution.taskId());
+        assertCurrentExecution(task, execution);
         if (isTerminal(execution.status()) || execution.status() == ExecutionStatus.RUNNING) {
             return execution;
         }
@@ -279,7 +281,6 @@ public class TaskExecutionPersistenceService {
         }
         var task = taskRepository.lockById(execution.taskId());
         assertCurrentExecution(task, execution);
-        assertCurrentExecution(task, execution);
         var now = Instant.now();
 
         var updated = executionRepository.update(new ManagementExecution(
@@ -328,6 +329,7 @@ public class TaskExecutionPersistenceService {
             return execution;
         }
         var task = taskRepository.lockById(execution.taskId());
+        assertCurrentExecution(task, execution);
         var now = Instant.now();
 
         var updated = executionRepository.update(new ManagementExecution(
