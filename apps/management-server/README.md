@@ -27,6 +27,7 @@ export MANAGEMENT_SERVER_PORT=8080
 export AGENT_RUNTIME_BASE_URL=http://127.0.0.1:4328
 export AGENT_RUNTIME_CONNECT_TIMEOUT=2s
 export AGENT_RUNTIME_READ_TIMEOUT=30s
+export AGENT_RUNTIME_EXECUTION_TOKEN=replace_with_the_same_runtime_service_token
 ```
 
 ## 当前 API
@@ -41,3 +42,15 @@ POST /api/management/investigations/{investigationId}/cancel
 所有管理面响应都会返回 `X-Request-ID`，调用 Node Runtime 时会继续透传该标识，方便跨服务排查。
 
 设计边界见 `docs/spring-management-server-spec.md`；Task / Execution 的后续模型见 `docs/spring-management-task-execution-spec.md`。
+
+
+## Runtime Execution 安全边界
+
+会触发 Main Agent / LLM 调用的 Runtime Execution API 使用单独的服务间 token。Node 侧配置 `RCA_EXECUTION_API_TOKEN`，Spring 侧配置相同值到 `AGENT_RUNTIME_EXECUTION_TOKEN`。
+
+未配置 token 时：
+
+- Spring 的普通健康检查和 Investigation 查询仍可使用；
+- Runtime Execution 创建/查询/取消不会退化成匿名调用，而是明确拒绝。
+
+token 只通过环境变量提供，不提交到仓库。
