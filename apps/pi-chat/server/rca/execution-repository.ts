@@ -21,6 +21,8 @@ export interface RuntimeExecutionRecord {
   updatedAt: string;
   investigationId?: string;
   lastError?: string;
+  dispatchOwnerId?: string;
+  promptSubmittedAt?: string;
 }
 
 export interface RuntimeExecutionReservation {
@@ -89,7 +91,8 @@ export class RuntimeExecutionRepository {
     return files.find((item) => item.runtimeExecutionId === runtimeExecutionId);
   }
 
-  async save(record: RuntimeExecutionRecord): Promise<void> {
+  async save(record: RuntimeExecutionRecord): Promise<RuntimeExecutionRecord> {
+    await mkdir(this.executionsDir, { recursive: true });
     const target = this.pathForHash(record.idempotencyKeyHash);
     const temporary = join(
       this.executionsDir,
@@ -101,6 +104,7 @@ export class RuntimeExecutionRepository {
     };
     await writeFile(temporary, JSON.stringify(snapshot, null, 2), "utf8");
     await rename(temporary, target);
+    return snapshot;
   }
 
   private async getByHash(idempotencyKeyHash: string): Promise<RuntimeExecutionRecord> {
