@@ -5,6 +5,7 @@ agent-runtime:
   base-url: ${AGENT_RUNTIME_BASE_URL:http://127.0.0.1:4328}
   connect-timeout: ${AGENT_RUNTIME_CONNECT_TIMEOUT:2s}
   read-timeout: ${AGENT_RUNTIME_READ_TIMEOUT:30s}
+  execution-token: ${AGENT_RUNTIME_EXECUTION_TOKEN:}
 
 spring:
   application:
