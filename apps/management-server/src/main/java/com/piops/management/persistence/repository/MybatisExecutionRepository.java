@@ -50,8 +50,14 @@ public class MybatisExecutionRepository implements ExecutionRepository {
     }
 
     @Override
-    public boolean update(ManagementExecution execution) {
-        return mapper.updateById(toEntity(execution)) == 1;
+    public ManagementExecution update(ManagementExecution execution) {
+        var entity = toEntity(execution);
+        if (mapper.updateById(entity) != 1) {
+            throw new IllegalStateException(
+                    "Management execution update lost optimistic-lock race: " + execution.executionId()
+            );
+        }
+        return toDomain(entity);
     }
 
     private ManagementExecution toDomain(ManagementExecutionEntity entity) {
