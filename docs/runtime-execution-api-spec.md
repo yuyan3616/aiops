@@ -217,3 +217,23 @@ Spring 不根据本地状态猜 Investigation ID；由 Runtime Execution 查询�
 - 重放不重复 prompt 的测试；
 - Runtime 重启后 reservation 可恢复；
 - 不修改 Main Agent RCA 编排逻辑。
+
+
+## 11. 安全边界
+
+Runtime Execution 会触发真实模型调用，因此所有 `/api/rca/executions/**` 请求必须使用服务间 Bearer Token：
+
+```http
+Authorization: Bearer <RCA_EXECUTION_API_TOKEN>
+```
+
+约束：
+
+- token 仅从环境变量注入；
+- 未配置或长度不足时 Execution API 默认不可用；
+- token 比较使用固定长度 hash + timing-safe compare；
+- 日志不得输出 Authorization header；
+- Idempotency-Key 只保存 SHA-256，不落盘原文；
+- Spring 与 Node 的 token 必须独立于模型 Provider API Key，避免权限扩大。
+
+第一阶段仍是单 Runtime 实例模型。进程内 keyed lock 只解决单实例并发；未来多副本部署前，execution reservation 必须迁移到具备跨实例原子唯一约束的共享存储。
