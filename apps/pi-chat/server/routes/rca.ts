@@ -19,11 +19,12 @@ import { Hono } from "hono";
  */
 export function createRcaRoutes(
   rcaService: RcaService,
-  runtimeExecutionService: RuntimeExecutionService,
+  runtimeExecutionService?: RuntimeExecutionService,
 ) {
   const app = new Hono();
 
-  app.post("/executions", async (ctx) => {
+  if (runtimeExecutionService) {
+    app.post("/executions", async (ctx) => {
     if (!verifyRuntimeExecutionToken(
       ctx.req.header("Authorization"),
       process.env.RCA_EXECUTION_API_TOKEN,
@@ -74,7 +75,7 @@ export function createRcaRoutes(
     );
   });
 
-  app.get("/investigations/:investigationId", async (ctx) => {
+    app.get("/investigations/:investigationId", async (ctx) => {
     return ctx.json(await rcaService.get(ctx.req.param("investigationId")));
   });
   app.get("/investigations/:investigationId/visualization", async (ctx) => {
