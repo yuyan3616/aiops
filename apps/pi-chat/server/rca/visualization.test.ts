@@ -208,6 +208,7 @@ function fixture(): Investigation {
 }
 
 test("整体流程投影压缩假设、专家错误与最终结论", () => {
+  const investigation = fixture();
   const events: InvestigationEvent[] = [
     {
       id: 1,
@@ -217,7 +218,7 @@ test("整体流程投影压缩假设、专家错误与最终结论", () => {
       summary: "H01 created",
       payload: {
         hypothesis: {
-          ...fixture().hypotheses[0],
+          ...investigation.hypotheses[0]!,
           status: "possible",
           confidence: 0.35,
         },
@@ -231,7 +232,7 @@ test("整体流程投影压缩假设、专家错误与最终结论", () => {
       summary: "H02 created",
       payload: {
         hypothesis: {
-          ...fixture().hypotheses[1],
+          ...investigation.hypotheses[1]!,
           status: "possible",
           confidence: 0.45,
         },
@@ -245,7 +246,7 @@ test("整体流程投影压缩假设、专家错误与最终结论", () => {
       summary: "H03 created",
       payload: {
         hypothesis: {
-          ...fixture().hypotheses[2],
+          ...investigation.hypotheses[2]!,
           status: "possible",
           confidence: 0.2,
         },
@@ -259,7 +260,7 @@ test("整体流程投影压缩假设、专家错误与最终结论", () => {
       summary: "H03 strengthened",
       payload: {
         hypothesis: {
-          ...fixture().hypotheses[2],
+          ...investigation.hypotheses[2]!,
           status: "investigating",
           confidence: 0.55,
         },
@@ -273,7 +274,7 @@ test("整体流程投影压缩假设、专家错误与最终结论", () => {
       summary: "H02 weakened",
       payload: {
         hypothesis: {
-          ...fixture().hypotheses[1],
+          ...investigation.hypotheses[1]!,
           status: "investigating",
           confidence: 0.25,
         },
@@ -293,7 +294,7 @@ test("整体流程投影压缩假设、专家错误与最终结论", () => {
       type: "hypothesis.updated",
       at: "2026-09-28T01:22:30.000Z",
       summary: "H01 supported",
-      payload: { hypothesis: fixture().hypotheses[0] },
+      payload: { hypothesis: investigation.hypotheses[0]! },
     },
     {
       id: 8,
@@ -301,7 +302,7 @@ test("整体流程投影压缩假设、专家错误与最终结论", () => {
       type: "hypothesis.updated",
       at: "2026-09-28T01:22:31.000Z",
       summary: "H02 rejected",
-      payload: { hypothesis: fixture().hypotheses[1] },
+      payload: { hypothesis: investigation.hypotheses[1]! },
     },
     {
       id: 9,
@@ -309,11 +310,11 @@ test("整体流程投影压缩假设、专家错误与最终结论", () => {
       type: "hypothesis.updated",
       at: "2026-09-28T01:22:32.000Z",
       summary: "H03 supported",
-      payload: { hypothesis: fixture().hypotheses[2] },
+      payload: { hypothesis: investigation.hypotheses[2]! },
     },
   ];
 
-  const flow = buildInvestigationFlow(fixture(), events);
+  const flow = buildInvestigationFlow(investigation, events);
   const ids = new Set(flow.nodes.map((node) => node.id));
 
   assert.equal(ids.has("hypotheses-initial"), true);
