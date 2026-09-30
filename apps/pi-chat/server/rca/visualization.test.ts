@@ -75,7 +75,7 @@ function fixture(): Investigation {
         objective: "验证 H01/H02",
         status: "failed",
         hypothesisIds: ["H01", "H02"],
-        toolCallIds: [],
+        toolCallIds: ["C02"],
         evidenceIds: [],
         implementation: "pi-session",
         budgetClass: "primary",
@@ -178,6 +178,17 @@ function fixture(): Investigation {
         startedAt: "2026-09-28T01:18:30.000Z",
         completedAt: "2026-09-28T01:18:31.000Z",
       },
+      {
+        id: "C02",
+        expertTaskId: "T01",
+        tool: "query_traces",
+        query: { caseId: "t039" },
+        status: "failed",
+        error:
+          '429: {"code":"concurrent_request_limit_exceeded","message":"too many concurrent requests"}',
+        startedAt: "2026-09-28T01:20:01.000Z",
+        completedAt: "2026-09-28T01:20:02.000Z",
+      },
     ],
     rootCause: {
       investigationId: "INV-20260928071227-53e9e4f9",
@@ -196,31 +207,141 @@ function fixture(): Investigation {
   };
 }
 
-test("整体流程投影保留中断、恢复、Recovery 与根因收敛", () => {
+test("整体流程投影压缩假设、专家错误与最终结论", () => {
   const events: InvestigationEvent[] = [
     {
       id: 1,
+      investigationId: "INV-20260928071227-53e9e4f9",
+      type: "hypothesis.created",
+      at: "2026-09-28T01:19:00.000Z",
+      summary: "H01 created",
+      payload: {
+        hypothesis: {
+          ...fixture().hypotheses[0],
+          status: "possible",
+          confidence: 0.35,
+        },
+      },
+    },
+    {
+      id: 2,
+      investigationId: "INV-20260928071227-53e9e4f9",
+      type: "hypothesis.created",
+      at: "2026-09-28T01:19:01.000Z",
+      summary: "H02 created",
+      payload: {
+        hypothesis: {
+          ...fixture().hypotheses[1],
+          status: "possible",
+          confidence: 0.45,
+        },
+      },
+    },
+    {
+      id: 3,
+      investigationId: "INV-20260928071227-53e9e4f9",
+      type: "hypothesis.created",
+      at: "2026-09-28T01:19:02.000Z",
+      summary: "H03 created",
+      payload: {
+        hypothesis: {
+          ...fixture().hypotheses[2],
+          status: "possible",
+          confidence: 0.2,
+        },
+      },
+    },
+    {
+      id: 4,
+      investigationId: "INV-20260928071227-53e9e4f9",
+      type: "hypothesis.updated",
+      at: "2026-09-28T01:21:00.000Z",
+      summary: "H03 strengthened",
+      payload: {
+        hypothesis: {
+          ...fixture().hypotheses[2],
+          status: "investigating",
+          confidence: 0.55,
+        },
+      },
+    },
+    {
+      id: 5,
+      investigationId: "INV-20260928071227-53e9e4f9",
+      type: "hypothesis.updated",
+      at: "2026-09-28T01:21:10.000Z",
+      summary: "H02 weakened",
+      payload: {
+        hypothesis: {
+          ...fixture().hypotheses[1],
+          status: "investigating",
+          confidence: 0.25,
+        },
+      },
+    },
+    {
+      id: 6,
       investigationId: "INV-20260928071227-53e9e4f9",
       type: "investigation.resumed",
       at: "2026-09-28T01:21:50.000Z",
       summary: "resumed",
       payload: {},
     },
+    {
+      id: 7,
+      investigationId: "INV-20260928071227-53e9e4f9",
+      type: "hypothesis.updated",
+      at: "2026-09-28T01:22:30.000Z",
+      summary: "H01 supported",
+      payload: { hypothesis: fixture().hypotheses[0] },
+    },
+    {
+      id: 8,
+      investigationId: "INV-20260928071227-53e9e4f9",
+      type: "hypothesis.updated",
+      at: "2026-09-28T01:22:31.000Z",
+      summary: "H02 rejected",
+      payload: { hypothesis: fixture().hypotheses[1] },
+    },
+    {
+      id: 9,
+      investigationId: "INV-20260928071227-53e9e4f9",
+      type: "hypothesis.updated",
+      at: "2026-09-28T01:22:32.000Z",
+      summary: "H03 supported",
+      payload: { hypothesis: fixture().hypotheses[2] },
+    },
   ];
+
   const flow = buildInvestigationFlow(fixture(), events);
   const ids = new Set(flow.nodes.map((node) => node.id));
 
+  assert.equal(ids.has("hypotheses-initial"), true);
+  assert.equal(ids.has("hypothesis-update-1"), true);
   assert.equal(ids.has("interruption-1"), true);
   assert.equal(ids.has("resume-1"), true);
   assert.equal(ids.has("dispatch-2"), true);
   assert.equal(ids.has("task-T04"), true);
   assert.equal(ids.has("task-T05"), true);
-  assert.equal(ids.has("hypothesis-final-H02"), true);
-  assert.equal(ids.has("root-cause"), true);
+  assert.equal(ids.has("conclusion"), true);
+  assert.equal(ids.has("root-cause"), false);
+  assert.equal(ids.has("hypothesis-final-H02"), false);
+
+  const initial = flow.nodes.find((node) => node.id === "hypotheses-initial");
+  assert.match(initial?.label ?? "", /H01 .*35%/);
+  assert.match(initial?.label ?? "", /H03 .*20%/);
+
+  const update = flow.nodes.find((node) => node.id === "hypothesis-update-1");
+  assert.match(update?.label ?? "", /H03 20% → 55% ↑/);
+
+  const failedTask = flow.nodes.find((node) => node.id === "task-T01");
+  assert.match(failedTask?.label ?? "", /并发限制/);
+  assert.doesNotMatch(failedTask?.label ?? "", /concurrent_request_limit_exceeded/);
 
   const mermaid = compileMermaidFlow(flow);
   assert.match(mermaid, /^flowchart TD/m);
-  assert.match(mermaid, /Recovery Dispatch/);
+  assert.match(mermaid, /Recovery 专项取证/);
   assert.match(mermaid, /email-7f697b9b59-r2c9g/);
+  assert.doesNotMatch(mermaid, /concurrent_request_limit_exceeded/);
   assert.match(mermaid, /classDef failed/);
 });
