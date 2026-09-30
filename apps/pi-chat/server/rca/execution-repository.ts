@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { link, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { link, mkdir, open, readFile, readdir, rename, unlink } from "node:fs/promises";
 import { join } from "node:path";
 
 export type RuntimeExecutionStatus =
@@ -60,16 +60,14 @@ export class RuntimeExecutionRepository {
       updatedAt: now,
     };
 
-    // 先完整写临时文件，再使用 hard link 竞争最终文件名。
-    // link 在目标已存在时会原子失败，因此不会把并发请求互相覆盖。
-    const temporary = join(
-      this.executionsDir,
-      `.${idempotencyKeyHash}-${randomUUID()}.tmp`,
-    );
+    // 先完整写入并 fsync 临时文件，再通过 hard link 原子竞争最终文件名。
+    // 目标已存在时 link 会失败为 EEXIST，从而安全复用已有 reservation。
+    const temporary = this.temporaryPath(idempotencyKeyHash);
+    await this.writeDurableFile(temporary, JSON.stringify(record, null, 2));
 
-    await writeFile(temporary, JSON.stringify(record, null, 2), "utf8");
     try {
       await link(temporary, target);
+      await this.syncDirectory();
       return { record, replayed: false };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
@@ -87,33 +85,36 @@ export class RuntimeExecutionRepository {
   }
 
   async getByExecutionId(runtimeExecutionId: string): Promise<RuntimeExecutionRecord | undefined> {
-    const files = await this.listRecords();
-    return files.find((item) => item.runtimeExecutionId === runtimeExecutionId);
+    const records = await this.listRecords();
+    return records.find((item) => item.runtimeExecutionId === runtimeExecutionId);
   }
 
   async save(record: RuntimeExecutionRecord): Promise<RuntimeExecutionRecord> {
     await mkdir(this.executionsDir, { recursive: true });
     const target = this.pathForHash(record.idempotencyKeyHash);
-    const temporary = join(
-      this.executionsDir,
-      `.${record.idempotencyKeyHash}-${randomUUID()}.tmp`,
-    );
+    const temporary = this.temporaryPath(record.idempotencyKeyHash);
     const snapshot: RuntimeExecutionRecord = {
       ...record,
       updatedAt: new Date().toISOString(),
     };
-    await writeFile(temporary, JSON.stringify(snapshot, null, 2), "utf8");
-    await rename(temporary, target);
-    return snapshot;
+
+    await this.writeDurableFile(temporary, JSON.stringify(snapshot, null, 2));
+    try {
+      await rename(temporary, target);
+      await this.syncDirectory();
+      return snapshot;
+    } catch (error) {
+      await unlink(temporary).catch(() => undefined);
+      throw error;
+    }
   }
 
   private async getByHash(idempotencyKeyHash: string): Promise<RuntimeExecutionRecord> {
     const raw = await readFile(this.pathForHash(idempotencyKeyHash), "utf8");
-    return JSON.parse(raw) as RuntimeExecutionRecord;
+    return this.parseRecord(raw, idempotencyKeyHash);
   }
 
   private async listRecords(): Promise<RuntimeExecutionRecord[]> {
-    const { readdir } = await import("node:fs/promises");
     let entries: string[];
     try {
       entries = await readdir(this.executionsDir);
@@ -122,19 +123,66 @@ export class RuntimeExecutionRepository {
       throw error;
     }
 
-    const records = await Promise.all(
+    return Promise.all(
       entries
         .filter((entry) => entry.endsWith(".json"))
         .map(async (entry) => {
-          try {
-            const raw = await readFile(join(this.executionsDir, entry), "utf8");
-            return JSON.parse(raw) as RuntimeExecutionRecord;
-          } catch {
-            return undefined;
-          }
+          const raw = await readFile(join(this.executionsDir, entry), "utf8");
+          return this.parseRecord(raw, entry);
         }),
     );
-    return records.filter((record): record is RuntimeExecutionRecord => record !== undefined);
+  }
+
+  private parseRecord(raw: string, source: string): RuntimeExecutionRecord {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (error) {
+      throw new Error(`Corrupt runtime execution record ${source}`, { cause: error });
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error(`Invalid runtime execution record ${source}`);
+    }
+
+    const record = parsed as Partial<RuntimeExecutionRecord>;
+    if (
+      typeof record.runtimeExecutionId !== "string" ||
+      typeof record.idempotencyKeyHash !== "string" ||
+      typeof record.caseId !== "string" ||
+      typeof record.conversationId !== "string" ||
+      typeof record.status !== "string" ||
+      typeof record.createdAt !== "string" ||
+      typeof record.updatedAt !== "string"
+    ) {
+      throw new Error(`Invalid runtime execution record ${source}`);
+    }
+    return record as RuntimeExecutionRecord;
+  }
+
+  private async writeDurableFile(path: string, content: string): Promise<void> {
+    const handle = await open(path, "wx");
+    try {
+      await handle.writeFile(content, "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+  }
+
+  private async syncDirectory(): Promise<void> {
+    const handle = await open(this.executionsDir, "r");
+    try {
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+  }
+
+  private temporaryPath(idempotencyKeyHash: string): string {
+    return join(
+      this.executionsDir,
+      `.${idempotencyKeyHash}-${randomUUID()}.tmp`,
+    );
   }
 
   private pathForHash(idempotencyKeyHash: string): string {
