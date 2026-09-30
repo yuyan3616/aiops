@@ -16,6 +16,8 @@ type VisualizationListener = (
   event: InvestigationVisualizationEvent,
 ) => void | Promise<void>;
 
+const VISUALIZATION_RENDER_VERSION = 2;
+
 const terminalStatuses = new Set<Investigation["status"]>([
   "completed",
   "inconclusive",
@@ -31,6 +33,7 @@ function sourceHash(investigation: Investigation): string {
   return createHash("sha256")
     .update(
       JSON.stringify({
+        renderVersion: VISUALIZATION_RENDER_VERSION,
         id: investigation.id,
         status: investigation.status,
         alertContext: investigation.alertContext,
@@ -121,8 +124,26 @@ export class InvestigationVisualizationService {
   }
 
   async getOrCreate(investigationId: string): Promise<InvestigationVisualizationArtifact> {
+    const investigation = await this.repository.get(investigationId);
+    if (!terminalStatuses.has(investigation.status)) {
+      throw new Error(
+        "Investigation " +
+          investigationId +
+          " is " +
+          investigation.status +
+          "; visualization requires a terminal investigation",
+      );
+    }
+
+    const hash = sourceHash(investigation);
     const existing = await this.repository.getVisualization(investigationId);
-    if (existing) return existing;
+    if (existing?.sourceHash === hash) {
+      if (existing.status === "pending" || existing.status === "generating") {
+        this.schedule(investigationId);
+      }
+      return existing;
+    }
+
     return this.enqueue(investigationId);
   }
 
