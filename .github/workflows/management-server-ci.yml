@@ -1,0 +1,37 @@
+name: Management Server CI
+
+on:
+  pull_request:
+    paths:
+      - "apps/management-server/**"
+      - "docs/spring-management-server-spec.md"
+      - ".github/workflows/management-server-ci.yml"
+  push:
+    branches:
+      - main
+      - feat/spring-management-server
+    paths:
+      - "apps/management-server/**"
+      - "docs/spring-management-server-spec.md"
+      - ".github/workflows/management-server-ci.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/management-server
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+          cache-dependency-path: apps/management-server/pom.xml
+
+      - name: Test
+        run: mvn --batch-mode --no-transfer-progress test
