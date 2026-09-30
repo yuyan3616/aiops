@@ -46,6 +46,11 @@ function createHarness(repository: RuntimeExecutionRepository) {
   return {
     service,
     getSendCount: () => sends,
+    addMessage: (conversationId: string, message: string) => {
+      const messages = conversations.get(conversationId) ?? [];
+      messages.push(message);
+      conversations.set(conversationId, messages);
+    },
   };
 }
 
@@ -108,6 +113,61 @@ test("invalid idempotency keys are rejected before reservation", async () => {
         }),
       /Idempotency-Key/,
     );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+
+test("restart recovery resubmits when old dispatch has no session marker", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-rca-execution-service-"));
+  try {
+    const repository = new RuntimeExecutionRepository(dir);
+    const reservation = await repository.reserve("restart-no-marker", "t039");
+    await repository.save({
+      ...reservation.record,
+      status: "dispatching",
+      dispatchOwnerId: "old-runtime-instance",
+    });
+
+    const harness = createHarness(repository);
+    const replay = await harness.service.create({
+      caseId: "t039",
+      idempotencyKey: "restart-no-marker",
+    });
+
+    assert.equal(replay.runtimeExecutionId, reservation.record.runtimeExecutionId);
+    assert.equal(harness.getSendCount(), 1);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("restart recovery does not resubmit when session marker already exists", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-rca-execution-service-"));
+  try {
+    const repository = new RuntimeExecutionRepository(dir);
+    const reservation = await repository.reserve("restart-with-marker", "t039");
+    await repository.save({
+      ...reservation.record,
+      status: "dispatching",
+      dispatchOwnerId: "old-runtime-instance",
+    });
+
+    const harness = createHarness(repository);
+    harness.addMessage(
+      reservation.record.conversationId,
+      `[RUNTIME_EXECUTION ${reservation.record.runtimeExecutionId}]\n已提交`,
+    );
+
+    const replay = await harness.service.create({
+      caseId: "t039",
+      idempotencyKey: "restart-with-marker",
+    });
+
+    assert.equal(replay.runtimeExecutionId, reservation.record.runtimeExecutionId);
+    assert.equal(harness.getSendCount(), 0);
+    assert.equal(replay.replayed, true);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
