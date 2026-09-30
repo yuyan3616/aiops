@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -54,6 +54,22 @@ test("same idempotency key cannot be reused for another case", async () => {
     await assert.rejects(
       () => repository.reserve("alert-123", "t040"),
       /Idempotency key conflict/,
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+
+test("corrupt execution records fail loudly instead of looking missing", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-rca-execution-"));
+  try {
+    const repository = new RuntimeExecutionRepository(dir);
+    await writeFile(join(dir, "corrupt.json"), "{not-json", "utf8");
+
+    await assert.rejects(
+      () => repository.getByExecutionId("EXEC-00000000-0000-0000-0000-000000000000"),
+      /Corrupt runtime execution record/,
     );
   } finally {
     await rm(dir, { recursive: true, force: true });
