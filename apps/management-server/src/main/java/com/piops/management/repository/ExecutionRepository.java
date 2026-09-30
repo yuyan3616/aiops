@@ -14,5 +14,5 @@ public interface ExecutionRepository {
 
     ManagementExecution insert(ManagementExecution execution);
 
-    boolean update(ManagementExecution execution);
+    ManagementExecution update(ManagementExecution execution);
 }
