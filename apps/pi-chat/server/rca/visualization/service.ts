@@ -46,6 +46,13 @@ function sourceHash(investigation: Investigation): string {
           contradicts: item.contradicts,
           expertTaskId: item.expertTaskId,
         })),
+        toolCalls: investigation.toolCalls.map((call) => ({
+          id: call.id,
+          expertTaskId: call.expertTaskId,
+          status: call.status,
+          resultSummary: call.resultSummary,
+          error: call.error,
+        })),
         expertTasks: investigation.expertTasks.map((task) => ({
           id: task.id,
           expert: task.expert,
