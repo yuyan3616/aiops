@@ -20,6 +20,7 @@ public record ManagementExecution(
         String failureMessage,
         Instant startedAt,
         Instant finishedAt,
+        long version,
         Instant createdAt,
         Instant updatedAt
 ) {
