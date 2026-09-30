@@ -16,9 +16,28 @@ public interface AgentRuntimeClient {
 
     CancelInvestigationResult cancelInvestigation(String investigationId);
 
+    RuntimeExecution createExecution(String caseId, String idempotencyKey);
+
+    RuntimeExecution getExecution(String runtimeExecutionId);
+
+    RuntimeExecution cancelExecution(String runtimeExecutionId);
+
     record RuntimeHealth(String status) {
     }
 
     record CancelInvestigationResult(boolean cancelled) {
+    }
+
+    record RuntimeExecution(
+            String runtimeExecutionId,
+            String conversationId,
+            String investigationId,
+            String caseId,
+            String status,
+            Boolean replayed,
+            String createdAt,
+            String updatedAt,
+            String lastError
+    ) {
     }
 }
