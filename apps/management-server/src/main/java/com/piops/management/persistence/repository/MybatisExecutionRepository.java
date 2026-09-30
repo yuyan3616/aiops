@@ -29,6 +29,15 @@ public class MybatisExecutionRepository implements ExecutionRepository {
     }
 
     @Override
+    public ManagementExecution lockById(String executionId) {
+        var entity = mapper.lockById(executionId);
+        if (entity == null) {
+            throw new IllegalArgumentException("Management execution not found: " + executionId);
+        }
+        return toDomain(entity);
+    }
+
+    @Override
     public int nextAttempt(String taskId) {
         return mapper.findMaxAttempt(taskId) + 1;
     }
