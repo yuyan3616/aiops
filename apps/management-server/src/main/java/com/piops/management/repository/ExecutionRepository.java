@@ -10,6 +10,8 @@ public interface ExecutionRepository {
 
     Optional<ManagementExecution> findLatestByTaskId(String taskId);
 
+    ManagementExecution lockById(String executionId);
+
     int nextAttempt(String taskId);
 
     ManagementExecution insert(ManagementExecution execution);
