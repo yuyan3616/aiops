@@ -60,6 +60,7 @@ public class MybatisTaskRepository implements TaskRepository {
                 TaskStatus.valueOf(entity.getStatus()),
                 entity.getCurrentExecutionId(),
                 entity.getIdempotencyKeyHash(),
+                entity.getRowVersion(),
                 entity.getCreatedAt(),
                 entity.getUpdatedAt()
         );
@@ -74,8 +75,8 @@ public class MybatisTaskRepository implements TaskRepository {
         entity.setTitle(task.title());
         entity.setStatus(task.status().name());
         entity.setCurrentExecutionId(task.currentExecutionId());
-        entity.setIdempotencyKeyHash(task.idempotencyKey());
-        entity.setRowVersion(0L);
+        entity.setIdempotencyKeyHash(task.idempotencyKeyHash());
+        entity.setRowVersion(task.version());
         entity.setCreatedAt(task.createdAt());
         entity.setUpdatedAt(task.updatedAt());
         return entity;
