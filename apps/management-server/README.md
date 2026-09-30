@@ -28,6 +28,11 @@ export AGENT_RUNTIME_BASE_URL=http://127.0.0.1:4328
 export AGENT_RUNTIME_CONNECT_TIMEOUT=2s
 export AGENT_RUNTIME_READ_TIMEOUT=30s
 export AGENT_RUNTIME_EXECUTION_TOKEN=replace_with_the_same_runtime_service_token
+export MANAGEMENT_DB_HOST=127.0.0.1
+export MANAGEMENT_DB_PORT=3306
+export MANAGEMENT_DB_NAME=management
+export MANAGEMENT_DB_USERNAME=management
+export MANAGEMENT_DB_PASSWORD=replace_me
 ```
 
 ## 当前 API
@@ -54,3 +59,20 @@ POST /api/management/investigations/{investigationId}/cancel
 - Runtime Execution 创建/查询/取消不会退化成匿名调用，而是明确拒绝。
 
 token 只通过环境变量提供，不提交到仓库。
+
+
+## MySQL 持久化
+
+管理面数据库只保存 `Task / ManagementExecution` 等平台元数据，不保存 Pi Session、Hypothesis、Evidence 或 Investigation 详情。
+
+生产环境建议在 Railway 同一项目中使用独立 MySQL 服务，并通过 service reference 注入：
+
+```text
+MANAGEMENT_DB_HOST      -> <MySQL service>.MYSQLHOST
+MANAGEMENT_DB_PORT      -> <MySQL service>.MYSQLPORT
+MANAGEMENT_DB_NAME      -> <MySQL service>.MYSQLDATABASE
+MANAGEMENT_DB_USERNAME  -> <MySQL service>.MYSQLUSER
+MANAGEMENT_DB_PASSWORD  -> <MySQL service>.MYSQLPASSWORD
+```
+
+应用启动时由 Flyway 自动执行版本化迁移；`flyway.clean` 已禁用，生产环境不会通过应用执行清库操作。
