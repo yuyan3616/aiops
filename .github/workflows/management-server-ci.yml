@@ -38,7 +38,9 @@ jobs:
           --health-timeout=3s
           --health-retries=20
     env:
-      MANAGEMENT_DB_URL: jdbc:mysql://127.0.0.1:3306/management?useSSL=false&allowPublicKeyRetrieval=true&connectionTimeZone=UTC
+      MANAGEMENT_DB_HOST: 127.0.0.1
+      MANAGEMENT_DB_PORT: 3306
+      MANAGEMENT_DB_NAME: management
       MANAGEMENT_DB_USERNAME: management
       MANAGEMENT_DB_PASSWORD: management
     defaults:
