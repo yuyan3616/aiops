@@ -385,3 +385,52 @@ GET Node /api/rca/investigations/{id}
 - Runtime 异常不会变成空响应；
 - 新服务可独立启动和构建；
 - 删除 Spring 服务不会影响原有 Pi Chat 的运行。
+
+
+## 16. 第二阶段补充：Task / Execution
+
+Spring 后续真正拥有的领域对象不是 Investigation，而是 Task 与 Execution。
+
+关系固定为：
+
+```text
+Task（平台意图）
+  └── Execution（一次运行尝试）
+         └── Investigation（Agent Runtime 内部调查）
+```
+
+完整状态机、幂等、事务和崩溃窗口见 [Task / Execution 模型设计](spring-management-task-execution-spec.md)。
+
+特别注意：当前 `RcaService.beginAgentic()` 只初始化 Investigation 和告警上下文，真正的持续调查仍由 Conversation / Pi Main Agent 驱动。因此在 Runtime 提供完整“外部执行入口”之前，不应为了 API 完整度直接实现 `POST /api/management/tasks` 并调用 `beginAgentic()`，否则会创建没人继续推进的半成品 Investigation。
+
+## 17. Request ID
+
+管理面统一接受并返回 `X-Request-ID`：
+
+- 上游传入合法值时沿用；
+- 未传或格式不安全时由 Spring 生成；
+- Spring 调 Node Runtime 时继续透传；
+- 请求结束后清理 ThreadLocal，避免 Tomcat 工作线程复用造成上下文串线。
+
+`X-Request-ID` 只用于链路追踪，不承担业务幂等职责。未来创建 Task / Execution 时另行使用持久化的 Idempotency Key。
+
+## 18. 健康检查语义
+
+区分两个健康接口：
+
+| API | 含义 |
+| --- | --- |
+| `GET /api/management/health` | Spring Management Server 自身可服务 |
+| `GET /api/management/runtime/health` | Spring 能否通过配置的 Runtime 地址访问 Node Agent Server |
+
+Runtime health 失败不能直接推断某个 Investigation 已失败；它只代表当前调用时刻的连通性。
+
+## 19. Spring Boot 版本说明
+
+当前实现继续固定 Spring Boot 3.5.16 + JDK 21，以保持本阶段变量可控。Spring Boot 3.5.16 可以运行于 Java 21，但 3.5.16 已是 3.5.x 最后一个 OSS 版本。
+
+因此：
+
+- 本分支不同时执行 Spring Boot 4.x 升级；
+- 合并管理面基础结构后，应单独建立升级任务评估 Spring Boot 4.x；
+- 新增第三方依赖时要同时核对 Boot 3.5 与未来 Boot 4 的兼容性，避免形成迁移阻塞。
