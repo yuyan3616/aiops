@@ -13,7 +13,12 @@ import { ensureDir, getGlobalConfig } from "./config";
 import { ensurePackyModelsConfig } from "./model-provider";
 
 const globalConfig = getGlobalConfig();
-await ensureDir([globalConfig.rootDir, globalConfig.skillsDir, globalConfig.rcaInvestigationsDir]);
+await ensureDir([
+  globalConfig.rootDir,
+  globalConfig.skillsDir,
+  globalConfig.rcaInvestigationsDir,
+  globalConfig.rcaExecutionsDir,
+]);
 await writeFile(globalConfig.mcpConfigPath, JSON.stringify({ mcpServers: {} }, null, 2), {
   flag: "wx",
 }).catch((error: NodeJS.ErrnoException) => {
