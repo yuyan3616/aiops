@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import type { ConversationService } from "@server/conversation/service";
 
 import type { RcaService } from "./service";
@@ -35,6 +37,7 @@ export class RuntimeExecutionService {
   private readonly conversationService: ConversationService;
   private readonly rcaService: RcaService;
   private readonly executionLocks = new Map<string, Promise<void>>();
+  private readonly runtimeInstanceId = randomUUID();
 
   constructor(
     repository: RuntimeExecutionRepository,
@@ -101,6 +104,15 @@ export class RuntimeExecutionService {
       return this.view(record, reservation.replayed);
     }
 
+    // 同一进程里已经 handoff 的重复请求不再依赖 marker 可见性，避免极短窗口内重复 prompt。
+    if (
+      reservation.replayed &&
+      record.dispatchOwnerId === this.runtimeInstanceId &&
+      (record.status === "dispatching" || record.status === "running")
+    ) {
+      return this.view(record, true);
+    }
+
     await this.conversationService.ensureConversation(record.conversationId);
 
     const marker = this.executionMarker(record.runtimeExecutionId);
@@ -116,12 +128,19 @@ export class RuntimeExecutionService {
           ? "running"
           : record.status,
       });
-      await this.repository.save(record);
+      record = await this.repository.save({
+        ...record,
+        dispatchOwnerId: this.runtimeInstanceId,
+      });
       return this.view(record, true);
     }
 
-    record = { ...record, status: "dispatching", lastError: undefined };
-    await this.repository.save(record);
+    record = await this.repository.save({
+      ...record,
+      status: "dispatching",
+      lastError: undefined,
+      dispatchOwnerId: this.runtimeInstanceId,
+    });
 
     try {
       await this.conversationService.send(
@@ -132,8 +151,10 @@ export class RuntimeExecutionService {
       record = await this.refreshFromInvestigation({
         ...record,
         status: "running",
+        dispatchOwnerId: this.runtimeInstanceId,
+        promptSubmittedAt: new Date().toISOString(),
       });
-      await this.repository.save(record);
+      record = await this.repository.save(record);
       return this.view(record, reservation.replayed);
     } catch (error) {
       // send() 在真正 handoff 前抛出的错误属于明确失败；异步 Agent 错误会由后续状态查询观察。
@@ -142,7 +163,7 @@ export class RuntimeExecutionService {
         status: "failed",
         lastError: error instanceof Error ? error.message : String(error),
       };
-      await this.repository.save(record);
+      record = await this.repository.save(record);
       throw error;
     }
   }
@@ -191,8 +212,7 @@ export class RuntimeExecutionService {
         ? { lastError: investigation.error }
         : { lastError: undefined }),
     };
-    await this.repository.save(refreshed);
-    return refreshed;
+    return this.repository.save(refreshed);
   }
 
   private executionMarker(runtimeExecutionId: string): string {
