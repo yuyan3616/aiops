@@ -150,6 +150,11 @@ export default function App() {
     streamedConversationTitle ??
     conversations.find((item) => item.id === conversationId)?.title ??
     "新会话";
+
+  useEffect(() => {
+    document.title = conversationId ? conversationTitle : "Pi Ops";
+  }, [conversationId, conversationTitle]);
+
   const latestReport = [...messageItems]
     .reverse()
     .find((item) => item.kind === "report");
