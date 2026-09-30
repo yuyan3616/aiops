@@ -212,6 +212,7 @@ public class TaskExecutionPersistenceService {
     ) {
         var execution = executionRepository.lockById(requireId(executionId, "executionId"));
         var task = taskRepository.lockById(execution.taskId());
+        assertCurrentExecution(task, execution);
 
         if (isTerminal(execution.status())) {
             return execution;
@@ -277,6 +278,8 @@ public class TaskExecutionPersistenceService {
             return execution;
         }
         var task = taskRepository.lockById(execution.taskId());
+        assertCurrentExecution(task, execution);
+        assertCurrentExecution(task, execution);
         var now = Instant.now();
 
         var updated = executionRepository.update(new ManagementExecution(
@@ -357,6 +360,15 @@ public class TaskExecutionPersistenceService {
                 now
         ));
         return updated;
+    }
+
+    private void assertCurrentExecution(ManagementTask task, ManagementExecution execution) {
+        if (!execution.executionId().equals(task.currentExecutionId())) {
+            throw new IllegalStateException(
+                    "Stale execution " + execution.executionId()
+                            + " is not current for task " + task.taskId()
+            );
+        }
     }
 
     private TaskStatus taskStatusFor(ExecutionStatus status) {
