@@ -7,6 +7,7 @@ import com.piops.management.repository.TaskRepository;
 import com.piops.management.service.TaskExecutionPersistenceService;
 import com.piops.management.service.TaskExecutionPersistenceService.CreateTaskCommand;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -25,6 +26,7 @@ class ManagementPersistenceIntegrationTest {
     private final TaskRepository taskRepository;
     private final ExecutionRepository executionRepository;
 
+    @Autowired
     ManagementPersistenceIntegrationTest(
             TaskExecutionPersistenceService service,
             TaskRepository taskRepository,
