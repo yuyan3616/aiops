@@ -33,8 +33,11 @@ export AGENT_RUNTIME_READ_TIMEOUT=30s
 
 ```text
 GET  /api/management/health
+GET  /api/management/runtime/health
 GET  /api/management/investigations/{investigationId}
 POST /api/management/investigations/{investigationId}/cancel
 ```
 
-设计边界见 `docs/spring-management-server-spec.md`。
+所有管理面响应都会返回 `X-Request-ID`，调用 Node Runtime 时会继续透传该标识，方便跨服务排查。
+
+设计边界见 `docs/spring-management-server-spec.md`；Task / Execution 的后续模型见 `docs/spring-management-task-execution-spec.md`。
