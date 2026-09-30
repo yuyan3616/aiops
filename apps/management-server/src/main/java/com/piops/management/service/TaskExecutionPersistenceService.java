@@ -153,6 +153,232 @@ public class TaskExecutionPersistenceService {
         return execution;
     }
 
+
+    public ManagementTask getTask(String taskId) {
+        return taskRepository.findById(requireId(taskId, "taskId"))
+                .orElseThrow(() -> new IllegalArgumentException("Management task not found: " + taskId));
+    }
+
+    public ManagementExecution getExecution(String executionId) {
+        return executionRepository.findById(requireId(executionId, "executionId"))
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "Management execution not found: " + executionId
+                ));
+    }
+
+    /**
+     * Runtime 调用前提交 DISPATCHING 状态。该事务结束后才能真正发 HTTP 请求。
+     */
+    @Transactional
+    public ManagementExecution markDispatching(String executionId) {
+        var execution = executionRepository.lockById(requireId(executionId, "executionId"));
+        if (isTerminal(execution.status()) || execution.status() == ExecutionStatus.RUNNING) {
+            return execution;
+        }
+        if (execution.status() != ExecutionStatus.CREATED
+                && execution.status() != ExecutionStatus.DISPATCHING
+                && execution.status() != ExecutionStatus.UNKNOWN) {
+            throw new IllegalStateException(
+                    "Execution " + execution.executionId() + " cannot dispatch from " + execution.status()
+            );
+        }
+
+        var now = Instant.now();
+        return executionRepository.update(new ManagementExecution(
+                execution.executionId(),
+                execution.taskId(),
+                execution.attempt(),
+                execution.runtimeRequestId(),
+                execution.investigationId(),
+                ExecutionStatus.DISPATCHING,
+                null,
+                null,
+                execution.startedAt() == null ? now : execution.startedAt(),
+                null,
+                execution.version(),
+                execution.createdAt(),
+                now
+        ));
+    }
+
+    /**
+     * 将 Node Runtime 返回的状态绑定到当前 ManagementExecution。
+     * 对 execution 和 task 都加行锁，避免状态同步与取消操作互相覆盖。
+     */
+    @Transactional
+    public ManagementExecution applyRuntimeState(
+            String executionId,
+            RuntimeBinding binding
+    ) {
+        var execution = executionRepository.lockById(requireId(executionId, "executionId"));
+        var task = taskRepository.lockById(execution.taskId());
+
+        if (isTerminal(execution.status())) {
+            return execution;
+        }
+        if (!task.caseId().equals(binding.caseId())) {
+            throw new IllegalStateException(
+                    "Runtime execution case mismatch for " + execution.executionId()
+            );
+        }
+        if (execution.runtimeRequestId() != null
+                && !execution.runtimeRequestId().equals(binding.runtimeExecutionId())) {
+            throw new IllegalStateException(
+                    "Management execution is already bound to another runtime execution"
+            );
+        }
+
+        var now = Instant.now();
+        var terminal = isTerminal(binding.status());
+        var updated = executionRepository.update(new ManagementExecution(
+                execution.executionId(),
+                execution.taskId(),
+                execution.attempt(),
+                binding.runtimeExecutionId(),
+                binding.investigationId(),
+                binding.status(),
+                binding.failureCode(),
+                truncate(binding.failureMessage(), 1024),
+                execution.startedAt() == null ? now : execution.startedAt(),
+                terminal ? now : null,
+                execution.version(),
+                execution.createdAt(),
+                now
+        ));
+
+        taskRepository.update(new ManagementTask(
+                task.taskId(),
+                task.source(),
+                task.sourceRef(),
+                task.caseId(),
+                task.title(),
+                taskStatusFor(binding.status()),
+                task.currentExecutionId(),
+                task.idempotencyKeyHash(),
+                task.version(),
+                task.createdAt(),
+                now
+        ));
+        return updated;
+    }
+
+    /**
+     * 远程请求结果不确定时只标记 UNKNOWN，不创建新 attempt。
+     * 同一个 MEXEC 后续会使用稳定幂等键向 Runtime 对账/重放。
+     */
+    @Transactional
+    public ManagementExecution markUnknown(
+            String executionId,
+            String failureCode,
+            String failureMessage
+    ) {
+        var execution = executionRepository.lockById(requireId(executionId, "executionId"));
+        if (isTerminal(execution.status())) {
+            return execution;
+        }
+        var task = taskRepository.lockById(execution.taskId());
+        var now = Instant.now();
+
+        var updated = executionRepository.update(new ManagementExecution(
+                execution.executionId(),
+                execution.taskId(),
+                execution.attempt(),
+                execution.runtimeRequestId(),
+                execution.investigationId(),
+                ExecutionStatus.UNKNOWN,
+                truncate(failureCode, 64),
+                truncate(failureMessage, 1024),
+                execution.startedAt() == null ? now : execution.startedAt(),
+                null,
+                execution.version(),
+                execution.createdAt(),
+                now
+        ));
+
+        taskRepository.update(new ManagementTask(
+                task.taskId(),
+                task.source(),
+                task.sourceRef(),
+                task.caseId(),
+                task.title(),
+                TaskStatus.RUNNING,
+                task.currentExecutionId(),
+                task.idempotencyKeyHash(),
+                task.version(),
+                task.createdAt(),
+                now
+        ));
+        return updated;
+    }
+
+    /**
+     * 只用于“确认请求尚未发出”的本地前置失败，例如 Runtime execution token 未配置。
+     */
+    @Transactional
+    public ManagementExecution markFailedBeforeDispatch(
+            String executionId,
+            String failureCode,
+            String failureMessage
+    ) {
+        var execution = executionRepository.lockById(requireId(executionId, "executionId"));
+        if (isTerminal(execution.status())) {
+            return execution;
+        }
+        var task = taskRepository.lockById(execution.taskId());
+        var now = Instant.now();
+
+        var updated = executionRepository.update(new ManagementExecution(
+                execution.executionId(),
+                execution.taskId(),
+                execution.attempt(),
+                execution.runtimeRequestId(),
+                execution.investigationId(),
+                ExecutionStatus.FAILED,
+                truncate(failureCode, 64),
+                truncate(failureMessage, 1024),
+                execution.startedAt(),
+                now,
+                execution.version(),
+                execution.createdAt(),
+                now
+        ));
+
+        taskRepository.update(new ManagementTask(
+                task.taskId(),
+                task.source(),
+                task.sourceRef(),
+                task.caseId(),
+                task.title(),
+                TaskStatus.FAILED,
+                task.currentExecutionId(),
+                task.idempotencyKeyHash(),
+                task.version(),
+                task.createdAt(),
+                now
+        ));
+        return updated;
+    }
+
+    private TaskStatus taskStatusFor(ExecutionStatus status) {
+        return switch (status) {
+            case SUCCEEDED -> TaskStatus.SUCCEEDED;
+            case FAILED -> TaskStatus.FAILED;
+            case CANCELLED -> TaskStatus.CANCELLED;
+            case CREATED, DISPATCHING, RUNNING, UNKNOWN -> TaskStatus.RUNNING;
+        };
+    }
+
+    private boolean isTerminal(ExecutionStatus status) {
+        return status == ExecutionStatus.SUCCEEDED
+                || status == ExecutionStatus.FAILED
+                || status == ExecutionStatus.CANCELLED;
+    }
+
+    private String truncate(String value, int maxLength) {
+        if (value == null || value.length() <= maxLength) return value;
+        return value.substring(0, maxLength);
+    }
+
     private CreateTaskCommand normalize(CreateTaskCommand command) {
         if (command == null) {
             throw new IllegalArgumentException("command must not be null");
@@ -222,5 +448,24 @@ public class TaskExecutionPersistenceService {
             String title,
             String idempotencyKey
     ) {
+    }
+
+    public record RuntimeBinding(
+            String runtimeExecutionId,
+            String investigationId,
+            String caseId,
+            ExecutionStatus status,
+            String failureCode,
+            String failureMessage
+    ) {
+        public RuntimeBinding {
+            if (runtimeExecutionId == null || runtimeExecutionId.isBlank()) {
+                throw new IllegalArgumentException("runtimeExecutionId must not be blank");
+            }
+            if (caseId == null || caseId.isBlank()) {
+                throw new IllegalArgumentException("caseId must not be blank");
+            }
+            Objects.requireNonNull(status, "status");
+        }
     }
 }
