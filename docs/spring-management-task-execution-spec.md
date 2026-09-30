@@ -135,3 +135,38 @@ management_execution：id、task_id、attempt、runtime_request_id、investigati
 暂不实现假的内存 TaskRepository，也暂不为了展示 Controller 而制造不可恢复的 Task 数据。
 
 下一步进入持久化实现前，需要先确定 MySQL 表结构、持久层选型、Runtime 外部执行入口以及创建请求的持久化幂等协议。
+
+
+## 13. 持久层实施决策
+
+当前实现采用：
+
+- MySQL；
+- MyBatis-Plus 3.5.16；
+- Flyway 管理 DDL；
+- domain model 与 persistence entity 分离；
+- `row_version` 乐观锁；
+- reserve Execution 时对 Task 使用 `SELECT ... FOR UPDATE`。
+
+管理面 Execution ID 使用 `MEXEC-<uuid>`，Node Runtime Execution 继续使用 `EXEC-<uuid>`，避免日志和排障时混淆两类执行 ID。
+
+幂等键不以原文入库。Spring 仅保存 `SHA-256(idempotencyKey)`，并通过 `(source, idempotency_key_hash)` 唯一约束保证跨进程、跨重启幂等。
+
+数据库事务边界保持：
+
+```text
+transaction A:
+  create/reuse Task
+  reserve ManagementExecution
+  commit
+
+outside transaction:
+  call Node Runtime Execution API
+
+transaction B:
+  bind runtimeExecutionId / investigationId
+  update status
+  commit
+```
+
+远程 HTTP 调用不得进入数据库事务。
