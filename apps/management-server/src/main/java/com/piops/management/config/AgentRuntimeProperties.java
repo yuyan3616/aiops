@@ -8,7 +8,8 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 public record AgentRuntimeProperties(
         String baseUrl,
         Duration connectTimeout,
-        Duration readTimeout
+        Duration readTimeout,
+        String executionToken
 ) {
     public AgentRuntimeProperties {
         if (baseUrl == null || baseUrl.isBlank()) {
@@ -20,5 +21,13 @@ public record AgentRuntimeProperties(
         if (readTimeout == null || readTimeout.isNegative() || readTimeout.isZero()) {
             throw new IllegalArgumentException("agent-runtime.read-timeout must be positive");
         }
+    }
+
+    /**
+     * Execution API 会真实触发 Main Agent 和模型调用，因此 token 不允许硬编码默认值。
+     * 未配置时管理服务仍可启动并使用只读能力，但创建/查询 Runtime Execution 会明确失败。
+     */
+    public boolean hasExecutionToken() {
+        return executionToken != null && !executionToken.isBlank();
     }
 }
