@@ -17,5 +17,5 @@ public interface TaskRepository {
      */
     ManagementTask lockById(String taskId);
 
-    boolean update(ManagementTask task);
+    ManagementTask update(ManagementTask task);
 }
