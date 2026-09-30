@@ -220,8 +220,8 @@ export function InvestigationDetailDrawer({
 
         <div className="investigation-flow-heading">
           <div>
-            <strong>整体排障流程</strong>
-            <span>Mermaid · SVG</span>
+            <strong>调查流程</strong>
+            <span>流程概览</span>
           </div>
           {artifact?.status === "failed" && (
             <Button
