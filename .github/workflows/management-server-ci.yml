@@ -5,6 +5,8 @@ on:
     paths:
       - "apps/management-server/**"
       - "docs/spring-management-server-spec.md"
+      - "docs/spring-management-task-execution-spec.md"
+      - "docs/runtime-execution-api-spec.md"
       - ".github/workflows/management-server-ci.yml"
   push:
     branches:
@@ -13,11 +15,32 @@ on:
     paths:
       - "apps/management-server/**"
       - "docs/spring-management-server-spec.md"
+      - "docs/spring-management-task-execution-spec.md"
+      - "docs/runtime-execution-api-spec.md"
       - ".github/workflows/management-server-ci.yml"
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: management
+          MYSQL_USER: management
+          MYSQL_PASSWORD: management
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -umanagement -pmanagement"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=20
+    env:
+      MANAGEMENT_DB_URL: jdbc:mysql://127.0.0.1:3306/management?useSSL=false&allowPublicKeyRetrieval=true&connectionTimeZone=UTC
+      MANAGEMENT_DB_USERNAME: management
+      MANAGEMENT_DB_PASSWORD: management
     defaults:
       run:
         working-directory: apps/management-server
