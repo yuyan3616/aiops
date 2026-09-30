@@ -17,7 +17,8 @@ public record ManagementTask(
         String title,
         TaskStatus status,
         String currentExecutionId,
-        String idempotencyKey,
+        String idempotencyKeyHash,
+        long version,
         Instant createdAt,
         Instant updatedAt
 ) {
