@@ -17,6 +17,14 @@ public interface ManagementExecutionMapper extends BaseMapper<ManagementExecutio
     ManagementExecutionEntity findLatestByTaskId(@Param("taskId") String taskId);
 
     @Select("""
+            SELECT *
+            FROM management_execution
+            WHERE id = #{executionId}
+            FOR UPDATE
+            """)
+    ManagementExecutionEntity lockById(@Param("executionId") String executionId);
+
+    @Select("""
             SELECT COALESCE(MAX(attempt), 0)
             FROM management_execution
             WHERE task_id = #{taskId}
