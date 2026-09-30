@@ -140,7 +140,7 @@ export class ConversationService {
     await this.withSessionLock(conversationId, async () => {
       const existing = await this.conversationRepository.get(conversationId);
       if (existing) return;
-      await this.createConversationWithId(conversationId, false);
+      await this.createConversationWithId(conversationId);
     });
   }
 
@@ -164,7 +164,7 @@ export class ConversationService {
     }
   }
 
-  private async createConversationWithId(conversationId: string, acquire = true) {
+  private async createConversationWithId(conversationId: string) {
     const conversationWorkspaceDir = join(this.globalConfig.workspacesDir, conversationId);
     await mkdir(conversationWorkspaceDir, { recursive: true });
 
@@ -193,8 +193,7 @@ export class ConversationService {
       selectedSkills: [],
     };
     await this.conversationRepository.save(conversationRecord);
-    const managed = await this.createManagedSession(conversationRecord, sessionManager);
-    return acquire ? this.acquire(managed) : managed;
+    return this.createManagedSession(conversationRecord, sessionManager);
   }
 
   async send(conversationId: string, userInput: string, skills?: string[]) {
