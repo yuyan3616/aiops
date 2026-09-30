@@ -57,6 +57,7 @@ public class MybatisExecutionRepository implements ExecutionRepository {
                 entity.getFailureMessage(),
                 entity.getStartedAt(),
                 entity.getFinishedAt(),
+                entity.getRowVersion(),
                 entity.getCreatedAt(),
                 entity.getUpdatedAt()
         );
@@ -74,7 +75,7 @@ public class MybatisExecutionRepository implements ExecutionRepository {
         entity.setFailureMessage(execution.failureMessage());
         entity.setStartedAt(execution.startedAt());
         entity.setFinishedAt(execution.finishedAt());
-        entity.setRowVersion(0L);
+        entity.setRowVersion(execution.version());
         entity.setCreatedAt(execution.createdAt());
         entity.setUpdatedAt(execution.updatedAt());
         return entity;
