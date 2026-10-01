@@ -74,8 +74,12 @@ public class TaskExecutionOrchestrator {
 
     public DispatchResult sync(String taskId) {
         ManagementTask task = persistenceService.getTask(taskId);
-        ManagementExecution execution = persistenceService.reserveExecution(taskId);
+        if (task.currentExecutionId() == null) {
+            return new DispatchResult(task, null);
+        }
 
+        ManagementExecution execution =
+                persistenceService.getExecution(task.currentExecutionId());
         if (execution.runtimeRequestId() == null) {
             return new DispatchResult(task, execution);
         }
