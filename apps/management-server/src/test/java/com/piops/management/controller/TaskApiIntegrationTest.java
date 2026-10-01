@@ -31,6 +31,13 @@ class TaskApiIntegrationTest {
     private MockMvc mvc;
 
     @Test
+    void readinessIncludesRealDatabaseHealth() throws Exception {
+        mvc.perform(get("/actuator/health/readiness"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("UP"));
+    }
+
+    @Test
     void unauthorizedRequestStillCarriesRequestId() throws Exception {
         mvc.perform(get("/api/management/tasks/TASK-00000000-0000-0000-0000-000000000001")
                         .header("X-Request-ID", "task-api-auth-test"))
