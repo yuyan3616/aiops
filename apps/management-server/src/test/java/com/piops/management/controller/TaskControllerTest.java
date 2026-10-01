@@ -81,6 +81,18 @@ class TaskControllerTest {
                 .andExpect(jsonPath("$.data.task.status").value("PENDING"));
     }
 
+    @Test
+    void cancelReturnsCurrentSnapshot() throws Exception {
+        when(service.cancel("TASK-00000000-0000-0000-0000-000000000001"))
+                .thenReturn(snapshot());
+
+        mvc.perform(post(
+                        "/api/management/tasks/TASK-00000000-0000-0000-0000-000000000001/cancel"
+                ))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true));
+    }
+
     private TaskSnapshot snapshot() {
         var now = Instant.parse("2026-10-01T00:00:00Z");
         return new TaskSnapshot(
