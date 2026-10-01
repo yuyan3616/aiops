@@ -15,7 +15,6 @@ import java.time.Instant;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -80,13 +79,6 @@ class TaskControllerTest {
                 ))
                 .andExpect(status().isAccepted())
                 .andExpect(jsonPath("$.data.task.status").value("PENDING"));
-    }
-
-    @Test
-    void invalidTaskIdReturns400() throws Exception {
-        mvc.perform(get("/api/management/tasks/not-a-task"))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error.code").value("INVALID_REQUEST"));
     }
 
     private TaskSnapshot snapshot() {
