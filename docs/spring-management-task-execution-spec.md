@@ -100,9 +100,9 @@ Spring 不直接调用 `RcaService.beginAgentic()`，也不另建第二套 orche
 
 建议表：
 
-management_task：id、source、source_ref、case_id、title、status、current_execution_id、idempotency_key、created_at、updated_at。
+management_task：id、source、source_ref、case_id、title、status、current_execution_id、idempotency_key_hash、row_version、created_at、updated_at。
 
-management_execution：id、task_id、attempt、runtime_request_id、investigation_id、status、failure_code、failure_message、started_at、finished_at、created_at、updated_at。
+management_execution：id、task_id、attempt、runtime_request_id、investigation_id、status、failure_code、failure_message、started_at、finished_at、row_version、created_at、updated_at。
 
 ## 10. 并发与事务
 
@@ -124,7 +124,7 @@ management_execution：id、task_id、attempt、runtime_request_id、investigati
 
 窗口 B：Runtime 已创建 Investigation、HTTP 响应返回前 Spring 崩溃。这是最危险的窗口。解决依赖 Runtime 对 idempotencyKey 的持久化支持。Spring 重试时 Runtime 必须返回第一次创建的 execution/investigation，而不是再创建一个。
 
-因此真正实现 Task 创建 API 前，必须先补 Runtime 幂等协议。
+该风险已经通过 Runtime Execution reservation、稳定 Idempotency-Key 和 Session marker 恢复机制处理。
 
 ## 12. 当前实现状态
 
@@ -207,14 +207,21 @@ POST /tasks/{id}/execute
 
 API View 与 Domain/Persistence Entity 分离；对外不返回 `idempotency_key_hash`、`row_version` 等内部字段。
 
-### 取消暂缓开放
+### 安全取消
 
-取消的危险窗口：
+取消覆盖三类路径：
 
 ```text
-MEXEC = DISPATCHING/UNKNOWN
-Spring 尚未拿到 runtimeExecutionId
-Node 可能已经启动 Main Agent
+PENDING / 无 Execution
+  -> 纯本地取消 Task
+
+CREATED / 尚未 dispatch
+  -> 持锁本地取消 MEXEC + Task
+
+DISPATCHING / UNKNOWN / RUNNING
+  -> 若缺 runtimeExecutionId，先使用 management:<MEXEC-id> 幂等重放恢复 Runtime Execution
+  -> 调 Runtime cancel
+  -> 根据 Runtime 返回状态提交管理面终态
 ```
 
-此时直接把 MySQL 状态改成 CANCELLED 会造成“管理面显示已取消，但 Runtime 仍运行”。因此取消接口必须先完成：使用 `management:<MEXEC-id>` 幂等重放/对账 -> 获得真实 Runtime Execution -> Runtime cancel -> 再提交管理面 CANCELLED。实现前不开放表面 cancel API。
+任何远程结果不确定的取消都会保持 UNKNOWN，而不会谎报 CANCELLED。execute 与 cancel 的并发竞态通过持锁状态检查处理：如果 cancel 先把 Execution 推入终态，后续 execute 在真正调用 Runtime 前会再次检查终态并停止。
