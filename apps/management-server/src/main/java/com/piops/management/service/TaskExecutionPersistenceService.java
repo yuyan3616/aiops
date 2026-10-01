@@ -6,6 +6,7 @@ import com.piops.management.domain.model.ManagementExecution;
 import com.piops.management.domain.model.ManagementTask;
 import com.piops.management.exception.ConflictException;
 import com.piops.management.exception.ResourceNotFoundException;
+import com.piops.management.exception.InvalidRequestException;
 import com.piops.management.repository.ExecutionRepository;
 import com.piops.management.repository.TaskRepository;
 import org.springframework.dao.DuplicateKeyException;
@@ -479,24 +480,24 @@ public class TaskExecutionPersistenceService {
 
     private CreateTaskCommand normalize(CreateTaskCommand command) {
         if (command == null) {
-            throw new IllegalArgumentException("command must not be null");
+            throw new InvalidRequestException("command must not be null");
         }
 
         String source = requireText(command.source(), "source", 64).toLowerCase(Locale.ROOT);
         if (!SOURCE_PATTERN.matcher(source).matches()) {
-            throw new IllegalArgumentException("source contains unsupported characters");
+            throw new InvalidRequestException("source contains unsupported characters");
         }
 
         String caseId = requireText(command.caseId(), "caseId", 64).toLowerCase();
         if (!CASE_ID_PATTERN.matcher(caseId).matches()) {
-            throw new IllegalArgumentException("caseId must match t<number>");
+            throw new InvalidRequestException("caseId must match t<number>");
         }
 
         String sourceRef = nullableText(command.sourceRef(), "sourceRef", 255);
         String title = requireText(command.title(), "title", 255);
         String idempotencyKey = requireText(command.idempotencyKey(), "idempotencyKey", 256);
         if (idempotencyKey.length() < 8) {
-            throw new IllegalArgumentException("idempotencyKey must contain at least 8 characters");
+            throw new InvalidRequestException("idempotencyKey must contain at least 8 characters");
         }
 
         return new CreateTaskCommand(source, sourceRef, caseId, title, idempotencyKey);
@@ -508,14 +509,14 @@ public class TaskExecutionPersistenceService {
 
     private String requireText(String value, String field, int maxLength) {
         if (value == null) {
-            throw new IllegalArgumentException(field + " must not be null");
+            throw new InvalidRequestException(field + " must not be null");
         }
         String normalized = value.trim();
         if (normalized.isEmpty()) {
-            throw new IllegalArgumentException(field + " must not be blank");
+            throw new InvalidRequestException(field + " must not be blank");
         }
         if (normalized.length() > maxLength) {
-            throw new IllegalArgumentException(field + " exceeds max length " + maxLength);
+            throw new InvalidRequestException(field + " exceeds max length " + maxLength);
         }
         return normalized;
     }
@@ -525,7 +526,7 @@ public class TaskExecutionPersistenceService {
         String normalized = value.trim();
         if (normalized.isEmpty()) return null;
         if (normalized.length() > maxLength) {
-            throw new IllegalArgumentException(field + " exceeds max length " + maxLength);
+            throw new InvalidRequestException(field + " exceeds max length " + maxLength);
         }
         return normalized;
     }
@@ -561,10 +562,10 @@ public class TaskExecutionPersistenceService {
     ) {
         public RuntimeBinding {
             if (runtimeExecutionId == null || runtimeExecutionId.isBlank()) {
-                throw new IllegalArgumentException("runtimeExecutionId must not be blank");
+                throw new IllegalStateException("Runtime response is missing runtimeExecutionId");
             }
             if (caseId == null || caseId.isBlank()) {
-                throw new IllegalArgumentException("caseId must not be blank");
+                throw new IllegalStateException("Runtime response is missing caseId");
             }
             Objects.requireNonNull(status, "status");
         }
