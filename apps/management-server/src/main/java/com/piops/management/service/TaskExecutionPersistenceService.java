@@ -157,6 +157,87 @@ public class TaskExecutionPersistenceService {
     }
 
 
+    /**
+     * 尚未产生 Execution 的 Task 可以纯本地取消。
+     * 如果并发 execute 已经抢先创建了 currentExecution，则返回最新 Task 交给上层继续走 Runtime cancel。
+     */
+    @Transactional
+    public ManagementTask cancelTaskIfNotStarted(String taskId) {
+        var task = taskRepository.lockById(requireId(taskId, "taskId"));
+        if (task.status() == TaskStatus.CANCELLED || task.status() == TaskStatus.SUCCEEDED) {
+            return task;
+        }
+        if (task.currentExecutionId() != null) {
+            return task;
+        }
+
+        var now = Instant.now();
+        return taskRepository.update(new ManagementTask(
+                task.taskId(),
+                task.source(),
+                task.sourceRef(),
+                task.caseId(),
+                task.title(),
+                TaskStatus.CANCELLED,
+                null,
+                task.idempotencyKeyHash(),
+                task.version(),
+                task.createdAt(),
+                now
+        ));
+    }
+
+    /**
+     * CREATED 明确表示远程请求尚未开始，因此可以在持锁状态下安全本地取消。
+     * 若并发 execute 已经把它推进到 DISPATCHING/UNKNOWN，则不修改状态，
+     * 由上层通过稳定 Runtime 幂等键对账后再取消。
+     */
+    @Transactional
+    public ManagementExecution cancelBeforeDispatchIfCreated(String executionId) {
+        var execution = executionRepository.lockById(requireId(executionId, "executionId"));
+        var task = taskRepository.lockById(execution.taskId());
+        assertCurrentExecution(task, execution);
+
+        if (isTerminal(execution.status())) {
+            return execution;
+        }
+        if (execution.status() != ExecutionStatus.CREATED) {
+            return execution;
+        }
+
+        var now = Instant.now();
+        var cancelled = executionRepository.update(new ManagementExecution(
+                execution.executionId(),
+                execution.taskId(),
+                execution.attempt(),
+                execution.runtimeRequestId(),
+                execution.investigationId(),
+                ExecutionStatus.CANCELLED,
+                "CANCELLED_BEFORE_DISPATCH",
+                null,
+                execution.startedAt(),
+                now,
+                execution.version(),
+                execution.createdAt(),
+                now
+        ));
+
+        taskRepository.update(new ManagementTask(
+                task.taskId(),
+                task.source(),
+                task.sourceRef(),
+                task.caseId(),
+                task.title(),
+                TaskStatus.CANCELLED,
+                task.currentExecutionId(),
+                task.idempotencyKeyHash(),
+                task.version(),
+                task.createdAt(),
+                now
+        ));
+        return cancelled;
+    }
+
     public ManagementTask getTask(String taskId) {
         return taskRepository.findById(requireId(taskId, "taskId"))
                 .orElseThrow(() -> new ResourceNotFoundException("Management task not found: " + taskId));
