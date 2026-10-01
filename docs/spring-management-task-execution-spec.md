@@ -170,3 +170,46 @@ transaction B:
 ```
 
 远程 HTTP 调用不得进入数据库事务。
+
+
+## 14. Task HTTP API
+
+当前管理面开放以下平台内部接口：
+
+```text
+POST /api/management/tasks
+GET  /api/management/tasks/{taskId}
+POST /api/management/tasks/{taskId}/execute
+POST /api/management/tasks/{taskId}/sync
+```
+
+所有 Task API 使用独立的 `MANAGEMENT_API_TOKEN` 进行 Bearer 鉴权。该 token 与 Node Runtime 的 `AGENT_RUNTIME_EXECUTION_TOKEN` 不同，避免一个凭证同时拥有“进入 Spring 管理面”和“直接调用 Agent Runtime”两种权限。
+
+创建与执行分离：
+
+```text
+POST /tasks
+  -> 幂等落库，不调用模型
+
+POST /tasks/{id}/execute
+  -> reserve MEXEC
+  -> transaction commit
+  -> 调 Node Runtime
+  -> transaction bind result
+```
+
+`sync` 是纯对账操作。如果 Task 没有 currentExecution，则直接返回当前 Task，不得为了同步而隐式创建 Execution。
+
+API View 与 Domain/Persistence Entity 分离；对外不返回 `idempotency_key_hash`、`row_version` 等内部字段。
+
+### 取消暂缓开放
+
+取消的危险窗口：
+
+```text
+MEXEC = DISPATCHING/UNKNOWN
+Spring 尚未拿到 runtimeExecutionId
+Node 可能已经启动 Main Agent
+```
+
+此时直接把 MySQL 状态改成 CANCELLED 会造成“管理面显示已取消，但 Runtime 仍运行”。因此取消接口必须先完成：使用 `management:<MEXEC-id>` 幂等重放/对账 -> 获得真实 Runtime Execution -> Runtime cancel -> 再提交管理面 CANCELLED。实现前不开放表面 cancel API。
