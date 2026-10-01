@@ -42,6 +42,10 @@ public class TaskExecutionOrchestrator {
         }
 
         execution = persistenceService.markDispatching(execution.executionId());
+        if (isTerminal(execution.status())) {
+            return new DispatchResult(persistenceService.getTask(taskId), execution);
+        }
+
         try {
             RuntimeExecution runtime = runtimeClient.createExecution(
                     task.caseId(),
