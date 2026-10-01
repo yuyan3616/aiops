@@ -96,6 +96,7 @@ POST /api/management/tasks
 GET  /api/management/tasks/{taskId}
 POST /api/management/tasks/{taskId}/execute
 POST /api/management/tasks/{taskId}/sync
+POST /api/management/tasks/{taskId}/cancel
 ```
 
 语义约束：
@@ -105,6 +106,7 @@ POST /api/management/tasks/{taskId}/sync
 - 创建 Task 不会自动触发 LLM；
 - `execute` 才会预留 ManagementExecution 并调用 Node Runtime；
 - `sync` 只同步已有 Execution，不会隐式创建新的执行；
-- Task API 响应不会暴露数据库 `row_version` 或 Idempotency-Key hash。
-
-取消接口暂未开放。对于 `DISPATCHING/UNKNOWN`，必须先利用稳定 Runtime 幂等键对账出真实 Runtime Execution，再执行取消，不能只在 MySQL 中标记 CANCELLED。
+- Task API 响应不会暴露数据库 `row_version` 或 Idempotency-Key hash；
+- `cancel` 对未 dispatch 的 CREATED 执行做纯本地取消；
+- 对 `DISPATCHING/UNKNOWN` 且尚未拿到 Runtime Execution ID 的情况，会先利用稳定的 `management:MEXEC-...` 幂等键恢复/确认真实 Runtime Execution，再调用 Runtime cancel；
+- 只有 Runtime 取消结果确认后，管理面才会落终态 CANCELLED，避免“数据库显示已取消但 Main Agent 仍运行”。
