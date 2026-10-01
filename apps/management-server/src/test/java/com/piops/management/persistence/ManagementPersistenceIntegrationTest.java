@@ -47,9 +47,13 @@ class ManagementPersistenceIntegrationTest {
                 "ci-persistence-idempotency-001"
         );
 
-        var firstTask = service.createTaskIfAbsent(command);
-        var replayedTask = service.createTaskIfAbsent(command);
+        var firstResult = service.createTaskIfAbsent(command);
+        var replayedResult = service.createTaskIfAbsent(command);
+        var firstTask = firstResult.task();
+        var replayedTask = replayedResult.task();
 
+        assertThat(firstResult.replayed()).isFalse();
+        assertThat(replayedResult.replayed()).isTrue();
         assertThat(firstTask.taskId()).isEqualTo(replayedTask.taskId());
         assertThat(firstTask.status()).isEqualTo(TaskStatus.PENDING);
         assertThat(firstTask.idempotencyKeyHash()).hasSize(64);
