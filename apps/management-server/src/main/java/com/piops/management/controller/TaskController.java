@@ -76,6 +76,15 @@ public class TaskController {
                 .body(ApiResponse.success(taskManagementService.execute(taskId)));
     }
 
+    @PostMapping("/{taskId}/cancel")
+    public ApiResponse<TaskSnapshot> cancel(
+            @PathVariable
+            @Pattern(regexp = "^TASK-[0-9a-fA-F-]{36}$", message = "invalid task id")
+            String taskId
+    ) {
+        return ApiResponse.success(taskManagementService.cancel(taskId));
+    }
+
     @PostMapping("/{taskId}/sync")
     public ApiResponse<TaskSnapshot> sync(
             @PathVariable
