@@ -6,10 +6,13 @@ import com.piops.management.service.TaskExecutionPersistenceService.CreateTaskCo
 import com.piops.management.service.TaskExecutionPersistenceService.CreateTaskResult;
 import org.springframework.stereotype.Service;
 
+import java.time.Instant;
+
 /**
  * Controller 面向的应用服务门面。
  *
- * Controller 不直接理解 Repository、事务或 Runtime 协议，只操作平台 Task 语义。
+ * API View 与 domain model 分离，避免把 idempotency hash、row version 等内部实现细节
+ * 暴露到外部协议中。
  */
 @Service
 public class TaskManagementService {
@@ -36,12 +39,12 @@ public class TaskManagementService {
 
     public TaskSnapshot execute(String taskId) {
         var result = orchestrator.startOrResume(taskId);
-        return new TaskSnapshot(result.task(), result.execution());
+        return snapshot(result.task(), result.execution());
     }
 
     public TaskSnapshot sync(String taskId) {
         var result = orchestrator.sync(taskId);
-        return new TaskSnapshot(result.task(), result.execution());
+        return snapshot(result.task(), result.execution());
     }
 
     private TaskSnapshot snapshot(ManagementTask task) {
@@ -49,12 +52,72 @@ public class TaskManagementService {
         if (task.currentExecutionId() != null) {
             execution = persistenceService.getExecution(task.currentExecutionId());
         }
-        return new TaskSnapshot(task, execution);
+        return snapshot(task, execution);
+    }
+
+    private TaskSnapshot snapshot(
+            ManagementTask task,
+            ManagementExecution execution
+    ) {
+        return new TaskSnapshot(
+                new TaskView(
+                        task.taskId(),
+                        task.source(),
+                        task.sourceRef(),
+                        task.caseId(),
+                        task.title(),
+                        task.status().name(),
+                        task.currentExecutionId(),
+                        task.createdAt(),
+                        task.updatedAt()
+                ),
+                execution == null ? null : new ExecutionView(
+                        execution.executionId(),
+                        execution.attempt(),
+                        execution.runtimeRequestId(),
+                        execution.investigationId(),
+                        execution.status().name(),
+                        execution.failureCode(),
+                        execution.failureMessage(),
+                        execution.startedAt(),
+                        execution.finishedAt(),
+                        execution.createdAt(),
+                        execution.updatedAt()
+                )
+        );
+    }
+
+    public record TaskView(
+            String taskId,
+            String source,
+            String sourceRef,
+            String caseId,
+            String title,
+            String status,
+            String currentExecutionId,
+            Instant createdAt,
+            Instant updatedAt
+    ) {
+    }
+
+    public record ExecutionView(
+            String executionId,
+            int attempt,
+            String runtimeExecutionId,
+            String investigationId,
+            String status,
+            String failureCode,
+            String failureMessage,
+            Instant startedAt,
+            Instant finishedAt,
+            Instant createdAt,
+            Instant updatedAt
+    ) {
     }
 
     public record TaskSnapshot(
-            ManagementTask task,
-            ManagementExecution execution
+            TaskView task,
+            ExecutionView execution
     ) {
     }
 
