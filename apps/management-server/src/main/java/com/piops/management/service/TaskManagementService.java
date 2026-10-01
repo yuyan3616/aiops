@@ -47,6 +47,11 @@ public class TaskManagementService {
         return snapshot(result.task(), result.execution());
     }
 
+    public TaskSnapshot cancel(String taskId) {
+        var result = orchestrator.cancel(taskId);
+        return snapshot(result.task(), result.execution());
+    }
+
     private TaskSnapshot snapshot(ManagementTask task) {
         ManagementExecution execution = null;
         if (task.currentExecutionId() != null) {
