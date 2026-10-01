@@ -33,6 +33,7 @@ export MANAGEMENT_DB_PORT=3306
 export MANAGEMENT_DB_NAME=management
 export MANAGEMENT_DB_USERNAME=management
 export MANAGEMENT_DB_PASSWORD=replace_me
+export MANAGEMENT_API_TOKEN=replace_with_a_long_random_management_token
 ```
 
 ## 当前 API
@@ -76,3 +77,34 @@ MANAGEMENT_DB_PASSWORD  -> <MySQL service>.MYSQLPASSWORD
 ```
 
 应用启动时由 Flyway 自动执行版本化迁移；`flyway.clean` 已禁用，生产环境不会通过应用执行清库操作。
+
+
+## Task 管理 API
+
+Task API 当前定位为平台内部接口，所有 `/api/management/tasks/**` 请求必须携带：
+
+```http
+Authorization: Bearer <MANAGEMENT_API_TOKEN>
+```
+
+未配置 token 时接口默认关闭，而不是匿名开放。
+
+当前接口：
+
+```text
+POST /api/management/tasks
+GET  /api/management/tasks/{taskId}
+POST /api/management/tasks/{taskId}/execute
+POST /api/management/tasks/{taskId}/sync
+```
+
+语义约束：
+
+- 创建 Task 必须带 `Idempotency-Key`；
+- 首次创建返回 201，幂等重放返回 200 + `replayed=true`；
+- 创建 Task 不会自动触发 LLM；
+- `execute` 才会预留 ManagementExecution 并调用 Node Runtime；
+- `sync` 只同步已有 Execution，不会隐式创建新的执行；
+- Task API 响应不会暴露数据库 `row_version` 或 Idempotency-Key hash。
+
+取消接口暂未开放。对于 `DISPATCHING/UNKNOWN`，必须先利用稳定 Runtime 幂等键对账出真实 Runtime Execution，再执行取消，不能只在 MySQL 中标记 CANCELLED。
