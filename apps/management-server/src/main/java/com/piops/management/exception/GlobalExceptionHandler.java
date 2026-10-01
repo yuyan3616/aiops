@@ -39,7 +39,7 @@ public class GlobalExceptionHandler {
             MethodArgumentNotValidException.class,
             MissingRequestHeaderException.class,
             HttpMessageNotReadableException.class,
-            IllegalArgumentException.class
+            InvalidRequestException.class
     })
     public ResponseEntity<ApiResponse<Void>> handleBadRequest(Exception error) {
         return ResponseEntity
