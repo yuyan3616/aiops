@@ -80,10 +80,77 @@ public class TaskExecutionOrchestrator {
 
         ManagementExecution execution =
                 persistenceService.getExecution(task.currentExecutionId());
-        if (execution.runtimeRequestId() == null) {
+        if (isTerminal(execution.status()) || execution.runtimeRequestId() == null) {
             return new DispatchResult(task, execution);
         }
         return syncKnownRuntime(task, execution);
+    }
+
+    /**
+     * 取消必须以 Runtime 的真实状态为准，不能只改 MySQL。
+     *
+     * 对 DISPATCHING/UNKNOWN 且尚未拿到 runtimeExecutionId 的场景，
+     * 使用稳定 Idempotency-Key 重放 create，以恢复/确认 Runtime Execution，
+     * 再调用 cancel。这样不会留下“管理面已取消、Main Agent 仍在跑”的分叉状态。
+     */
+    public DispatchResult cancel(String taskId) {
+        ManagementTask task = persistenceService.getTask(taskId);
+
+        if (task.currentExecutionId() == null) {
+            task = persistenceService.cancelTaskIfNotStarted(taskId);
+            if (task.currentExecutionId() == null) {
+                return new DispatchResult(task, null);
+            }
+        }
+
+        ManagementExecution execution =
+                persistenceService.getExecution(task.currentExecutionId());
+
+        if (isTerminal(execution.status())) {
+            return new DispatchResult(task, execution);
+        }
+
+        if (execution.status() == ExecutionStatus.CREATED) {
+            execution = persistenceService.cancelBeforeDispatchIfCreated(execution.executionId());
+            if (isTerminal(execution.status())) {
+                return new DispatchResult(persistenceService.getTask(taskId), execution);
+            }
+        }
+
+        try {
+            String runtimeExecutionId = execution.runtimeRequestId();
+            if (runtimeExecutionId == null) {
+                RuntimeExecution recovered = runtimeClient.createExecution(
+                        task.caseId(),
+                        runtimeIdempotencyKey(execution.executionId())
+                );
+                runtimeExecutionId = recovered.runtimeExecutionId();
+
+                // 先持久化恢复出的 Runtime 关联，随后即使 cancel 调用失败也能继续对账。
+                execution = persistenceService.applyRuntimeState(
+                        execution.executionId(),
+                        binding(recovered)
+                );
+
+                if (isTerminal(execution.status())) {
+                    return new DispatchResult(persistenceService.getTask(taskId), execution);
+                }
+            }
+
+            RuntimeExecution cancelled = runtimeClient.cancelExecution(runtimeExecutionId);
+            ManagementExecution updated = persistenceService.applyRuntimeState(
+                    execution.executionId(),
+                    binding(cancelled)
+            );
+            return new DispatchResult(persistenceService.getTask(taskId), updated);
+        } catch (RuntimeClientException error) {
+            ManagementExecution unknown = persistenceService.markUnknown(
+                    execution.executionId(),
+                    error.getCode(),
+                    error.getMessage()
+            );
+            return new DispatchResult(persistenceService.getTask(taskId), unknown);
+        }
     }
 
     private DispatchResult syncKnownRuntime(
