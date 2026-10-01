@@ -34,7 +34,7 @@ Investigation 继续保存 hypothesis、observation、evidence、expert task、t
 
 ## 3. ID 与关系
 
-建议：Task 使用 `TASK-<uuid>`，Execution 使用 `EXEC-<uuid>`，Investigation 继续使用 `INV-...`。
+建议：Task 使用 `TASK-<uuid>`，Spring Management Execution 使用 `MEXEC-<uuid>`，Node Runtime Execution 使用 `EXEC-<uuid>`，Investigation 继续使用 `INV-...`。
 
 关系：Task 1:N Execution；Execution 0..1:1 Investigation。Execution 在 Runtime 请求真正被接受前，investigationId 允许为空。
 
@@ -61,7 +61,7 @@ Spring 可以做只读映射，但不能反向覆盖 Runtime。
 
 ## 6. 创建任务时的幂等
 
-未来 Spring 接受告警平台请求时，应支持 `Idempotency-Key`。数据库必须对可重放请求建立唯一约束，例如 `(source, idempotency_key) UNIQUE`。
+未来 Spring 接受告警平台请求时，应支持 `Idempotency-Key`。数据库必须对可重放请求建立唯一约束，例如 `(source, idempotency_key_hash) UNIQUE`；原始 Idempotency-Key 仅用于计算 SHA-256，不入库。
 
 同一幂等键重复提交时：已创建 Task 就返回已有 Task；已进入执行不得再次触发 Runtime；上一次状态为 UNKNOWN 时先查询/对账，不立即重试。
 
@@ -76,25 +76,23 @@ Spring 可以做只读映射，但不能反向覆盖 Runtime。
 
 两者不能混为一个字段。
 
-## 8. 为什么当前不实现 POST /api/management/tasks → RCA
+## 8. Runtime 外部执行入口
 
-当前 Node 的 `RcaService.beginAgentic()` 只负责初始化 Investigation 和加载 alert context。真正的 Main Agent 调查循环仍然由 Conversation / Pi Main Agent 触发并驱动。
+Runtime 侧已经提供受保护的 Runtime Execution API，并通过专用 Conversation 复用现有 Pi Main Agent：
 
-如果 Spring 现在直接调用 beginAgentic，会出现：Spring 创建 Investigation → 只加载 alert context → 没有 Main Agent 持续推进。
-
-因此在 Runtime 侧形成明确的“外部执行入口”前，Spring 不伪造 Task 创建能力。
-
-下一阶段 Runtime 应先提供真正的执行契约，例如：
-
-    POST /internal/rca/executions
+    Spring MEXEC
         ↓
-    Runtime 创建 execution context
+    POST /api/rca/executions
         ↓
-    启动 Main Agent 调查
+    Runtime Execution (EXEC-...)
         ↓
-    返回 investigationId / runtimeExecutionId
+    Dedicated Conversation
+        ↓
+    Pi Main Agent
+        ↓
+    RCA tools / Investigation
 
-该入口必须复用现有 Main Agent 机制，而不是创建第二套 orchestrator。
+Spring 不直接调用 `RcaService.beginAgentic()`，也不另建第二套 orchestrator。Runtime Execution 负责可靠启动/恢复 Main Agent，Investigation 仍由现有 RCA 链路创建和推进。
 
 ## 9. 数据库边界
 
@@ -128,13 +126,19 @@ management_execution：id、task_id、attempt、runtime_request_id、investigati
 
 因此真正实现 Task 创建 API 前，必须先补 Runtime 幂等协议。
 
-## 12. 当前迭代结论
+## 12. 当前实现状态
 
-本轮 Spring 继续完成管理面基础设施：Request ID、Runtime health、Runtime Client 错误边界、中文设计意图注释、Task / Execution 领域规格。
+当前已经具备：
 
-暂不实现假的内存 TaskRepository，也暂不为了展示 Controller 而制造不可恢复的 Task 数据。
-
-下一步进入持久化实现前，需要先确定 MySQL 表结构、持久层选型、Runtime 外部执行入口以及创建请求的持久化幂等协议。
+- MySQL + Flyway + MyBatis-Plus 持久层；
+- Task / ManagementExecution 数据模型；
+- 数据库级幂等约束；
+- Task 行锁 + row_version 乐观锁；
+- 两段数据库事务与事务外 Runtime HTTP 调用；
+- Runtime Execution 幂等协议；
+- 创建、查询、执行、同步与安全取消 Task API；
+- Management API Token 与 Runtime Execution Token 双重服务边界；
+- 真实 MySQL 8.4 CI 集成测试。
 
 
 ## 13. 持久层实施决策
@@ -181,6 +185,7 @@ POST /api/management/tasks
 GET  /api/management/tasks/{taskId}
 POST /api/management/tasks/{taskId}/execute
 POST /api/management/tasks/{taskId}/sync
+POST /api/management/tasks/{taskId}/cancel
 ```
 
 所有 Task API 使用独立的 `MANAGEMENT_API_TOKEN` 进行 Bearer 鉴权。该 token 与 Node Runtime 的 `AGENT_RUNTIME_EXECUTION_TOKEN` 不同，避免一个凭证同时拥有“进入 Spring 管理面”和“直接调用 Agent Runtime”两种权限。
