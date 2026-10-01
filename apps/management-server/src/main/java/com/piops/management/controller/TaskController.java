@@ -3,6 +3,7 @@ package com.piops.management.controller;
 import com.piops.management.common.ApiResponse;
 import com.piops.management.service.TaskExecutionPersistenceService.CreateTaskCommand;
 import com.piops.management.service.TaskManagementService;
+import com.piops.management.service.TaskManagementService.TaskCreateResult;
 import com.piops.management.service.TaskManagementService.TaskSnapshot;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
@@ -37,13 +38,13 @@ public class TaskController {
      * 这样告警接入、人工审核和真正执行可以拥有不同的权限/审计边界。
      */
     @PostMapping
-    public ResponseEntity<ApiResponse<TaskSnapshot>> create(
+    public ResponseEntity<ApiResponse<TaskCreateResult>> create(
             @RequestHeader(IDEMPOTENCY_HEADER)
             @Size(min = 8, max = 256)
             String idempotencyKey,
             @Valid @RequestBody CreateTaskRequest request
     ) {
-        var snapshot = taskManagementService.create(new CreateTaskCommand(
+        var result = taskManagementService.create(new CreateTaskCommand(
                 request.source(),
                 request.sourceRef(),
                 request.caseId(),
@@ -51,8 +52,8 @@ public class TaskController {
                 idempotencyKey
         ));
         return ResponseEntity
-                .status(HttpStatus.CREATED)
-                .body(ApiResponse.success(snapshot));
+                .status(result.replayed() ? HttpStatus.OK : HttpStatus.CREATED)
+                .body(ApiResponse.success(result));
     }
 
     @GetMapping("/{taskId}")
