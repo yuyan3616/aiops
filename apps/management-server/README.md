@@ -110,3 +110,18 @@ POST /api/management/tasks/{taskId}/cancel
 - `cancel` 对未 dispatch 的 CREATED 执行做纯本地取消；
 - 对 `DISPATCHING/UNKNOWN` 且尚未拿到 Runtime Execution ID 的情况，会先利用稳定的 `management:MEXEC-...` 幂等键恢复/确认真实 Runtime Execution，再调用 Runtime cancel；
 - 只有 Runtime 取消结果确认后，管理面才会落终态 CANCELLED，避免“数据库显示已取消但 Main Agent 仍运行”。
+
+
+## Railway 健康检查
+
+部署 Spring Management Server 时建议：
+
+```text
+Healthcheck Path: /actuator/health/readiness
+```
+
+探针语义：
+
+- `/actuator/health/liveness`：只判断 Spring 进程是否存活，不依赖 MySQL；
+- `/actuator/health/readiness`：包含 MySQL `db` health，数据库不可用时停止接收新流量；
+- Node Agent Runtime 不纳入 Spring readiness，Runtime 短暂不可用会由 Task Execution 的 UNKNOWN/重试语义处理，不触发 Spring 容器重启。
