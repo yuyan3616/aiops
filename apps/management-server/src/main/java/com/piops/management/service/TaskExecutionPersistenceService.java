@@ -17,6 +17,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.HexFormat;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
@@ -400,7 +401,7 @@ public class TaskExecutionPersistenceService {
             throw new IllegalArgumentException("command must not be null");
         }
 
-        String source = requireText(command.source(), "source", 64);
+        String source = requireText(command.source(), "source", 64).toLowerCase(Locale.ROOT);
         if (!SOURCE_PATTERN.matcher(source).matches()) {
             throw new IllegalArgumentException("source contains unsupported characters");
         }
