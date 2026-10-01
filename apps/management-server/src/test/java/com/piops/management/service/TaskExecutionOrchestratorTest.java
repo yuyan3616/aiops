@@ -8,7 +8,6 @@ import com.piops.management.domain.model.ManagementExecution;
 import com.piops.management.domain.model.ManagementTask;
 import com.piops.management.exception.RuntimeClientException;
 import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
 import org.springframework.http.HttpStatus;
 
 import java.time.Instant;
@@ -16,6 +15,7 @@ import java.time.Instant;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class TaskExecutionOrchestratorTest {
@@ -78,11 +78,85 @@ class TaskExecutionOrchestratorTest {
         assertThat(result.execution().status()).isEqualTo(ExecutionStatus.UNKNOWN);
     }
 
+
+    @Test
+    void cancelPendingTaskDoesNotTouchRuntime() {
+        var pending = taskWithoutExecution(TaskStatus.PENDING);
+        var cancelled = taskWithoutExecution(TaskStatus.CANCELLED);
+
+        when(persistence.getTask("TASK-1")).thenReturn(pending);
+        when(persistence.cancelTaskIfNotStarted("TASK-1")).thenReturn(cancelled);
+
+        var result = orchestrator.cancel("TASK-1");
+
+        assertThat(result.task().status()).isEqualTo(TaskStatus.CANCELLED);
+        assertThat(result.execution()).isNull();
+        verifyNoInteractions(runtime);
+    }
+
+    @Test
+    void cancelCreatedExecutionStopsLocallyBeforeRuntimeDispatch() {
+        var runningTask = task(TaskStatus.RUNNING);
+        var cancelledTask = task(TaskStatus.CANCELLED);
+        var created = execution(ExecutionStatus.CREATED, null);
+        var cancelled = execution(ExecutionStatus.CANCELLED, null);
+
+        when(persistence.getTask("TASK-1")).thenReturn(runningTask, cancelledTask);
+        when(persistence.getExecution("MEXEC-1")).thenReturn(created);
+        when(persistence.cancelBeforeDispatchIfCreated("MEXEC-1")).thenReturn(cancelled);
+
+        var result = orchestrator.cancel("TASK-1");
+
+        assertThat(result.execution().status()).isEqualTo(ExecutionStatus.CANCELLED);
+        verifyNoInteractions(runtime);
+    }
+
+    @Test
+    void cancelUnknownExecutionRecoversRuntimeIdempotentlyBeforeCancelling() {
+        var runningTask = task(TaskStatus.RUNNING);
+        var cancelledTask = task(TaskStatus.CANCELLED);
+        var unknown = execution(ExecutionStatus.UNKNOWN, null);
+        var recovered = execution(ExecutionStatus.RUNNING, "EXEC-runtime");
+        var cancelled = execution(ExecutionStatus.CANCELLED, "EXEC-runtime");
+
+        var runtimeRunning = new RuntimeExecution(
+                "EXEC-runtime", "conversation-1", "INV-1", "t039",
+                "running", true, "now", "now", null
+        );
+        var runtimeCancelled = new RuntimeExecution(
+                "EXEC-runtime", "conversation-1", "INV-1", "t039",
+                "cancelled", true, "now", "now", null
+        );
+
+        when(persistence.getTask("TASK-1")).thenReturn(runningTask, cancelledTask);
+        when(persistence.getExecution("MEXEC-1")).thenReturn(unknown);
+        when(runtime.createExecution("t039", "management:MEXEC-1")).thenReturn(runtimeRunning);
+        when(persistence.applyRuntimeState(
+                org.mockito.ArgumentMatchers.eq("MEXEC-1"),
+                org.mockito.ArgumentMatchers.any()
+        )).thenReturn(recovered, cancelled);
+        when(runtime.cancelExecution("EXEC-runtime")).thenReturn(runtimeCancelled);
+
+        var result = orchestrator.cancel("TASK-1");
+
+        assertThat(result.execution().status()).isEqualTo(ExecutionStatus.CANCELLED);
+        verify(runtime).createExecution("t039", "management:MEXEC-1");
+        verify(runtime).cancelExecution("EXEC-runtime");
+    }
+
     private ManagementTask task(TaskStatus status) {
         var now = Instant.now();
         return new ManagementTask(
                 "TASK-1", "ci", "ref", "t039", "title", status,
                 "MEXEC-1", "hash", 1L, now, now
+        );
+    }
+
+    private ManagementTask taskWithoutExecution(TaskStatus status) {
+        var now = Instant.now();
+        return new ManagementTask(
+                "TASK-1", "ci", "ref", "t039", "title", status,
+                null, "hash", 1L, now, now
         );
     }
 
