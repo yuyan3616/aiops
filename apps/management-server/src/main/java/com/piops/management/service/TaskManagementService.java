@@ -3,6 +3,7 @@ package com.piops.management.service;
 import com.piops.management.domain.model.ManagementExecution;
 import com.piops.management.domain.model.ManagementTask;
 import com.piops.management.service.TaskExecutionPersistenceService.CreateTaskCommand;
+import com.piops.management.service.TaskExecutionPersistenceService.CreateTaskResult;
 import org.springframework.stereotype.Service;
 
 /**
@@ -24,9 +25,9 @@ public class TaskManagementService {
         this.orchestrator = orchestrator;
     }
 
-    public TaskSnapshot create(CreateTaskCommand command) {
-        var task = persistenceService.createTaskIfAbsent(command);
-        return snapshot(task);
+    public TaskCreateResult create(CreateTaskCommand command) {
+        CreateTaskResult result = persistenceService.createTaskIfAbsent(command);
+        return new TaskCreateResult(snapshot(result.task()), result.replayed());
     }
 
     public TaskSnapshot get(String taskId) {
@@ -54,6 +55,12 @@ public class TaskManagementService {
     public record TaskSnapshot(
             ManagementTask task,
             ManagementExecution execution
+    ) {
+    }
+
+    public record TaskCreateResult(
+            TaskSnapshot snapshot,
+            boolean replayed
     ) {
     }
 }
