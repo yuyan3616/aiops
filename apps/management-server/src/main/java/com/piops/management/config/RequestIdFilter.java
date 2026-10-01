@@ -5,6 +5,8 @@ import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.core.Ordered;
+import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
@@ -19,6 +21,7 @@ import java.util.regex.Pattern;
  * 未提供或格式不合法时由管理面生成新的 ID。
  */
 @Component
+@Order(Ordered.HIGHEST_PRECEDENCE)
 public class RequestIdFilter extends OncePerRequestFilter {
 
     public static final String HEADER_NAME = "X-Request-ID";
