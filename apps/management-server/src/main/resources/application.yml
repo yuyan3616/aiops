@@ -32,3 +32,20 @@ mybatis-plus:
     map-underscore-to-camel-case: true
   global-config:
     banner: false
+
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+      group:
+        readiness:
+          include: readinessState,db
+        liveness:
+          include: livenessState
