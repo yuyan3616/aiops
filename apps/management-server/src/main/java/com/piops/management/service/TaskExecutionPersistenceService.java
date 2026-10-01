@@ -4,6 +4,8 @@ import com.piops.management.domain.enums.ExecutionStatus;
 import com.piops.management.domain.enums.TaskStatus;
 import com.piops.management.domain.model.ManagementExecution;
 import com.piops.management.domain.model.ManagementTask;
+import com.piops.management.exception.ConflictException;
+import com.piops.management.exception.ResourceNotFoundException;
 import com.piops.management.repository.ExecutionRepository;
 import com.piops.management.repository.TaskRepository;
 import org.springframework.dao.DuplicateKeyException;
@@ -54,7 +56,7 @@ public class TaskExecutionPersistenceService {
      * 原始 Idempotency-Key 只在本方法内参与 hash，不进入数据库。
      */
     @Transactional
-    public ManagementTask createTaskIfAbsent(CreateTaskCommand command) {
+    public CreateTaskResult createTaskIfAbsent(CreateTaskCommand command) {
         var normalized = normalize(command);
         var idempotencyHash = sha256(normalized.idempotencyKey());
         var now = Instant.now();
@@ -74,7 +76,7 @@ public class TaskExecutionPersistenceService {
         );
 
         try {
-            return taskRepository.insert(task);
+            return new CreateTaskResult(taskRepository.insert(task), false);
         } catch (DuplicateKeyException duplicate) {
             var existing = taskRepository
                     .findByIdempotency(normalized.source(), idempotencyHash)
@@ -83,12 +85,12 @@ public class TaskExecutionPersistenceService {
             // 同一个幂等键只能代表同一个逻辑任务，不能悄悄复用到另一个 case/sourceRef。
             if (!existing.caseId().equals(normalized.caseId())
                     || !Objects.equals(existing.sourceRef(), normalized.sourceRef())) {
-                throw new IllegalStateException(
+                throw new ConflictException(
                         "Idempotency key is already bound to a different management task",
                         duplicate
                 );
             }
-            return existing;
+            return new CreateTaskResult(existing, true);
         }
     }
 
@@ -103,7 +105,7 @@ public class TaskExecutionPersistenceService {
         var task = taskRepository.lockById(requireId(taskId, "taskId"));
 
         if (task.status() == TaskStatus.SUCCEEDED || task.status() == TaskStatus.CANCELLED) {
-            throw new IllegalStateException(
+            throw new ConflictException(
                     "Task " + task.taskId() + " is " + task.status() + " and cannot be executed again"
             );
         }
@@ -156,12 +158,12 @@ public class TaskExecutionPersistenceService {
 
     public ManagementTask getTask(String taskId) {
         return taskRepository.findById(requireId(taskId, "taskId"))
-                .orElseThrow(() -> new IllegalArgumentException("Management task not found: " + taskId));
+                .orElseThrow(() -> new ResourceNotFoundException("Management task not found: " + taskId));
     }
 
     public ManagementExecution getExecution(String executionId) {
         return executionRepository.findById(requireId(executionId, "executionId"))
-                .orElseThrow(() -> new IllegalArgumentException(
+                .orElseThrow(() -> new ResourceNotFoundException(
                         "Management execution not found: " + executionId
                 ));
     }
@@ -180,7 +182,7 @@ public class TaskExecutionPersistenceService {
         if (execution.status() != ExecutionStatus.CREATED
                 && execution.status() != ExecutionStatus.DISPATCHING
                 && execution.status() != ExecutionStatus.UNKNOWN) {
-            throw new IllegalStateException(
+            throw new ConflictException(
                     "Execution " + execution.executionId() + " cannot dispatch from " + execution.status()
             );
         }
@@ -366,7 +368,7 @@ public class TaskExecutionPersistenceService {
 
     private void assertCurrentExecution(ManagementTask task, ManagementExecution execution) {
         if (!execution.executionId().equals(task.currentExecutionId())) {
-            throw new IllegalStateException(
+            throw new ConflictException(
                     "Stale execution " + execution.executionId()
                             + " is not current for task " + task.taskId()
             );
@@ -453,6 +455,9 @@ public class TaskExecutionPersistenceService {
         } catch (NoSuchAlgorithmException error) {
             throw new IllegalStateException("SHA-256 is unavailable", error);
         }
+    }
+
+    public record CreateTaskResult(ManagementTask task, boolean replayed) {
     }
 
     public record CreateTaskCommand(
