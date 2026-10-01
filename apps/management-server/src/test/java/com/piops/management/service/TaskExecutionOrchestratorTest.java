@@ -80,6 +80,23 @@ class TaskExecutionOrchestratorTest {
 
 
     @Test
+    void executeDoesNotStartRuntimeWhenConcurrentCancelWinsBeforeDispatch() {
+        var runningTask = task(TaskStatus.RUNNING);
+        var cancelledTask = task(TaskStatus.CANCELLED);
+        var created = execution(ExecutionStatus.CREATED, null);
+        var cancelled = execution(ExecutionStatus.CANCELLED, null);
+
+        when(persistence.getTask("TASK-1")).thenReturn(runningTask, cancelledTask);
+        when(persistence.reserveExecution("TASK-1")).thenReturn(created);
+        when(persistence.markDispatching("MEXEC-1")).thenReturn(cancelled);
+
+        var result = orchestrator.startOrResume("TASK-1");
+
+        assertThat(result.execution().status()).isEqualTo(ExecutionStatus.CANCELLED);
+        verifyNoInteractions(runtime);
+    }
+
+    @Test
     void cancelPendingTaskDoesNotTouchRuntime() {
         var pending = taskWithoutExecution(TaskStatus.PENDING);
         var cancelled = taskWithoutExecution(TaskStatus.CANCELLED);
