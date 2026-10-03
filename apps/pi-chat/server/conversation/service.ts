@@ -90,6 +90,7 @@ export class ConversationService {
   private readonly recordWriteQueues = new Map<string, Promise<void>>();
   private readonly promptPerformance = new Map<string, PromptPerformanceTrace>();
   private readonly pendingTitleRefinements = new Map<string, PendingTitleRefinement>();
+  private acceptingWork = true;
 
   constructor(globalConfig: GlobalConfig, modelRuntime: ModelRuntime, rcaService: RcaService) {
     this.globalConfig = globalConfig;
@@ -114,7 +115,59 @@ export class ConversationService {
   }
 
   close(): void {
+    this.beginShutdown();
+  }
+
+  beginShutdown(): void {
+    if (!this.acceptingWork) return;
+    this.acceptingWork = false;
     clearInterval(this.sweepTimer);
+  }
+
+  async shutdown(timeoutMs = 10_000): Promise<{ timedOut: boolean; activeSessions: number }> {
+    this.beginShutdown();
+    const activeSessions = [...this.managedSessions.values()].filter((managedSession) =>
+      this.isRuntimeBusy(managedSession),
+    );
+
+    const settle = Promise.allSettled(
+      activeSessions.map(async (managedSession) => {
+        this.setStatus(managedSession, "stopping");
+        try {
+          await managedSession.runtime.session.abort();
+        } finally {
+          if (managedSession.status !== "error") {
+            this.setStatus(managedSession, "ready");
+          }
+        }
+      }),
+    );
+
+    let timedOut = false;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      settle,
+      new Promise<void>((resolve) => {
+        timeout = setTimeout(() => {
+          timedOut = true;
+          resolve();
+        }, timeoutMs);
+        timeout.unref();
+      }),
+    ]);
+    if (timeout) clearTimeout(timeout);
+
+    for (const [id, managedSession] of [...this.managedSessions]) {
+      if (!this.isBusy(managedSession)) this.release(id, { dropChannel: false });
+    }
+
+    return { timedOut, activeSessions: activeSessions.length };
+  }
+
+  private assertAcceptingWork(): void {
+    if (!this.acceptingWork) {
+      throw new Error("Server is shutting down and is not accepting new agent work.");
+    }
   }
 
   private positiveDuration(raw: string | undefined, fallback: number): number {
@@ -123,6 +176,7 @@ export class ConversationService {
   }
 
   async createConversation() {
+    this.assertAcceptingWork();
     const conversationId = randomUUID();
     const conversationWorkspaceDir = join(this.globalConfig.workspacesDir, conversationId);
     await mkdir(conversationWorkspaceDir, { recursive: true });
@@ -156,6 +210,7 @@ export class ConversationService {
   }
 
   async send(conversationId: string, userInput: string, skills?: string[]) {
+    this.assertAcceptingWork();
     const requestStartedAt = Date.now();
     const cleanedUserInput = userInput.trim();
     if (!cleanedUserInput || cleanedUserInput.length === 0) {
@@ -389,7 +444,7 @@ export class ConversationService {
     try {
       if (!this.isRuntimeBusy(managedSession)) return;
       this.setStatus(managedSession, "stopping");
-      managedSession.runtime.session.abort();
+      await managedSession.runtime.session.abort();
       this.setStatus(managedSession, "ready");
     } finally {
       this.done(managedSession);
