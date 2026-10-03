@@ -11,6 +11,8 @@ import type {
 import { createPiTracingExtension } from "./pi-tracing-extension";
 
 type Handler = (event: unknown, context: TestContext) => unknown;
+let globalSpanSequence = 0;
+
 interface TestContext {
   model?: { provider?: string; id?: string };
 }
@@ -92,15 +94,14 @@ function createHarness(conversationId = "conversation-test") {
   const metrics: MetricRecord[] = [];
   const logs: Array<{ event: string; fields: Record<string, unknown>; span?: Span }> = [];
   let clockNs = 0n;
-  let spanSequence = 0;
 
   const tracer = {
     startSpan(name: string) {
-      spanSequence += 1;
+      globalSpanSequence += 1;
       const span = new FakeSpan(
         name,
-        spanSequence.toString(16).padStart(32, "0"),
-        spanSequence.toString(16).padStart(16, "0"),
+        globalSpanSequence.toString(16).padStart(32, "0"),
+        globalSpanSequence.toString(16).padStart(16, "0"),
       );
       spans.push(span);
       return span as unknown as Span;
