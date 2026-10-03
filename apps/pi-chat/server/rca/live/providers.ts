@@ -57,9 +57,6 @@ function object(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
-function strings(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
-}
 
 function traceId(value: unknown): string | undefined {
   const id = typeof value === "string" ? value.toLowerCase() : "";
