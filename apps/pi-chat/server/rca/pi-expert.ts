@@ -517,6 +517,9 @@ export class PiExpertRunner {
     const abort = () => session.abort();
     context.signal?.addEventListener("abort", abort, { once: true });
 
+    if (!context.task.context) {
+      throw new Error("Live specialist task is missing IncidentContext");
+    }
     const prompt = {
       brief: context.brief,
       incident: context.task.context,
