@@ -248,6 +248,9 @@ export class ConversationService {
           state: rcaContext.state,
           ...(rcaContext.investigationId ? { investigationId: rcaContext.investigationId } : {}),
           ...(rcaContext.caseId ? { caseId: rcaContext.caseId } : {}),
+          ...(rcaContext.sourceKind ? { sourceKind: rcaContext.sourceKind } : {}),
+          ...(rcaContext.incident?.target ? { target: rcaContext.incident.target } : {}),
+          ...(rcaContext.incident?.window ? { window: rcaContext.incident.window } : {}),
           ...(rcaContext.symptom ? { symptom: rcaContext.symptom } : {}),
           ...(rcaContext.rounds !== undefined ? { rounds: rcaContext.rounds } : {}),
           ...(rcaContext.rootCauseStatus ? { rootCauseStatus: rcaContext.rootCauseStatus } : {}),
@@ -572,7 +575,11 @@ export class ConversationService {
         if (!managed || !investigation.rootCause) return;
         this.pendingTitleRefinements.set(conversationRecord.id, {
           input: {
-            caseId: investigation.caseId,
+            caseId:
+              investigation.caseId ??
+              investigation.context?.target.service ??
+              investigation.context?.target.entity ??
+              investigation.id,
             summary: investigation.rootCause.summary ?? report,
             rootCauseEntities: investigation.rootCause.rootCauseEntities ?? [],
           },
