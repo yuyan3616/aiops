@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { resolveMetricsEndpoint, resolveTraceEndpoint } from "./telemetry";
+import {
+  resolveMetricsEndpoint,
+  resolveServiceInstanceId,
+  resolveTraceEndpoint,
+} from "./telemetry";
 
 test("signal-specific endpoints override the shared OTLP endpoint", () => {
   const env = {
@@ -41,4 +45,19 @@ test("explicit signal suffix on the shared endpoint is not duplicated", () => {
 test("signals remain disabled independently when no endpoint is configured", () => {
   assert.equal(resolveTraceEndpoint({} as NodeJS.ProcessEnv), undefined);
   assert.equal(resolveMetricsEndpoint({} as NodeJS.ProcessEnv), undefined);
+});
+
+test("resolveServiceInstanceId prefers explicit OTel identity and falls back to hostname", () => {
+  assert.equal(
+    resolveServiceInstanceId({
+      OTEL_SERVICE_INSTANCE_ID: "replica-a",
+      HOSTNAME: "container-b",
+    } as NodeJS.ProcessEnv),
+    "replica-a",
+  );
+  assert.equal(
+    resolveServiceInstanceId({ HOSTNAME: "container-b" } as NodeJS.ProcessEnv),
+    "container-b",
+  );
+  assert.equal(resolveServiceInstanceId({} as NodeJS.ProcessEnv), undefined);
 });
