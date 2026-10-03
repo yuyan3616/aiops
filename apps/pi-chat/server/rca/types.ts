@@ -246,11 +246,11 @@ export interface RuntimeResourceSnapshot {
   heapTotalMb: number;
   externalMb: number;
   arrayBuffersMb: number;
-  activeParquetScans: number;
-  maxConcurrentParquetScans: number;
-  totalParquetScans: number;
-  parquetBatchesRead: number;
-  parquetRowsScanned: number;
+  activeParquetScans?: number;
+  maxConcurrentParquetScans?: number;
+  totalParquetScans?: number;
+  parquetBatchesRead?: number;
+  parquetRowsScanned?: number;
 }
 
 export interface ToolCallRecord {
