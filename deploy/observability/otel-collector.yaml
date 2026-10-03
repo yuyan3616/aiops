@@ -68,6 +68,9 @@ exporters:
   otlp_http/loki:
     endpoint: http://loki:3100/otlp
 
+  # Exemplar is intentionally not enabled in this change: the locked OTel JS
+  # metrics exporter does not emit exemplars. Enable OpenMetrics only after
+  # the producer payload probe passes and the deployed Collector version is verified.
   prometheus:
     endpoint: 0.0.0.0:9464
     resource_constant_labels:
