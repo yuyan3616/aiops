@@ -2,10 +2,7 @@ import { trace, type Span } from "@opentelemetry/api";
 import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-http";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { resourceFromAttributes } from "@opentelemetry/resources";
-import {
-  MeterProvider,
-  PeriodicExportingMetricReader,
-} from "@opentelemetry/sdk-metrics";
+import { MeterProvider, PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
 import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 import {
@@ -53,15 +50,11 @@ function resolveSignalEndpoint(
   return `${baseEndpoint.replace(/\/$/, "")}${suffix}`;
 }
 
-export function resolveTraceEndpoint(
-  env: NodeJS.ProcessEnv = process.env,
-): string | undefined {
+export function resolveTraceEndpoint(env: NodeJS.ProcessEnv = process.env): string | undefined {
   return resolveSignalEndpoint("traces", env);
 }
 
-export function resolveMetricsEndpoint(
-  env: NodeJS.ProcessEnv = process.env,
-): string | undefined {
+export function resolveMetricsEndpoint(env: NodeJS.ProcessEnv = process.env): string | undefined {
   return resolveSignalEndpoint("metrics", env);
 }
 
@@ -70,9 +63,7 @@ function positiveInteger(raw: string | undefined, fallback: number): number {
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-export function resolveServiceInstanceId(
-  env: NodeJS.ProcessEnv = process.env,
-): string | undefined {
+export function resolveServiceInstanceId(env: NodeJS.ProcessEnv = process.env): string | undefined {
   return env.OTEL_SERVICE_INSTANCE_ID?.trim() || env.HOSTNAME?.trim() || undefined;
 }
 
@@ -105,10 +96,7 @@ export function startTelemetry(env: NodeJS.ProcessEnv = process.env): boolean {
       });
       nextTraceProvider.register();
       traceProvider = nextTraceProvider;
-      logger.info(
-        { event: "otel.tracing.started", endpoint: traceEndpoint },
-        "OpenTelemetry tracing started",
-      );
+      logger.info({ event: "otel.tracing.started" }, "OpenTelemetry tracing started");
     } catch (error) {
       traceProvider = undefined;
       logger.error(
@@ -134,7 +122,7 @@ export function startTelemetry(env: NodeJS.ProcessEnv = process.env): boolean {
         exportIntervalMillis,
         exportTimeoutMillis,
         cardinalityLimits: {
-          counter: 256,
+          counter: 1024,
           histogram: 1024,
           default: 1024,
         },
@@ -162,7 +150,6 @@ export function startTelemetry(env: NodeJS.ProcessEnv = process.env): boolean {
       logger.info(
         {
           event: "otel.metrics.started",
-          endpoint: metricsEndpoint,
           exportIntervalMillis,
           exportTimeoutMillis,
           exemplars: false,

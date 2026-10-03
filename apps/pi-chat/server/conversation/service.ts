@@ -11,6 +11,7 @@ import {
 } from "@earendil-works/pi-ai";
 import { ModelRuntime, SessionManager, loadSkillsFromDir } from "@earendil-works/pi-coding-agent";
 import type { GlobalConfig } from "@server/config";
+import { settleBeforeDeadline } from "@server/observability/shutdown";
 import {
   conversationRcaContextFromInvestigation,
   idleConversationRcaContext,
@@ -91,6 +92,7 @@ export class ConversationService {
   private readonly promptPerformance = new Map<string, PromptPerformanceTrace>();
   private readonly pendingTitleRefinements = new Map<string, PendingTitleRefinement>();
   private acceptingWork = true;
+  private readonly pendingSends = new Set<Promise<unknown>>();
 
   constructor(globalConfig: GlobalConfig, modelRuntime: ModelRuntime, rcaService: RcaService) {
     this.globalConfig = globalConfig;
@@ -126,42 +128,32 @@ export class ConversationService {
 
   async shutdown(timeoutMs = 10_000): Promise<{ timedOut: boolean; activeSessions: number }> {
     this.beginShutdown();
-    const activeSessions = [...this.managedSessions.values()].filter((managedSession) =>
-      this.isRuntimeBusy(managedSession),
-    );
-
-    const settle = Promise.allSettled(
-      activeSessions.map(async (managedSession) => {
-        this.setStatus(managedSession, "stopping");
-        try {
-          await managedSession.runtime.session.abort();
-        } finally {
-          if (managedSession.status !== "error") {
-            this.setStatus(managedSession, "ready");
+    let activeSessions = 0;
+    const settle = (async () => {
+      // Already admitted sends must finish initialization or reject before the snapshot.
+      await Promise.allSettled([...this.pendingSends]);
+      const busySessions = [...this.managedSessions.values()].filter((session) =>
+        this.isRuntimeBusy(session),
+      );
+      activeSessions = busySessions.length;
+      await Promise.allSettled(
+        busySessions.map(async (managedSession) => {
+          this.setStatus(managedSession, "stopping");
+          try {
+            await managedSession.runtime.session.abort();
+          } finally {
+            if (managedSession.status !== "error") this.setStatus(managedSession, "ready");
           }
-        }
-      }),
-    );
-
-    let timedOut = false;
-    let timeout: ReturnType<typeof setTimeout> | undefined;
-    await Promise.race([
-      settle,
-      new Promise<void>((resolve) => {
-        timeout = setTimeout(() => {
-          timedOut = true;
-          resolve();
-        }, timeoutMs);
-        timeout.unref();
-      }),
-    ]);
-    if (timeout) clearTimeout(timeout);
+        }),
+      );
+    })();
+    const { timedOut } = await settleBeforeDeadline(settle, timeoutMs);
 
     for (const [id, managedSession] of [...this.managedSessions]) {
       if (!this.isBusy(managedSession)) this.release(id, { dropChannel: false });
     }
 
-    return { timedOut, activeSessions: activeSessions.length };
+    return { timedOut, activeSessions };
   }
 
   private assertAcceptingWork(): void {
@@ -206,11 +198,27 @@ export class ConversationService {
       selectedSkills: [],
     };
     await this.conversationRepository.save(conversationRecord);
-    return this.createManagedSession(conversationRecord, sessionManager);
+    this.assertAcceptingWork();
+    const managedSession = await this.createManagedSession(conversationRecord, sessionManager);
+    if (!this.acceptingWork) {
+      this.release(conversationId, { dropChannel: false });
+      this.assertAcceptingWork();
+    }
+    return managedSession;
   }
 
   async send(conversationId: string, userInput: string, skills?: string[]) {
     this.assertAcceptingWork();
+    const task = this.sendAccepted(conversationId, userInput, skills);
+    this.pendingSends.add(task);
+    try {
+      return await task;
+    } finally {
+      this.pendingSends.delete(task);
+    }
+  }
+
+  private async sendAccepted(conversationId: string, userInput: string, skills?: string[]) {
     const requestStartedAt = Date.now();
     const cleanedUserInput = userInput.trim();
     if (!cleanedUserInput || cleanedUserInput.length === 0) {
@@ -233,6 +241,7 @@ export class ConversationService {
       // with the user-facing prompt for the same provider and hurts time-to-first-token.
       await this.ensureFallbackTitle(conversationId, cleanedUserInput);
 
+      this.assertAcceptingWork();
       const purpose: PromptPerformancePurpose = session.isStreaming ? "steer" : "main_chat";
       this.beginPromptPerformance(managedSession, purpose, requestStartedAt);
 
@@ -242,6 +251,7 @@ export class ConversationService {
           ? await this.rcaService.recordUserIntervention(investigationId, cleanedUserInput)
           : undefined;
 
+        this.assertAcceptingWork();
         await session.prompt(cleanedUserInput, {
           streamingBehavior: "steer",
           source: "rpc",
@@ -256,6 +266,7 @@ export class ConversationService {
       runDetached(
         async () => {
           try {
+            this.assertAcceptingWork();
             await session.prompt(cleanedUserInput);
           } finally {
             this.done(managedSession);
@@ -851,6 +862,9 @@ export class ConversationService {
   private done(managedSession: ManagedSession): void {
     managedSession.activeUses--;
     managedSession.lastAccessAt = Date.now();
+    if (!this.acceptingWork && !this.isBusy(managedSession)) {
+      this.release(managedSession.id, { dropChannel: false });
+    }
   }
 
   private async ensureManagedSession(conversationId: string, selectedSkills?: string[]) {
@@ -1025,6 +1039,10 @@ export class ConversationService {
   }
 
   private flushPendingTitleRefinement(managedSession: ManagedSession): void {
+    if (!this.acceptingWork) {
+      this.pendingTitleRefinements.delete(managedSession.id);
+      return;
+    }
     const pending = this.pendingTitleRefinements.get(managedSession.id);
     if (!pending) return;
     this.pendingTitleRefinements.delete(managedSession.id);

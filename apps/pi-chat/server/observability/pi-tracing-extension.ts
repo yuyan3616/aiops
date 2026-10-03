@@ -1,3 +1,4 @@
+import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import {
   ROOT_CONTEXT,
   SpanKind,
@@ -6,17 +7,9 @@ import {
   type Span,
   type Tracer,
 } from "@opentelemetry/api";
-import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
-import {
-  getRuntimeMetrics,
-  getTelemetryTracer,
-  logTelemetryEvent,
-} from "@server/telemetry";
+import { getRuntimeMetrics, getTelemetryTracer, logTelemetryEvent } from "@server/telemetry";
 
-import type {
-  LifecycleOutcome,
-  RuntimeMetricRecorder,
-} from "./pi-runtime-metrics";
+import type { LifecycleOutcome, RuntimeMetricRecorder } from "./pi-runtime-metrics";
 
 interface ActiveLifecycle {
   id: number;
@@ -31,6 +24,7 @@ interface ActiveAgent extends ActiveLifecycle {
   model?: string;
   lastOutcome?: LifecycleOutcome;
   hadChildError: boolean;
+  hadIncompleteChild: boolean;
   lowLevelRuns: number;
 }
 
@@ -40,6 +34,7 @@ interface ActiveTurn extends ActiveLifecycle {
   model?: string;
   agentId?: number;
   hadChildError: boolean;
+  hadIncompleteChild: boolean;
 }
 
 interface ActiveProvider extends ActiveLifecycle {
@@ -68,7 +63,8 @@ type CompletionReason =
   | "agent_closed"
   | "session_shutdown"
   | "process_shutdown"
-  | "turn_end_mismatch";
+  | "turn_end_mismatch"
+  | "child_incomplete";
 
 interface PiTracingDependencies {
   tracer?: Tracer;
@@ -80,6 +76,7 @@ interface PiTracingDependencies {
 export interface PiTracingExtensionOptions {
   conversationId: string;
   dependencies?: PiTracingDependencies;
+  registerDispose?: (dispose: () => void) => void;
 }
 
 const activeLifecycleClosers = new Set<(reason: CompletionReason) => void>();
@@ -104,7 +101,10 @@ function completionReasonForMessage(message: unknown): CompletionReason {
   return "completed";
 }
 
-function toolFailureDetails(result: unknown, isError: boolean): {
+function toolFailureDetails(
+  result: unknown,
+  isError: boolean,
+): {
   outcome: LifecycleOutcome;
   reason: CompletionReason;
 } {
@@ -148,34 +148,26 @@ export function forceClosePiTracingLifecycles(
   }
 }
 
-export function createPiTracingExtension(
-  options: PiTracingExtensionOptions,
-): ExtensionFactory {
+export function createPiTracingExtension(options: PiTracingExtensionOptions): ExtensionFactory {
   return async (pi) => {
     const tracer = options.dependencies?.tracer ?? getTelemetryTracer();
     const metrics = options.dependencies?.metrics ?? getRuntimeMetrics();
-    const log = options.dependencies?.log ?? logTelemetryEvent;
+    const writeLog = options.dependencies?.log ?? logTelemetryEvent;
+    let disposed = false;
     const nowNs = options.dependencies?.nowNs ?? (() => process.hrtime.bigint());
 
     let nextIdentity = 0;
     let agent: ActiveAgent | undefined;
     let activeTurn: ActiveTurn | undefined;
     let activeProvider: ActiveProvider | undefined;
-    const turnsAwaitingEnd: ActiveTurn[] = [];
-    const providersAwaitingHeaders: ActiveProvider[] = [];
-    const providersAwaitingMessageEnd: ActiveProvider[] = [];
-    const agentsAwaitingSettled: ActiveAgent[] = [];
+    let providerCallbacksAmbiguous = false;
     const activeTools = new Map<string, ActiveTool>();
     const toolTombstones = new Map<string, true>();
     const toolTombstoneOrder: string[] = [];
     const diagnostics = new Set<string>();
 
-    const retireProviderHeader = (current: ActiveProvider): void => {
-      const index = providersAwaitingHeaders.indexOf(current);
-      if (index >= 0) providersAwaitingHeaders.splice(index, 1);
-    };
-
     const safeTelemetry = (operation: string, action: () => void): void => {
+      if (disposed) return;
       try {
         action();
       } catch (error) {
@@ -187,6 +179,8 @@ export function createPiTracingExtension(
         );
       }
     };
+
+    const log: typeof writeLog = (...args) => safeTelemetry("log", () => writeLog(...args));
 
     const newIdentity = () => ++nextIdentity;
     const parentContext = (parent?: Span) =>
@@ -208,13 +202,16 @@ export function createPiTracingExtension(
       }
     };
 
-    const markChildOutcome = (
-      turnId: number | undefined,
-      outcome: LifecycleOutcome,
-    ): void => {
+    const markChildOutcome = (turnId: number | undefined, outcome: LifecycleOutcome): void => {
       if (outcome !== "error" && outcome !== "incomplete") return;
-      if (activeTurn && activeTurn.id === turnId) activeTurn.hadChildError = true;
-      if (agent && !agent.closed) agent.hadChildError = true;
+      if (activeTurn && activeTurn.id === turnId) {
+        activeTurn.hadChildError = true;
+        if (outcome === "incomplete") activeTurn.hadIncompleteChild = true;
+      }
+      if (agent && !agent.closed) {
+        agent.hadChildError = true;
+        if (outcome === "incomplete") agent.hadIncompleteChild = true;
+      }
     };
 
     const completeSpan = (
@@ -226,10 +223,13 @@ export function createPiTracingExtension(
       if (active.closed) return undefined;
       active.closed = true;
       const durationSeconds = elapsedSeconds(active.startedAtNs);
-      active.span.setAttribute(durationAttribute, durationSeconds * 1000);
-      active.span.setAttribute("pi.outcome", outcome);
-      active.span.setAttribute("pi.lifecycle.reason", reason);
-      active.span.setStatus({ code: statusCodeForOutcome(outcome) });
+      safeTelemetry("span_attributes", () => {
+        active.span.setAttribute(durationAttribute, durationSeconds * 1000);
+        active.span.setAttribute("pi.outcome", outcome);
+        active.span.setAttribute("pi.lifecycle.complete", outcome !== "incomplete");
+        active.span.setAttribute("pi.lifecycle.reason", reason);
+        active.span.setStatus({ code: statusCodeForOutcome(outcome) });
+      });
       return durationSeconds;
     };
 
@@ -238,22 +238,19 @@ export function createPiTracingExtension(
       outcome: LifecycleOutcome,
       reason: CompletionReason,
     ): void => {
-      const durationSeconds = completeSpan(
-        current,
-        outcome,
-        reason,
-        "pi.provider.duration_ms",
-      );
+      const durationSeconds = completeSpan(current, outcome, reason, "pi.provider.duration_ms");
       if (durationSeconds === undefined) return;
       if (activeProvider === current) activeProvider = undefined;
       markChildOutcome(current.turnId, outcome);
-      metrics?.recordProviderGenerationCompletion({
-        span: current.span,
-        durationSeconds,
-        provider: current.provider,
-        model: current.model,
-        outcome,
-      });
+      safeTelemetry("recordProviderGenerationCompletion", () =>
+        metrics?.recordProviderGenerationCompletion({
+          span: current.span,
+          durationSeconds,
+          provider: current.provider,
+          model: current.model,
+          outcome,
+        }),
+      );
       log(
         "pi.provider.generation.completed",
         {
@@ -271,7 +268,7 @@ export function createPiTracingExtension(
         current.span,
         logLevelForOutcome(outcome),
       );
-      current.span.end();
+      safeTelemetry("span_end", () => current.span.end());
     };
 
     const closeTool = (
@@ -286,12 +283,14 @@ export function createPiTracingExtension(
       }
       rememberToolTombstone(current.toolCallId);
       markChildOutcome(current.turnId, outcome);
-      metrics?.recordToolCompletion({
-        span: current.span,
-        durationSeconds,
-        toolName: current.toolName,
-        outcome,
-      });
+      safeTelemetry("recordToolCompletion", () =>
+        metrics?.recordToolCompletion({
+          span: current.span,
+          durationSeconds,
+          toolName: current.toolName,
+          outcome,
+        }),
+      );
       log(
         "pi.tool.call.completed",
         {
@@ -305,7 +304,7 @@ export function createPiTracingExtension(
         current.span,
         logLevelForOutcome(outcome),
       );
-      current.span.end();
+      safeTelemetry("span_end", () => current.span.end());
     };
 
     const closeTurn = (
@@ -323,23 +322,36 @@ export function createPiTracingExtension(
           closeTool(tool, childOutcome, "turn_closed");
         }
       }
+      if (outcome === "success" && current.hadIncompleteChild) {
+        outcome = "incomplete";
+        reason = "child_incomplete";
+      }
       const durationSeconds = completeSpan(current, outcome, reason, "pi.turn.duration_ms");
       if (durationSeconds === undefined) return;
       if (activeTurn === current) activeTurn = undefined;
-      current.span.setAttribute("pi.had_child_error", current.hadChildError);
+      safeTelemetry("parent_attributes", () => {
+        current.span.setAttribute("pi.had_child_error", current.hadChildError);
+        current.span.setAttribute(
+          "pi.lifecycle.complete",
+          outcome !== "incomplete" && !current.hadIncompleteChild,
+        );
+      });
       if (agent && agent.id === current.agentId) {
         agent.lastOutcome = outcome;
+        if (outcome === "incomplete") agent.hadIncompleteChild = true;
         if (current.hadChildError || outcome === "error" || outcome === "incomplete") {
           agent.hadChildError = true;
         }
       }
-      metrics?.recordTurnCompletion({
-        span: current.span,
-        durationSeconds,
-        provider: current.provider,
-        model: current.model,
-        outcome,
-      });
+      safeTelemetry("recordTurnCompletion", () =>
+        metrics?.recordTurnCompletion({
+          span: current.span,
+          durationSeconds,
+          provider: current.provider,
+          model: current.model,
+          outcome,
+        }),
+      );
       log(
         "pi.model.turn.completed",
         {
@@ -355,7 +367,7 @@ export function createPiTracingExtension(
         current.span,
         logLevelForOutcome(outcome),
       );
-      current.span.end();
+      safeTelemetry("span_end", () => current.span.end());
     };
 
     const closeAgent = (
@@ -365,11 +377,7 @@ export function createPiTracingExtension(
     ): void => {
       if (current.closed) return;
       if (activeTurn && activeTurn.agentId === current.id && !activeTurn.closed) {
-        closeTurn(
-          activeTurn,
-          outcome === "cancelled" ? "cancelled" : "incomplete",
-          "agent_closed",
-        );
+        closeTurn(activeTurn, outcome === "cancelled" ? "cancelled" : "incomplete", "agent_closed");
       }
       if (activeProvider && !activeProvider.closed) {
         closeProvider(
@@ -380,24 +388,34 @@ export function createPiTracingExtension(
       }
       for (const tool of [...activeTools.values()]) {
         if (!tool.closed) {
-          closeTool(
-            tool,
-            outcome === "cancelled" ? "cancelled" : "incomplete",
-            "agent_closed",
-          );
+          closeTool(tool, outcome === "cancelled" ? "cancelled" : "incomplete", "agent_closed");
         }
+      }
+      if (outcome === "success" && current.hadIncompleteChild) {
+        outcome = "incomplete";
+        reason = "child_incomplete";
       }
       const durationSeconds = completeSpan(current, outcome, reason, "pi.agent.duration_ms");
       if (durationSeconds === undefined) return;
       if (agent === current) agent = undefined;
-      current.span.setAttribute("pi.had_child_error", current.hadChildError);
-      current.span.setAttribute("pi.agent.low_level_runs", current.lowLevelRuns);
-      metrics?.recordAgentCompletion({
-        span: current.span,
-        durationSeconds,
-        agentType: current.agentType,
-        outcome,
+      safeTelemetry("parent_attributes", () => {
+        current.span.setAttribute("pi.had_child_error", current.hadChildError);
+        current.span.setAttribute(
+          "pi.lifecycle.complete",
+          outcome !== "incomplete" && !current.hadIncompleteChild,
+        );
       });
+      safeTelemetry("agent_attributes", () =>
+        current.span.setAttribute("pi.agent.low_level_runs", current.lowLevelRuns),
+      );
+      safeTelemetry("recordAgentCompletion", () =>
+        metrics?.recordAgentCompletion({
+          span: current.span,
+          durationSeconds,
+          agentType: current.agentType,
+          outcome,
+        }),
+      );
       log(
         "pi.agent.completed",
         {
@@ -414,7 +432,7 @@ export function createPiTracingExtension(
         current.span,
         logLevelForOutcome(outcome),
       );
-      current.span.end();
+      safeTelemetry("span_end", () => current.span.end());
     };
 
     const forceClose = (reason: CompletionReason): void => {
@@ -434,6 +452,23 @@ export function createPiTracingExtension(
       });
     };
     activeLifecycleClosers.add(forceClose);
+    const dispose = () => {
+      if (disposed) return;
+      try {
+        forceClose("session_shutdown");
+      } finally {
+        disposed = true;
+        activeLifecycleClosers.delete(forceClose);
+        activeTools.clear();
+        toolTombstones.clear();
+        toolTombstoneOrder.length = 0;
+      }
+    };
+    options.registerDispose?.(dispose);
+
+    // Pi reuses transformHeaders for cache refreshes, which have no Agent message_end.
+    // Veto them rather than inventing request identities or mispairing the callbacks.
+    pi.on("cache_warming_decision", () => ({ action: "stop" }));
 
     pi.on("agent_start", (_event, ctx) => {
       safeTelemetry("agent_start", () => {
@@ -474,10 +509,10 @@ export function createPiTracingExtension(
           provider: fields.provider,
           model: fields.model,
           hadChildError: false,
+          hadIncompleteChild: false,
           lowLevelRuns: 1,
         };
         agent = current;
-        agentsAwaitingSettled.push(current);
         log(
           "pi.agent.started",
           {
@@ -495,6 +530,7 @@ export function createPiTracingExtension(
         if (activeTurn && !activeTurn.closed) {
           closeTurn(activeTurn, "incomplete", "superseded_start");
         }
+        providerCallbacksAmbiguous = false;
         const fields = modelFields(ctx.model);
         const span = tracer.startSpan(
           "pi.model.turn",
@@ -519,9 +555,9 @@ export function createPiTracingExtension(
           model: fields.model,
           agentId: agent?.id,
           hadChildError: false,
+          hadIncompleteChild: false,
         };
         activeTurn = current;
-        turnsAwaitingEnd.push(current);
         log(
           "pi.model.turn.started",
           {
@@ -536,12 +572,16 @@ export function createPiTracingExtension(
 
     pi.on("before_provider_headers", (_event, ctx) => {
       safeTelemetry("before_provider_headers", () => {
+        if (!activeTurn || activeTurn.closed || providerCallbacksAmbiguous) return;
         if (activeProvider && !activeProvider.closed) {
+          // No request ID is exposed: a second start is ambiguous, not a safe replacement.
+          providerCallbacksAmbiguous = true;
           closeProvider(activeProvider, "incomplete", "superseded_start");
+          return;
         }
         const fields = modelFields(ctx.model);
         const span = tracer.startSpan(
-          "pi.provider.request",
+          "pi.provider.generation",
           {
             kind: SpanKind.CLIENT,
             attributes: {
@@ -565,8 +605,6 @@ export function createPiTracingExtension(
           headerRecorded: false,
         };
         activeProvider = current;
-        providersAwaitingHeaders.push(current);
-        providersAwaitingMessageEnd.push(current);
         log(
           "pi.provider.generation.started",
           {
@@ -581,7 +619,7 @@ export function createPiTracingExtension(
 
     pi.on("after_provider_response", (event) => {
       safeTelemetry("after_provider_response", () => {
-        const current = providersAwaitingHeaders.shift();
+        const current = activeProvider;
         if (!current || current.closed || current.headerRecorded) return;
         current.headerRecorded = true;
         current.httpStatusCode = event.status;
@@ -592,13 +630,15 @@ export function createPiTracingExtension(
         );
         current.span.setAttribute("http.response.status_code", event.status);
         const headerOutcome = event.status >= 400 ? "error" : "success";
-        metrics?.recordProviderResponseHeader({
-          span: current.span,
-          durationSeconds,
-          provider: current.provider,
-          model: current.model,
-          outcome: headerOutcome,
-        });
+        safeTelemetry("recordProviderResponseHeader", () =>
+          metrics?.recordProviderResponseHeader({
+            span: current.span,
+            durationSeconds,
+            provider: current.provider,
+            model: current.model,
+            outcome: headerOutcome,
+          }),
+        );
         log(
           "pi.provider.response_headers",
           {
@@ -619,13 +659,8 @@ export function createPiTracingExtension(
       safeTelemetry("message_end", () => {
         const message = event.message as { role?: string };
         if (message?.role !== "assistant") return;
-        const current = providersAwaitingMessageEnd.shift();
+        const current = activeProvider;
         if (!current) return;
-        // Pi guarantees after_provider_response (when present) before stream completion.
-        // Once message_end arrives, no response-header callback for this generation can
-        // still legitimately arrive, so retire any unmatched header tombstone.
-        retireProviderHeader(current);
-        if (current.closed) return;
         const outcome = assistantMessageOutcome(event.message);
         closeProvider(current, outcome, completionReasonForMessage(event.message));
       });
@@ -705,10 +740,15 @@ export function createPiTracingExtension(
 
     pi.on("turn_end", (event) => {
       safeTelemetry("turn_end", () => {
-        const current = turnsAwaitingEnd.shift();
+        const current = activeTurn;
         if (!current || current.closed) return;
         if (current.turnIndex !== event.turnIndex) {
-          closeTurn(current, "incomplete", "turn_end_mismatch");
+          log(
+            "pi.model.turn.late_end.ignored",
+            { conversationId: options.conversationId, turnIndex: event.turnIndex },
+            undefined,
+            "warn",
+          );
           return;
         }
         const outcome = assistantMessageOutcome(event.message);
@@ -718,15 +758,12 @@ export function createPiTracingExtension(
 
     pi.on("agent_settled", () => {
       safeTelemetry("agent_settled", () => {
-        const current = agentsAwaitingSettled.shift();
+        const current = agent;
         if (!current || current.closed) return;
         closeAgent(current, current.lastOutcome ?? "success", "completed");
       });
     });
 
-    pi.on("session_shutdown", () => {
-      forceClose("session_shutdown");
-      activeLifecycleClosers.delete(forceClose);
-    });
+    pi.on("session_shutdown", dispose);
   };
 }

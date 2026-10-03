@@ -64,7 +64,7 @@ const SYSTEM_PROMPT = `你是 Pi Chat，一名面向 SRE 场景的故障排查�
 
 服务端只负责工具边界、证据校验、持久化、取消和子 Session 调度；调查规划、假设管理、dispatch 决策和最终综合由你负责。
 
-界面里展示的 thinking stream 来自 Pi runtime 本身。不要在普通回答里伪造固定步骤、假思考过程或模板化调查旁白。`
+界面里展示的 thinking stream 来自 Pi runtime 本身。不要在普通回答里伪造固定步骤、假思考过程或模板化调查旁白。`;
 
 const utcTimeTool = defineTool({
   name: "utc_time",
@@ -100,8 +100,7 @@ export async function createRuntime(options: RuntimeOptions) {
     pi.on("before_agent_start", async (event) => {
       if (!getRcaContext) return;
       const context = await getRcaContext();
-      event.systemPromptOptions.sections.rca_context =
-        renderConversationRcaContext(context);
+      event.systemPromptOptions.sections.rca_context = renderConversationRcaContext(context);
     });
   };
   let runtimeSessionManager = sessionManager;
@@ -112,48 +111,72 @@ export async function createRuntime(options: RuntimeOptions) {
   }
 
   const factory: CreateAgentSessionRuntimeFactory = async ({ cwd, agentDir, sessionManager }) => {
-    const services = await createAgentSessionServices({
-      cwd,
-      agentDir,
-      modelRuntime,
-      resourceLoaderOptions: {
-        noExtensions: true,
-        systemPromptOverride: () => SYSTEM_PROMPT,
-        additionalExtensionPaths: [webAccessExtensionPath, langfuseExtensionPath],
-        extensionFactories: [
-          rcaContextExtension,
-          createPiTracingExtension({ conversationId: conversationRecord.id }),
-          async (pi) => {
-            const packageName = "pi-mcp-adapter";
-            const { createMcpAdapter } = (await import(packageName)) as {
-              createMcpAdapter(options: { configPath: string }): ExtensionFactory;
-            };
-            await createMcpAdapter({ configPath: globalConfig.mcpConfigPath })(pi);
-          },
-        ],
-        noSkills: true,
-        additionalSkillPaths: [globalConfig.skillsDir],
-        skillsOverride: (base) => ({
-          ...base,
-          skills: base.skills.filter((skill) => selectedSkillsSet.has(skill.name)),
-        }),
-      },
-    });
-    const toolDefinitions = [utcTimeTool, ...customTools];
-    const agentSession = await createAgentSessionFromServices({
-      services,
-      sessionManager,
-      noTools: "builtin",
-      tools: toolDefinitions.map((tool) => tool.name),
-      customTools: toolDefinitions,
-    });
+    let disposeTracing = () => {};
+    try {
+      const services = await createAgentSessionServices({
+        cwd,
+        agentDir,
+        modelRuntime,
+        resourceLoaderOptions: {
+          noExtensions: true,
+          systemPromptOverride: () => SYSTEM_PROMPT,
+          additionalExtensionPaths: [webAccessExtensionPath, langfuseExtensionPath],
+          extensionFactories: [
+            rcaContextExtension,
+            createPiTracingExtension({
+              conversationId: conversationRecord.id,
+              registerDispose: (dispose) => {
+                disposeTracing = dispose;
+              },
+            }),
+            async (pi) => {
+              const packageName = "pi-mcp-adapter";
+              const { createMcpAdapter } = (await import(packageName)) as {
+                createMcpAdapter(options: { configPath: string }): ExtensionFactory;
+              };
+              await createMcpAdapter({ configPath: globalConfig.mcpConfigPath })(pi);
+            },
+          ],
+          noSkills: true,
+          additionalSkillPaths: [globalConfig.skillsDir],
+          skillsOverride: (base) => ({
+            ...base,
+            skills: base.skills.filter((skill) => selectedSkillsSet.has(skill.name)),
+          }),
+        },
+      });
+      const toolDefinitions = [utcTimeTool, ...customTools];
+      const agentSession = await createAgentSessionFromServices({
+        services,
+        sessionManager,
+        noTools: "builtin",
+        tools: toolDefinitions.map((tool) => tool.name),
+        customTools: toolDefinitions,
+      });
 
-    await agentSession.session.bindExtensions({});
-    return {
-      ...agentSession,
-      services,
-      diagnostics: services.diagnostics,
-    };
+      const disposeSession = agentSession.session.dispose.bind(agentSession.session);
+      agentSession.session.dispose = () => {
+        try {
+          disposeTracing();
+        } finally {
+          disposeSession();
+        }
+      };
+      try {
+        await agentSession.session.bindExtensions({});
+      } catch (error) {
+        agentSession.session.dispose();
+        throw error;
+      }
+      return {
+        ...agentSession,
+        services,
+        diagnostics: services.diagnostics,
+      };
+    } catch (error) {
+      disposeTracing();
+      throw error;
+    }
   };
   return createAgentSessionRuntime(factory, {
     cwd: conversationRecord.workspaceDir,

@@ -1,8 +1,8 @@
-# Target Observability 三信号关联与应用指标规格 v3
+# Target Observability 三信号关联与应用指标规格 v4
 
-状态：**Target 侧实现完成并通过仓库 CI；生产部署验收未执行；Exemplar 明确不可用。**  
-目标分支：`target/production-baseline`。  
-实施起点：`70cb7f744881073991f13935646f5e9c076df7d1`。  
+状态：**Target 侧完成生命周期边界修正；验证结果见 validation 文档；生产部署验收未执行；Exemplar 明确不可用。**
+目标分支：`target/production-baseline`。
+实施起点：`70cb7f744881073991f13935646f5e9c076df7d1`。
 公共合同：`docs/telemetry-contract-v1.md`，本轮**不改变其既有语义**。
 
 ## 1. 本轮结论
@@ -42,7 +42,9 @@ Target 侧已经完成以下能力：
 
 ### 2.1 response-header latency
 
-`before_provider_headers` 在顶层 Provider generation 发出前触发。  
+`before_provider_headers` 是请求 headers transform hook，本身不保证请求来源只限主 generation。Pi 0.86.1 cache warmer 也会复用它，且缓存刷新没有主 Agent 的 Assistant `message_end`。
+
+本实现通过 Pi 的 `cache_warming_decision` 返回 `action=stop`，在刷新请求发出前否决 cache warming，不修改用户持久化设置。只为 active model turn 内的单一 generation 建立 Provider Span；这牺牲缓存预热收益，以保持生命周期配对可信。
 `after_provider_response` 在 HTTP response 已收到、响应体流消费之前触发。
 
 因此：
@@ -71,7 +73,7 @@ Pi 0.86.1 的 `message_end` 在 Assistant 流完整消费并归一化为最终 A
 
 `before_provider_headers → message_end`
 
-并在 `message_end` 前后保持同一个 Provider Span。
+并在流消费期间保持同一个 `pi.provider.generation` Span，到 `message_end` 结束。它不是合同 v1 的 `pi.provider.request` attempt Span。
 
 实现指标：
 
@@ -135,7 +137,11 @@ Pino severity 与 lifecycleStatus 分离：
 - incomplete → warn
 - error → error
 
-同一 lifecycle 只允许 completion 一次。关闭时先将 lifecycle 标记 closed，再写 Metric/Log/Span end。
+同一 lifecycle 只允许 completion 一次。关闭时先将 lifecycle 标记 closed，再写 Metric/Log/Span end。Metric、Log 和 Span 更新分别隔离异常；写入失败不阻止其他 lifecycle 或 Span end。
+
+未解释的 incomplete 子操作会让父级原本的 success 降为 incomplete，并保留 `pi.lifecycle.complete=false`。真实 error 后的已完成重试仍可以让 Agent 最终 success；error/cancelled 的业务 outcome 不被覆盖，但缺失子生命周期的完整性仍为 false。
+
+Host 显式注册 extension disposer，并在真实 `session.dispose()`、初始化失败和 Pi `session_shutdown` 时幂等执行，注销进程级 closer；不能假设 Pi dispose 会发出 shutdown event。
 
 Active lifecycle 保存开始时稳定身份：
 
@@ -149,13 +155,15 @@ Active lifecycle 保存开始时稳定身份：
 
 duration 使用 `process.hrtime.bigint()` 差值，Metrics 记录秒。
 
-### 4.1 Provider callback 排队
+### 4.1 Provider callback 配对边界
 
-Provider hooks 没有 attempt/generation ID，因此使用事件顺序队列配对。
+依赖锁定 Pi 的串行 turn 顺序，并在上面的 cache-warming veto 前提下配对。headers response 若存在，先于 Assistant `message_end`；直接关联当前唯一 active Provider，不维护跨 turn 的 FIFO/tombstone 队列。
 
-`message_end` 到达后，会清除该 generation 尚未匹配的 header 生命周期。依据 Pi 的真实调用顺序：如果 `after_provider_response` 存在，它一定发生在 body stream 完成和 `message_end` 之前。
+同一 turn 内尚未完成的 Provider 收到第二次 start 时，没有可靠 ID 能判断来源：将原 Provider 记 incomplete，停止本 turn 的后续 Provider 配对，不猜测 callback 归属。下一 turn 重新开始。
 
-这样可以避免“连接在 response 前失败”后留下 header tombstone，污染下一次 generation。
+turn 关闭时清理本 turn 的 active Provider，缺失 completion 不会占用下一 turn 的 callback。不同 turnIndex 的迟到 turn end 被忽略。Tool 因有稳定 toolCallId，可独立忽略迟到结果。
+
+不承诺在任意乱序、同索引的跨运行迟到 callback 下精确还原请求。未来 Pi hook 或串行顺序变更时需要重新验证，不能靠扩张 tombstone 队列猜测身份。
 
 ### 4.2 Tool
 
@@ -214,6 +222,8 @@ provider/model/tool_name 使用环境 allowlist：
 未配置或未命中的值统一为 `other`。
 
 详细原值仍可存在于 Trace/Log，不进入 Metric label。
+
+Counter/Histogram/default 使用相同的 1024 aggregation cardinality limit。allowlist 上限不是 series 预算：需要计算实际 provider×model×status 组合、other、instance 与 histogram buckets。超过 SDK limit 时会进入 overflow 聚合；验收应检查 overflow，不能把未保留的细分标签当作零请求。
 
 ## 8. Context
 
@@ -313,12 +323,14 @@ Collector → Prometheus 的最终 `job/instance/target_info` 映射仍需生产
 进程关闭顺序：
 
 1. `beginShutdown()` 停止接受新的 create/send Agent 工作并停止 Session sweeper。
-2. HTTP server 停止接收新连接。
-3. 对正在运行的 Pi Session 调用并 `await session.abort()`；Pi 0.86.1 的 abort 会等待 agent idle。
-4. 在 `PI_CHAT_SHUTDOWN_TIMEOUT_MS` deadline 内等待 server + Session drain。
-5. deadline 到达时将残留 telemetry lifecycle 强制以 `incomplete` 关闭。
-6. Trace Provider 与 Metrics Provider 分别 `forceFlush()` / `shutdown()`；一个失败不会跳过另一个。
-7. 退出进程。
+2. HTTP server 停止接收新连接；已准入但仍在初始化/标题处理的 send 在真正 prompt 前再次检查关闭状态。
+3. 等待这些 send 完成准备或拒绝，再取 busy Session 快照并 `await session.abort()`；Pi 0.86.1 abort 等待 agent idle。
+4. `PI_CHAT_SHUTDOWN_TIMEOUT_MS` 是 drain + final export 的共同 wall-clock deadline；为导出预留 min(2s, 20%)，其余用于 server/session drain。
+5. drain 超时强制关闭 HTTP 连接，将残留 telemetry lifecycle 以 incomplete 关闭。
+6. Trace/Metrics Provider 分别 flush/shutdown，并只等待总 deadline 的剩余时间；拒绝 drain 也执行关闭与导出。
+7. exporter 超时写明诊断后退出进程。timeout 后才初始化完成的 send 不能启动 prompt，并释放其 idle Session；shutdown 后不启动新的标题优化。
+
+该 deadline 限制进程等待，不代表 exporter 已完成，也不保证所有 final samples 被接收。
 
 SIGKILL 等不可拦截终止仍不能保证最终 export。
 
@@ -337,9 +349,9 @@ SIGKILL 等不可拦截终止仍不能保证最终 export。
 - dangling。
 - duplicate start。
 - late end。
-- provider callback queue/tombstone。
-- 并发 conversation Context。
-- shutdown。
+- Provider 重复 start 的保守降级及缺失 completion 后的下一 turn。
+- 真实 TracerProvider 验证并发 conversation 的 traceId 和 parentSpanId。
+- shutdown 准入竞态、abort 等待、释放和 drain/export 共同 deadline。
 - Counter/Histogram completion 恰好一次。
 - label allowlist / other。
 - unit/bucket/instrument name。
@@ -353,13 +365,13 @@ SIGKILL 等不可拦截终止仍不能保证最终 export。
 
 已经实现的 Agent/Turn/Tool 指标保持 v1 语义。
 
-v1 的 Provider request/attempt 指标仍为 **capability unavailable**，而不是改变为 generation 语义。
+v1 的 `pi.provider.request` attempt Span 与 Provider request/attempt 指标仍为 **capability unavailable**，而不是改变为 generation 语义。
 
 Target 新增 generation 指标属于生产者扩展；main 若未来需要消费，必须单独同步合同，至少新增：
 
 - provider generation 的定义。
 - generation vs provider-internal attempt 的区别。
-- generation Counter/Histogram 名称。
+- `pi.provider.generation` Span 和 generation Counter/Histogram 名称。
 - `providerGenerationLifecycle=true` / `providerAttemptLifecycle=false` capability。
 
 在此之前 main 不应将 generation 指标映射成 v1 Provider request 指标。

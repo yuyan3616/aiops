@@ -1,14 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { Span, Tracer } from "@opentelemetry/api";
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import type { Span, Tracer } from "@opentelemetry/api";
+import {
+  AlwaysOnSampler,
+  BasicTracerProvider,
+  InMemorySpanExporter,
+  SimpleSpanProcessor,
+} from "@opentelemetry/sdk-trace-base";
 
-import type {
-  LifecycleOutcome,
-  RuntimeMetricRecorder,
-} from "./pi-runtime-metrics";
-import { createPiTracingExtension } from "./pi-tracing-extension";
+import type { LifecycleOutcome, RuntimeMetricRecorder } from "./pi-runtime-metrics";
+import { createPiTracingExtension, forceClosePiTracingLifecycles } from "./pi-tracing-extension";
 
 type Handler = (event: unknown, context: TestContext) => unknown;
 let globalSpanSequence = 0;
@@ -91,12 +94,13 @@ interface MetricRecord {
   span: Span;
 }
 
-function createHarness(conversationId = "conversation-test") {
+function createHarness(conversationId = "conversation-test", tracerOverride?: Tracer) {
   const handlers = new Map<string, Handler[]>();
   const spans: FakeSpan[] = [];
   const metrics: MetricRecord[] = [];
   const logs: Array<{ event: string; fields: Record<string, unknown>; span?: Span }> = [];
   let clockNs = 0n;
+  let dispose = () => {};
 
   const tracer = {
     startSpan(name: string) {
@@ -172,8 +176,11 @@ function createHarness(conversationId = "conversation-test") {
 
   const extension = createPiTracingExtension({
     conversationId,
+    registerDispose: (cleanup) => {
+      dispose = cleanup;
+    },
     dependencies: {
-      tracer,
+      tracer: tracerOverride ?? tracer,
       metrics: recorder,
       nowNs: () => clockNs,
       log(event, fields, span) {
@@ -187,6 +194,7 @@ function createHarness(conversationId = "conversation-test") {
   };
 
   return {
+    dispose: () => dispose(),
     handlers,
     spans,
     metrics,
@@ -198,17 +206,12 @@ function createHarness(conversationId = "conversation-test") {
       clockNs += BigInt(milliseconds) * 1_000_000n;
     },
     emit(event: string, payload: unknown = {}, overrideContext: TestContext = context) {
-      for (const handler of handlers.get(event) ?? []) {
-        handler(payload, overrideContext);
-      }
+      return (handlers.get(event) ?? []).map((handler) => handler(payload, overrideContext));
     },
   };
 }
 
-function assistant(
-  stopReason: "stop" | "error" | "aborted" = "stop",
-  errorMessage?: string,
-) {
+function assistant(stopReason: "stop" | "error" | "aborted" = "stop", errorMessage?: string) {
   return {
     role: "assistant",
     stopReason,
@@ -220,18 +223,22 @@ test("Pi tracing extension registers the real 0.86.1 lifecycle hooks", async () 
   const harness = createHarness();
   await harness.bind();
 
-  assert.deepEqual([...harness.handlers.keys()], [
-    "agent_start",
-    "turn_start",
-    "before_provider_headers",
-    "after_provider_response",
-    "message_end",
-    "tool_execution_start",
-    "tool_execution_end",
-    "turn_end",
-    "agent_settled",
-    "session_shutdown",
-  ]);
+  assert.deepEqual(
+    [...harness.handlers.keys()],
+    [
+      "cache_warming_decision",
+      "agent_start",
+      "turn_start",
+      "before_provider_headers",
+      "after_provider_response",
+      "message_end",
+      "tool_execution_start",
+      "tool_execution_end",
+      "turn_end",
+      "agent_settled",
+      "session_shutdown",
+    ],
+  );
 });
 
 test("normal completion records headers, full generation, tool, turn and agent exactly once", async () => {
@@ -267,17 +274,9 @@ test("normal completion records headers, full generation, tool, turn and agent e
   assert.equal(h.metrics.filter((record) => record.kind === "tool").length, 1);
   assert.equal(h.metrics.filter((record) => record.kind === "turn").length, 1);
   assert.equal(h.metrics.filter((record) => record.kind === "agent").length, 1);
-  assert.equal(
-    h.metrics.find((record) => record.kind === "headers")?.durationSeconds,
-    0.1,
-  );
-  assert.equal(
-    h.metrics.find((record) => record.kind === "provider")?.durationSeconds,
-    1,
-  );
-  assert.ok(
-    (h.metrics.find((record) => record.kind === "turn")?.durationSeconds ?? 0) > 1,
-  );
+  assert.equal(h.metrics.find((record) => record.kind === "headers")?.durationSeconds, 0.1);
+  assert.equal(h.metrics.find((record) => record.kind === "provider")?.durationSeconds, 1);
+  assert.ok((h.metrics.find((record) => record.kind === "turn")?.durationSeconds ?? 0) > 1);
   assert.ok(h.spans.every((span) => span.endCount === 1));
 });
 
@@ -295,14 +294,8 @@ test("slow headers and slow streaming remain separate measurements", async () =>
   h.emit("turn_end", { turnIndex: 0, message: assistant() });
   h.emit("agent_settled");
 
-  assert.equal(
-    h.metrics.find((record) => record.kind === "headers")?.durationSeconds,
-    2,
-  );
-  assert.equal(
-    h.metrics.find((record) => record.kind === "provider")?.durationSeconds,
-    7,
-  );
+  assert.equal(h.metrics.find((record) => record.kind === "headers")?.durationSeconds, 2);
+  assert.equal(h.metrics.find((record) => record.kind === "provider")?.durationSeconds, 7);
 });
 
 test("stream error wins over successful HTTP headers", async () => {
@@ -410,9 +403,7 @@ test("tool error and timeout are completed once with stable start identity", asy
   );
   assert.ok(
     h.logs.some(
-      (entry) =>
-        entry.event === "pi.tool.call.completed" &&
-        entry.fields.reason === "tool_timeout",
+      (entry) => entry.event === "pi.tool.call.completed" && entry.fields.reason === "tool_timeout",
     ),
   );
 });
@@ -429,6 +420,9 @@ test("duplicate tool start, dangling close and late end cannot close a replaceme
 
   assert.equal(h.metrics.filter((record) => record.kind === "tool").length, 1);
   assert.equal(h.metrics.find((record) => record.kind === "tool")?.outcome, "incomplete");
+  assert.equal(h.metrics.find((record) => record.kind === "turn")?.outcome, "incomplete");
+  h.emit("agent_settled");
+  assert.equal(h.metrics.find((record) => record.kind === "agent")?.outcome, "incomplete");
 
   h.emit("tool_execution_end", {
     toolCallId: "same",
@@ -441,34 +435,26 @@ test("duplicate tool start, dangling close and late end cannot close a replaceme
   assert.equal(h.metrics.filter((record) => record.kind === "tool").length, 1);
 });
 
-test("provider tombstones consume late callbacks instead of touching the next generation", async () => {
+test("ambiguous duplicate provider start never guesses callback ownership", async () => {
   const h = createHarness();
   await h.bind();
-
   h.emit("agent_start");
   h.emit("turn_start", { turnIndex: 0 });
   h.emit("before_provider_headers");
-  h.advance(10);
   h.emit("before_provider_headers");
-
-  assert.equal(h.metrics.filter((record) => record.kind === "provider").length, 1);
-  assert.equal(h.metrics.find((record) => record.kind === "provider")?.outcome, "incomplete");
-
-  h.advance(10);
-  h.emit("after_provider_response", { status: 500 });
-  h.emit("message_end", { message: assistant("error", "late old completion") });
-
-  assert.equal(h.metrics.filter((record) => record.kind === "provider").length, 1);
-  assert.equal(h.metrics.filter((record) => record.kind === "headers").length, 0);
-
-  h.advance(10);
   h.emit("after_provider_response", { status: 200 });
-  h.advance(10);
   h.emit("message_end", { message: assistant() });
-
-  assert.equal(h.metrics.filter((record) => record.kind === "headers").length, 1);
-  assert.equal(h.metrics.filter((record) => record.kind === "provider").length, 2);
-  assert.equal(h.metrics.filter((record) => record.kind === "provider")[1]?.outcome, "success");
+  h.emit("turn_end", { turnIndex: 0, message: assistant() });
+  h.emit("agent_settled");
+  assert.deepEqual(
+    h.metrics.map((record) => [record.kind, record.outcome]),
+    [
+      ["provider", "incomplete"],
+      ["turn", "incomplete"],
+      ["agent", "incomplete"],
+    ],
+  );
+  h.dispose();
 });
 
 test("provider generation without response headers does not poison the next header callback", async () => {
@@ -494,14 +480,9 @@ test("provider generation without response headers does not poison the next head
   h.emit("message_end", { message: assistant() });
 
   assert.equal(h.metrics.filter((record) => record.kind === "headers").length, 1);
-  assert.equal(
-    h.metrics.find((record) => record.kind === "headers")?.outcome,
-    "success",
-  );
+  assert.equal(h.metrics.find((record) => record.kind === "headers")?.outcome, "success");
   assert.deepEqual(
-    h.metrics
-      .filter((record) => record.kind === "provider")
-      .map((record) => record.outcome),
+    h.metrics.filter((record) => record.kind === "provider").map((record) => record.outcome),
     ["error", "success"],
   );
 });
@@ -554,4 +535,121 @@ test("independent extension instances keep concurrent conversation spans isolate
     leftProvider.span.spanContext().traceId,
     rightProvider.span.spanContext().traceId,
   );
+});
+
+test("cache refresh is vetoed before it can invoke provider headers", async () => {
+  const h = createHarness();
+  await h.bind();
+  assert.deepEqual(h.emit("cache_warming_decision", { action: "refresh" }), [{ action: "stop" }]);
+  h.emit("before_provider_headers"); // No model turn: do not invent a generation.
+  assert.equal(h.spans.length, 0);
+  h.dispose();
+});
+
+test("missing provider completion cannot poison the following turn", async () => {
+  const h = createHarness();
+  await h.bind();
+  h.emit("agent_start");
+  h.emit("turn_start", { turnIndex: 0 });
+  h.emit("before_provider_headers");
+  h.emit("turn_end", { turnIndex: 0, message: assistant() });
+  h.emit("turn_start", { turnIndex: 1 });
+  h.emit("before_provider_headers");
+  h.emit("after_provider_response", { status: 200 });
+  h.emit("message_end", { message: assistant() });
+  h.emit("turn_end", { turnIndex: 1, message: assistant() });
+  h.emit("agent_settled");
+  assert.deepEqual(
+    h.metrics.filter((m) => m.kind === "provider").map((m) => m.outcome),
+    ["incomplete", "success"],
+  );
+  assert.equal(h.metrics.find((m) => m.kind === "agent")?.outcome, "incomplete");
+  h.dispose();
+});
+
+test("host disposal is idempotent and ignores later callbacks", async () => {
+  const h = createHarness();
+  await h.bind();
+  h.emit("agent_start");
+  h.emit("turn_start", { turnIndex: 0 });
+  h.emit("before_provider_headers");
+  h.dispose();
+  const count = h.metrics.length;
+  h.dispose();
+  h.emit("agent_start");
+  h.emit("before_provider_headers");
+  h.emit("message_end", { message: assistant() });
+  forceClosePiTracingLifecycles();
+  assert.equal(h.metrics.length, count);
+  assert.ok(h.spans.every((span) => span.endCount === 1));
+});
+
+test("failed completion logging or recording cannot leave spans open", async () => {
+  const h = createHarness();
+  await h.bind();
+  h.emit("agent_start");
+  h.emit("turn_start", { turnIndex: 0 });
+  h.emit("before_provider_headers");
+  h.logs.push = () => {
+    throw new Error("logger failure");
+  };
+  h.metrics.push = () => {
+    throw new Error("recorder failure");
+  };
+  h.emit("message_end", { message: assistant() });
+  h.emit("turn_end", { turnIndex: 0, message: assistant() });
+  h.emit("agent_settled");
+  h.dispose();
+  assert.ok(h.spans.every((span) => span.endCount === 1));
+});
+
+test("real tracer preserves parentage and context across parallel conversations", async () => {
+  const exporter = new InMemorySpanExporter();
+  const provider = new BasicTracerProvider({
+    sampler: new AlwaysOnSampler(),
+    spanProcessors: [new SimpleSpanProcessor(exporter)],
+  });
+  const left = createHarness("real-left", provider.getTracer("test"));
+  const right = createHarness("real-right", provider.getTracer("test"));
+  try {
+    await Promise.all([left.bind(), right.bind()]);
+    for (const h of [left, right]) {
+      h.emit("agent_start");
+      h.emit("turn_start", { turnIndex: 0 });
+    }
+    for (const h of [right, left]) {
+      h.emit("before_provider_headers");
+      h.emit("message_end", { message: assistant() });
+      h.emit("tool_execution_start", { toolCallId: "tool", toolName: "read" });
+      h.emit("tool_execution_end", { toolCallId: "tool", isError: false, result: {} });
+      h.emit("turn_end", { turnIndex: 0, message: assistant() });
+      h.emit("agent_settled");
+    }
+    await provider.forceFlush();
+    const spans = exporter.getFinishedSpans();
+    const roots = spans.filter((span) => span.name === "pi.agent.run");
+    assert.equal(roots.length, 2);
+    assert.notEqual(roots[0].spanContext().traceId, roots[1].spanContext().traceId);
+    for (const root of roots) {
+      const related = spans.filter(
+        (span) => span.spanContext().traceId === root.spanContext().traceId,
+      );
+      assert.equal(related.length, 4);
+      const turn = related.find((span) => span.name === "pi.model.turn")!;
+      assert.equal(turn.parentSpanContext?.spanId, root.spanContext().spanId);
+      for (const span of related.filter(
+        (span) => span.name === "pi.provider.generation" || span.name === "pi.tool.call",
+      )) {
+        assert.equal(span.parentSpanContext?.spanId, turn.spanContext().spanId);
+      }
+    }
+    for (const h of [left, right]) {
+      const traceIds = new Set(h.metrics.map((m) => m.span.spanContext().traceId));
+      assert.equal(traceIds.size, 1);
+    }
+  } finally {
+    left.dispose();
+    right.dispose();
+    await provider.shutdown();
+  }
 });

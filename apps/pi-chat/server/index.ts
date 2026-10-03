@@ -10,9 +10,9 @@ import { RcaService } from "@server/rca/service";
 import { ObservabilityToolRegistry } from "@server/rca/tools";
 
 import { ensureDir, getGlobalConfig } from "./config";
-import { forceClosePiTracingLifecycles } from "./observability/pi-tracing-extension";
-import { settleBeforeDeadline } from "./observability/shutdown";
 import { ensurePackyModelsConfig } from "./model-provider";
+import { forceClosePiTracingLifecycles } from "./observability/pi-tracing-extension";
+import { drainAndFlush } from "./observability/shutdown";
 import { shutdownTelemetry } from "./telemetry";
 
 const globalConfig = getGlobalConfig();
@@ -65,10 +65,9 @@ async function shutdown() {
   if (closing) return;
   closing = true;
 
-  const shutdownDeadlineMs = Math.max(
-    1_000,
-    Number(process.env.PI_CHAT_SHUTDOWN_TIMEOUT_MS ?? 10_000) || 10_000,
-  );
+  const requestedTimeout = Number(process.env.PI_CHAT_SHUTDOWN_TIMEOUT_MS ?? 10_000);
+  const shutdownDeadlineMs =
+    Number.isSafeInteger(requestedTimeout) && requestedTimeout >= 1_000 ? requestedTimeout : 10_000;
   service.beginShutdown();
 
   let exitCode = 0;
@@ -79,24 +78,28 @@ async function shutdown() {
     };
     closableServer.closeIdleConnections?.();
     const serverClosed = new Promise<void>((resolve) => server.close(() => resolve()));
-    const draining = Promise.all([serverClosed, service.shutdown(shutdownDeadlineMs)]);
-    const result = await settleBeforeDeadline(draining, shutdownDeadlineMs);
-
-    const serviceTimedOut = result.value?.[1].timedOut ?? false;
-    if (result.timedOut || serviceTimedOut) {
-      process.stderr.write(
-        `Shutdown deadline reached after ${shutdownDeadlineMs}ms; forcing incomplete telemetry close.\n`,
-      );
-      closableServer.closeAllConnections?.();
+    const result = await drainAndFlush({
+      timeoutMs: shutdownDeadlineMs,
+      drain: () => Promise.all([serverClosed, service.shutdown(shutdownDeadlineMs)]),
+      forceClose: (timedOut) => {
+        if (timedOut) {
+          process.stderr.write(
+            "Runtime drain deadline reached; forcing incomplete telemetry close.\n",
+          );
+          closableServer.closeAllConnections?.();
+        }
+        forceClosePiTracingLifecycles("process_shutdown");
+      },
+      flush: shutdownTelemetry,
+    });
+    if (result.flushTimedOut) {
+      process.stderr.write("Telemetry export exceeded the remaining shutdown deadline.\n");
     }
   } catch (error) {
     exitCode = 1;
     process.stderr.write(
       `Runtime drain failed: ${error instanceof Error ? error.message : String(error)}\n`,
     );
-  } finally {
-    forceClosePiTracingLifecycles("process_shutdown");
-    await shutdownTelemetry();
   }
 
   process.exit(exitCode);

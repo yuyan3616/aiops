@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - target/production-baseline
   pull_request:
     paths:
       - "apps/pi-chat/**"

@@ -1,7 +1,7 @@
 # Target Observability 验证记录
 
-日期：2026-10-03  
-分支：`target/production-baseline`  
+日期：2026-10-03
+分支：`target/production-baseline`
 实施起点：`70cb7f744881073991f13935646f5e9c076df7d1`
 
 ## 1. 验证环境
@@ -16,15 +16,15 @@
 - `pnpm --filter pi-chat test`
 - `pnpm --filter pi-chat build`
 
-临时 Draft PR #24 仅用于触发现有 pull_request CI，不合并到 main。
+临时 Draft PR #24 已关闭且未合并。修正前 CI 与本轮验证分开登记，不把旧 CI 成功当作新代码通过。
 
 ## 2. 已通过 CI
 
-代码 SHA `124cc0b031996a6b5e26e98e9d8d8dbf7609b3c5`：
+修正前代码 SHA `eab69889ab64d948a562385cbaca5fc5cb050698`：
 
 - GitHub Actions workflow：`pi-chat-ci`
-- run number：365
-- run id：37129309168
+- run number：367
+- run id：37129662107
 - conclusion：success
 
 该运行包括：
@@ -34,6 +34,23 @@
 - lint：success
 - unit tests：success
 - build：success
+
+### 本轮边界修正验证
+
+本轮基于以上 SHA 修正：cache warming veto、重复 Provider start 的保守降级、父级 incomplete 传播、host dispose 清理、shutdown 准入与共同 deadline，以及 generation Span 合同命名。
+
+新增回归覆盖：真实 TracerProvider 并发父子关系、dangling 父级状态、缺失 Provider end 后下一 turn、host dispose 幂等及迟到 callback、失败 Log/Metric 的 Span 收尾、初始化/标题准备期间 shutdown、await abort、hung drain/exporter 与异常 drain 收尾。
+
+本轮本地验证环境：Node.js 24.19.0，pnpm 11.25.0。已通过：
+
+- `pnpm install --frozen-lockfile`（锁文件无变化）。
+- typecheck。
+- lint（无 error，保留仓库原有 warning）。
+- unit tests：114 项，112 passed，2 skipped，0 failed；跳过的是缺少本地 RCA100 t039 数据的集成用例，与本轮 Target 修正无关。
+- build。
+- 真实 OTLP Exemplar probe 仍确认 `exemplars=false`。
+
+工作流新增 Target 分支 push 触发，无需重新打开临时 PR。本轮远程 CI 尚待提交后运行；不能用上面的旧 CI 记录替代。生产验收仍未执行。
 
 ## 3. Exemplar 真实验证
 
@@ -72,11 +89,13 @@
 
 - `after_provider_response` 是 response 收到、body stream 消费前事件。
 - `message_end` 是完整 Assistant stream 归一化完成后的消息结束事件。
+- cache warmer 会复用 before_provider_headers；本轮通过 cache_warming_decision=stop 在请求前 veto。
 - Provider SDK 内部 retry 没有暴露稳定 attempt start/end identity 给 coding-agent extension。
 
 因此实现：
 
 - response-header latency：`before_provider_headers → after_provider_response`
+- provider generation Span：`pi.provider.generation`，不占用 v1 attempt 名称。
 - provider generation duration：`before_provider_headers → message_end`
 - provider-internal attempt lifecycle：unavailable
 

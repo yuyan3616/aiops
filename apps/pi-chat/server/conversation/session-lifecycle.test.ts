@@ -9,6 +9,9 @@ import { ConversationService } from "./service";
 
 type PrivateService = {
   ensureManagedSession(id: string): Promise<Session>;
+  send(id: string, input: string): Promise<unknown>;
+  beginShutdown(): void;
+  shutdown(timeoutMs?: number): Promise<{ timedOut: boolean; activeSessions: number }>;
   withSessionLock<T>(id: string, task: () => Promise<T>): Promise<T>;
   done(session: Session): void;
   sweepIdleSessions(): Promise<void>;
@@ -31,6 +34,8 @@ type Session = {
 function service(): PrivateService {
   const instance = Object.create(ConversationService.prototype) as PrivateService;
   Object.assign(instance, {
+    acceptingWork: true,
+    pendingSends: new Set(),
     sessionLocks: new Map(),
     managedSessions: new Map(),
     channels: new Map(),
@@ -170,4 +175,126 @@ test("delete waits for initialization, then rejects a running session", async ()
   await initializing;
   await assert.rejects(deleting, /busy/);
   assert.strictEqual(instances.get("a"), target);
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+test("shutdown rejects a send already waiting on title preparation and disposes its session", async () => {
+  const subject = service();
+  const root = await mkdtemp(join(tmpdir(), "shutdown-admission-"));
+  const preparing = deferred<void>();
+  const resume = deferred<void>();
+  let prompts = 0;
+  let disposed = 0;
+  const target = session("a", undefined, () => {
+    disposed++;
+  });
+  target.activeUses = 1;
+  Object.assign(target.runtime.session, {
+    prompt: async () => {
+      prompts++;
+    },
+  });
+  const instances = new Map([["a", target]]);
+  Object.assign(subject, {
+    globalConfig: { skillsDir: root },
+    managedSessions: instances,
+    ensureManagedSession: async () => target,
+    ensureFallbackTitle: async () => {
+      preparing.resolve();
+      await resume.promise;
+    },
+  });
+  try {
+    const sending = subject.send("a", "hello");
+    const rejected = assert.rejects(sending, /shutting down/);
+    await preparing.promise;
+    const closing = subject.shutdown(500);
+    resume.resolve();
+    await rejected;
+    assert.equal((await closing).timedOut, false);
+    assert.equal(prompts, 0);
+    assert.equal(disposed, 1);
+    assert.equal(instances.size, 0);
+    await assert.rejects(subject.send("b", "hello"), /shutting down/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("session initialization completing after shutdown timeout cannot start a prompt", async () => {
+  const subject = service();
+  const root = await mkdtemp(join(tmpdir(), "shutdown-cold-"));
+  const initialized = deferred<Session>();
+  let prompts = 0;
+  let disposed = 0;
+  const target = session("a", undefined, () => {
+    disposed++;
+  });
+  target.activeUses = 1;
+  Object.assign(target.runtime.session, {
+    prompt: async () => {
+      prompts++;
+    },
+  });
+  const instances = new Map<string, Session>();
+  Object.assign(subject, {
+    globalConfig: { skillsDir: root },
+    managedSessions: instances,
+    ensureManagedSession: async () => {
+      const created = await initialized.promise;
+      instances.set("a", created);
+      return created;
+    },
+    ensureFallbackTitle: async () => {},
+  });
+  try {
+    const sending = subject.send("a", "hello");
+    const rejected = assert.rejects(sending, /shutting down/);
+    assert.equal((await subject.shutdown(5)).timedOut, true);
+    initialized.resolve(target);
+    await rejected;
+    assert.equal(prompts, 0);
+    assert.equal(disposed, 1);
+    assert.equal(instances.size, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("shutdown awaits Pi abort before disposing an active session", async () => {
+  const subject = service();
+  const idle = deferred<void>();
+  const abortStarted = deferred<void>();
+  let disposed = 0;
+  const target = session("a", undefined, () => {
+    disposed++;
+  });
+  target.status = "running";
+  target.runtime.session.isStreaming = true;
+  Object.assign(target.runtime.session, {
+    abort: async () => {
+      abortStarted.resolve();
+      await idle.promise;
+      target.runtime.session.isStreaming = false;
+    },
+  });
+  Object.assign(subject, {
+    managedSessions: new Map([["a", target]]),
+    setStatus: (current: Session, status: string) => {
+      current.status = status;
+    },
+  });
+  const closing = subject.shutdown(500);
+  await abortStarted.promise;
+  assert.equal(disposed, 0);
+  idle.resolve();
+  assert.deepEqual(await closing, { timedOut: false, activeSessions: 1 });
+  assert.equal(disposed, 1);
 });
