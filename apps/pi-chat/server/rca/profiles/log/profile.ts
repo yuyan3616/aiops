@@ -21,7 +21,7 @@ export const logProfile: ExpertProfile = {
   role: "log",
   label: "Log 调查",
   systemPrompt: loadProfileText(import.meta.url, "./SYSTEM.md"),
-  tools: ["get_log_fields", "query_logs"],
+  tools: ["search_logs"],
   modalities: ["log"],
   maxToolCalls: 12,
   selectSkills: (brief) => {
