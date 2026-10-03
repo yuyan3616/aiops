@@ -82,28 +82,30 @@ test("runtime metric instruments are centralized with seconds units", () => {
 test("histogram views use explicit second-scale boundaries", () => {
   const views = createPiRuntimeMetricViews();
   const byName = new Map(views.map((view) => [view.instrumentName, view]));
+  const boundariesOf = (instrumentName: string) =>
+    (
+      byName.get(instrumentName)?.aggregation as
+        | { options?: { boundaries?: number[] } }
+        | undefined
+    )?.options?.boundaries;
 
   const providerView = byName.get(RUNTIME_METRIC_INSTRUMENTS.providerGenerationDuration);
   const toolView = byName.get(RUNTIME_METRIC_INSTRUMENTS.toolCallDuration);
   const turnView = byName.get(RUNTIME_METRIC_INSTRUMENTS.modelTurnDuration);
 
+  assert.ok(providerView);
+  assert.ok(toolView);
+  assert.ok(turnView);
   assert.deepEqual(
-    providerView?.aggregation &&
-      "options" in providerView.aggregation
-      ? providerView.aggregation.options?.boundaries
-      : undefined,
+    boundariesOf(RUNTIME_METRIC_INSTRUMENTS.providerGenerationDuration),
     [...HISTOGRAM_BOUNDARIES_SECONDS.provider],
   );
   assert.deepEqual(
-    toolView?.aggregation && "options" in toolView.aggregation
-      ? toolView.aggregation.options?.boundaries
-      : undefined,
+    boundariesOf(RUNTIME_METRIC_INSTRUMENTS.toolCallDuration),
     [...HISTOGRAM_BOUNDARIES_SECONDS.tool],
   );
   assert.deepEqual(
-    turnView?.aggregation && "options" in turnView.aggregation
-      ? turnView.aggregation.options?.boundaries
-      : undefined,
+    boundariesOf(RUNTIME_METRIC_INSTRUMENTS.modelTurnDuration),
     [...HISTOGRAM_BOUNDARIES_SECONDS.agentTurn],
   );
 });
@@ -164,11 +166,12 @@ test("metric add and record receive the lifecycle span context explicitly", () =
     outcome: "success",
   });
 
+  const providerInstrumentNames = new Set<string>([
+    RUNTIME_METRIC_INSTRUMENTS.providerGenerations,
+    RUNTIME_METRIC_INSTRUMENTS.providerGenerationDuration,
+  ]);
   const providerPoints = h.points.filter((point) =>
-    [
-      RUNTIME_METRIC_INSTRUMENTS.providerGenerations,
-      RUNTIME_METRIC_INSTRUMENTS.providerGenerationDuration,
-    ].includes(point.instrument),
+    providerInstrumentNames.has(point.instrument),
   );
   assert.equal(providerPoints.length, 2);
   for (const point of providerPoints) {
