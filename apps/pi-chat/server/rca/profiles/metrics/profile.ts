@@ -21,7 +21,7 @@ export const metricsProfile: ExpertProfile = {
   role: "metrics",
   label: "Metrics 调查",
   systemPrompt: loadProfileText(import.meta.url, "./SYSTEM.md"),
-  tools: ["get_metric_catalog", "query_metrics"],
+  tools: ["discover_metrics", "query_metrics"],
   modalities: ["metric"],
   maxToolCalls: 12,
   toolBudgets: { query_metrics: 6 },
