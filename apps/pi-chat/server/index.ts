@@ -10,6 +10,8 @@ import { RcaService } from "@server/rca/service";
 import { ObservabilityToolRegistry } from "@server/rca/tools";
 
 import { ensureDir, getGlobalConfig } from "./config";
+import { forceClosePiTracingLifecycles } from "./observability/pi-tracing-extension";
+import { settleBeforeDeadline } from "./observability/shutdown";
 import { ensurePackyModelsConfig } from "./model-provider";
 import { shutdownTelemetry } from "./telemetry";
 
@@ -62,10 +64,38 @@ let closing = false;
 async function shutdown() {
   if (closing) return;
   closing = true;
-  service.close();
-  await new Promise<void>((resolve) => server.close(() => resolve()));
-  await shutdownTelemetry();
-  process.exit(0);
+
+  const shutdownDeadlineMs = Math.max(
+    1_000,
+    Number(process.env.PI_CHAT_SHUTDOWN_TIMEOUT_MS ?? 10_000) || 10_000,
+  );
+  service.beginShutdown();
+
+  let exitCode = 0;
+  try {
+    server.closeIdleConnections?.();
+    const serverClosed = new Promise<void>((resolve) => server.close(() => resolve()));
+    const draining = Promise.all([serverClosed, service.shutdown(shutdownDeadlineMs)]);
+    const result = await settleBeforeDeadline(draining, shutdownDeadlineMs);
+
+    const serviceTimedOut = result.value?.[1].timedOut ?? false;
+    if (result.timedOut || serviceTimedOut) {
+      process.stderr.write(
+        `Shutdown deadline reached after ${shutdownDeadlineMs}ms; forcing incomplete telemetry close.\n`,
+      );
+      server.closeAllConnections?.();
+    }
+  } catch (error) {
+    exitCode = 1;
+    process.stderr.write(
+      `Runtime drain failed: ${error instanceof Error ? error.message : String(error)}\n`,
+    );
+  } finally {
+    forceClosePiTracingLifecycles("process_shutdown");
+    await shutdownTelemetry();
+  }
+
+  process.exit(exitCode);
 }
 
 function handleShutdown() {
