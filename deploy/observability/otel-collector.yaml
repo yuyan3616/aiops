@@ -90,6 +90,6 @@ service:
       exporters: [otlp_http/loki]
 
     metrics:
-      receivers: [host_metrics, docker_stats]
+      receivers: [otlp, host_metrics, docker_stats]
       processors: [batch]
       exporters: [prometheus]
