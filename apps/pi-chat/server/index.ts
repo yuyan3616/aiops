@@ -73,7 +73,11 @@ async function shutdown() {
 
   let exitCode = 0;
   try {
-    server.closeIdleConnections?.();
+    const closableServer = server as typeof server & {
+      closeIdleConnections?: () => void;
+      closeAllConnections?: () => void;
+    };
+    closableServer.closeIdleConnections?.();
     const serverClosed = new Promise<void>((resolve) => server.close(() => resolve()));
     const draining = Promise.all([serverClosed, service.shutdown(shutdownDeadlineMs)]);
     const result = await settleBeforeDeadline(draining, shutdownDeadlineMs);
@@ -83,7 +87,7 @@ async function shutdown() {
       process.stderr.write(
         `Shutdown deadline reached after ${shutdownDeadlineMs}ms; forcing incomplete telemetry close.\n`,
       );
-      server.closeAllConnections?.();
+      closableServer.closeAllConnections?.();
     }
   } catch (error) {
     exitCode = 1;
