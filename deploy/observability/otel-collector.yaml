@@ -11,7 +11,7 @@ receivers:
 
   # Only the aiops-rca-target Docker log directory should be mounted here.
   # This avoids recursively collecting Collector/Loki logs.
-  filelog/target:
+  file_log/target:
     include:
       - /var/log/aiops-target/*.log
     start_at: end
@@ -50,6 +50,6 @@ service:
       exporters: [debug, otlp_http/tempo]
 
     logs:
-      receivers: [filelog/target]
+      receivers: [file_log/target]
       processors: [batch]
       exporters: [otlp_http/loki]
