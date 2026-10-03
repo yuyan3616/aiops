@@ -10,7 +10,7 @@ export RCA100_CASES_DIR="${RCA100_CASES_DIR:-/app/apps/pi-chat/.rca-data/cases}"
 
 PUBLIC_PORT="${PORT:-3000}"
 
-pnpm exec tsx --tsconfig tsconfig.node.json server/index.ts &
+pnpm exec tsx --tsconfig tsconfig.node.json server/bootstrap.ts &
 API_PID=$!
 
 pnpm exec vite preview --host 0.0.0.0 --port "$PUBLIC_PORT" &

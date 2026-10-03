@@ -10,7 +10,13 @@ import {
   type ThinkingLevel,
 } from "@earendil-works/pi-ai";
 import { ModelRuntime, SessionManager, loadSkillsFromDir } from "@earendil-works/pi-coding-agent";
+import { context, SpanKind, SpanStatusCode, trace, type Span } from "@opentelemetry/api";
 import type { GlobalConfig } from "@server/config";
+import {
+  getTelemetryTracer,
+  logTelemetryEvent,
+  telemetryTraceFields,
+} from "@server/telemetry";
 import {
   conversationRcaContextFromInvestigation,
   idleConversationRcaContext,
@@ -89,6 +95,9 @@ export class ConversationService {
   private readonly sessionLocks = new Map<string, Promise<void>>();
   private readonly recordWriteQueues = new Map<string, Promise<void>>();
   private readonly promptPerformance = new Map<string, PromptPerformanceTrace>();
+  private readonly mainAgentSpans = new Map<string, Span>();
+  private readonly providerSpans = new Map<string, { span: Span; startedAt: number }>();
+  private readonly toolSpans = new Map<string, { span: Span; startedAt: number }>();
   private readonly pendingTitleRefinements = new Map<string, PendingTitleRefinement>();
 
   constructor(globalConfig: GlobalConfig, modelRuntime: ModelRuntime, rcaService: RcaService) {
@@ -187,9 +196,11 @@ export class ConversationService {
           ? await this.rcaService.recordUserIntervention(investigationId, cleanedUserInput)
           : undefined;
 
-        await session.prompt(cleanedUserInput, {
-          streamingBehavior: "steer",
-          source: "rpc",
+        await this.traceSteer(managedSession, async () => {
+          await session.prompt(cleanedUserInput, {
+            streamingBehavior: "steer",
+            source: "rpc",
+          });
         });
 
         if (investigationId && intervention) {
@@ -201,7 +212,9 @@ export class ConversationService {
       runDetached(
         async () => {
           try {
-            await session.prompt(cleanedUserInput);
+            await this.traceMainAgentRun(managedSession, async () => {
+              await session.prompt(cleanedUserInput);
+            });
           } finally {
             this.done(managedSession);
           }
@@ -623,6 +636,257 @@ export class ConversationService {
     return channel;
   }
 
+  private telemetryParentContext(conversationId: string) {
+    const parent = this.mainAgentSpans.get(conversationId);
+    return parent ? trace.setSpan(context.active(), parent) : context.active();
+  }
+
+  private async traceMainAgentRun(
+    managedSession: ManagedSession,
+    run: () => Promise<void>,
+  ): Promise<void> {
+    const model = managedSession.runtime.session.agent.state.model;
+    await getTelemetryTracer().startActiveSpan(
+      "pi.main_agent.run",
+      {
+        kind: SpanKind.INTERNAL,
+        attributes: {
+          "conversation.id": managedSession.id,
+          "gen_ai.system": model.provider,
+          "gen_ai.request.model": model.id,
+        },
+      },
+      async (span) => {
+        const startedAt = Date.now();
+        this.mainAgentSpans.set(managedSession.id, span);
+        logTelemetryEvent(
+          "pi.main_agent.started",
+          {
+            conversationId: managedSession.id,
+            provider: model.provider,
+            model: model.id,
+          },
+          span,
+        );
+        try {
+          await run();
+          span.setStatus({ code: SpanStatusCode.OK });
+          logTelemetryEvent(
+            "pi.main_agent.completed",
+            {
+              conversationId: managedSession.id,
+              provider: model.provider,
+              model: model.id,
+              durationMs: Date.now() - startedAt,
+              status: "success",
+            },
+            span,
+          );
+        } catch (error) {
+          span.setStatus({ code: SpanStatusCode.ERROR });
+          logTelemetryEvent(
+            "pi.main_agent.completed",
+            {
+              conversationId: managedSession.id,
+              provider: model.provider,
+              model: model.id,
+              durationMs: Date.now() - startedAt,
+              status: "error",
+              errorType: error instanceof Error ? error.name : "Error",
+            },
+            span,
+          );
+          throw error;
+        } finally {
+          if (this.mainAgentSpans.get(managedSession.id) === span) {
+            this.mainAgentSpans.delete(managedSession.id);
+          }
+          span.end();
+        }
+      },
+    );
+  }
+
+  private async traceSteer(
+    managedSession: ManagedSession,
+    run: () => Promise<void>,
+  ): Promise<void> {
+    const parentContext = this.telemetryParentContext(managedSession.id);
+    const span = getTelemetryTracer().startSpan(
+      "pi.agent.steer",
+      {
+        kind: SpanKind.INTERNAL,
+        attributes: { "conversation.id": managedSession.id },
+      },
+      parentContext,
+    );
+    const startedAt = Date.now();
+    try {
+      await context.with(trace.setSpan(parentContext, span), run);
+      span.setStatus({ code: SpanStatusCode.OK });
+      logTelemetryEvent(
+        "pi.agent.steer.completed",
+        {
+          conversationId: managedSession.id,
+          durationMs: Date.now() - startedAt,
+          status: "success",
+        },
+        span,
+      );
+    } catch (error) {
+      span.setStatus({ code: SpanStatusCode.ERROR });
+      logTelemetryEvent(
+        "pi.agent.steer.completed",
+        {
+          conversationId: managedSession.id,
+          durationMs: Date.now() - startedAt,
+          status: "error",
+          errorType: error instanceof Error ? error.name : "Error",
+        },
+        span,
+      );
+      throw error;
+    } finally {
+      span.end();
+    }
+  }
+
+  private startProviderSpan(managedSession: ManagedSession): void {
+    const existing = this.providerSpans.get(managedSession.id);
+    if (existing) {
+      existing.span.setStatus({ code: SpanStatusCode.ERROR });
+      existing.span.end();
+      this.providerSpans.delete(managedSession.id);
+    }
+
+    const model = managedSession.runtime.session.agent.state.model;
+    const span = getTelemetryTracer().startSpan(
+      "pi.provider.request",
+      {
+        kind: SpanKind.CLIENT,
+        attributes: {
+          "conversation.id": managedSession.id,
+          "gen_ai.system": model.provider,
+          "gen_ai.request.model": model.id,
+        },
+      },
+      this.telemetryParentContext(managedSession.id),
+    );
+    this.providerSpans.set(managedSession.id, { span, startedAt: Date.now() });
+    logTelemetryEvent(
+      "pi.provider.request.started",
+      {
+        conversationId: managedSession.id,
+        provider: model.provider,
+        model: model.id,
+      },
+      span,
+    );
+  }
+
+  private finishProviderSpan(managedSession: ManagedSession, isError: boolean): void {
+    const active = this.providerSpans.get(managedSession.id);
+    if (!active) return;
+    this.providerSpans.delete(managedSession.id);
+
+    const durationMs = Date.now() - active.startedAt;
+    active.span.setAttribute("pi.provider.duration_ms", durationMs);
+    active.span.setStatus({
+      code: isError ? SpanStatusCode.ERROR : SpanStatusCode.OK,
+    });
+    logTelemetryEvent(
+      "pi.provider.request.completed",
+      {
+        conversationId: managedSession.id,
+        durationMs,
+        status: isError ? "error" : "success",
+      },
+      active.span,
+    );
+    active.span.end();
+  }
+
+  private toolSpanKey(conversationId: string, toolCallId: string): string {
+    return `${conversationId}:${toolCallId}`;
+  }
+
+  private startToolSpan(
+    managedSession: ManagedSession,
+    toolCallId: string,
+    toolName: string,
+  ): void {
+    const key = this.toolSpanKey(managedSession.id, toolCallId);
+    const span = getTelemetryTracer().startSpan(
+      "pi.tool.call",
+      {
+        kind: SpanKind.INTERNAL,
+        attributes: {
+          "conversation.id": managedSession.id,
+          "tool.name": toolName,
+          "tool.call_id": toolCallId,
+        },
+      },
+      this.telemetryParentContext(managedSession.id),
+    );
+    this.toolSpans.set(key, { span, startedAt: Date.now() });
+    logTelemetryEvent(
+      "pi.tool.call.started",
+      {
+        conversationId: managedSession.id,
+        toolCallId,
+        toolName,
+      },
+      span,
+    );
+  }
+
+  private finishToolSpan(
+    managedSession: ManagedSession,
+    toolCallId: string,
+    toolName: string,
+    isError: boolean,
+  ): void {
+    const key = this.toolSpanKey(managedSession.id, toolCallId);
+    const active = this.toolSpans.get(key);
+    if (!active) return;
+    this.toolSpans.delete(key);
+
+    const durationMs = Date.now() - active.startedAt;
+    active.span.setAttribute("pi.tool.duration_ms", durationMs);
+    active.span.setStatus({
+      code: isError ? SpanStatusCode.ERROR : SpanStatusCode.OK,
+    });
+    logTelemetryEvent(
+      "pi.tool.call.completed",
+      {
+        conversationId: managedSession.id,
+        toolCallId,
+        toolName,
+        durationMs,
+        status: isError ? "error" : "success",
+      },
+      active.span,
+    );
+    active.span.end();
+  }
+
+  private finishDanglingTelemetry(conversationId: string, failed: boolean): void {
+    const provider = this.providerSpans.get(conversationId);
+    if (provider) {
+      this.providerSpans.delete(conversationId);
+      if (failed) provider.span.setStatus({ code: SpanStatusCode.ERROR });
+      provider.span.end();
+    }
+
+    const prefix = `${conversationId}:`;
+    for (const [key, active] of this.toolSpans) {
+      if (!key.startsWith(prefix)) continue;
+      this.toolSpans.delete(key);
+      if (failed) active.span.setStatus({ code: SpanStatusCode.ERROR });
+      active.span.end();
+    }
+  }
+
   private bind(managedSession: ManagedSession) {
     managedSession.unsubscribe?.();
     managedSession.unsubscribe = managedSession.runtime.session.subscribe((event) => {
@@ -631,6 +895,9 @@ export class ConversationService {
         case "agent_start":
           this.markPromptPerformance(managedSession.id, "agent_start");
           this.setStatus(managedSession, "running");
+          break;
+        case "turn_start":
+          this.startProviderSpan(managedSession);
           break;
         case "message_start":
           const message = event.message;
@@ -696,6 +963,8 @@ export class ConversationService {
               ? normalizePromptError(message.errorMessage)
               : undefined;
 
+          this.finishProviderSpan(managedSession, Boolean(error));
+
           if (text || error) {
             managedSession.channel.publish("message.completed", {
               streamId,
@@ -721,6 +990,7 @@ export class ConversationService {
         case "entry_appended":
           break;
         case "tool_execution_start":
+          this.startToolSpan(managedSession, event.toolCallId, event.toolName);
           managedSession.channel.publish("tool.started", {
             id: event.toolCallId,
             name: event.toolName,
@@ -737,6 +1007,12 @@ export class ConversationService {
           });
           break;
         case "tool_execution_end":
+          this.finishToolSpan(
+            managedSession,
+            event.toolCallId,
+            event.toolName,
+            event.isError,
+          );
           managedSession.channel.publish("tool.completed", {
             id: event.toolCallId,
             name: event.toolName,
@@ -745,8 +1021,32 @@ export class ConversationService {
             details: event.result?.details,
           });
           break;
+        case "auto_retry_start":
+          logTelemetryEvent(
+            "pi.provider.retry.started",
+            {
+              conversationId: managedSession.id,
+              attempt: event.attempt,
+              maxAttempts: event.maxAttempts,
+              delayMs: event.delayMs,
+            },
+            this.mainAgentSpans.get(managedSession.id),
+          );
+          break;
+        case "auto_retry_end":
+          logTelemetryEvent(
+            "pi.provider.retry.completed",
+            {
+              conversationId: managedSession.id,
+              attempt: event.attempt,
+              status: event.success ? "success" : "error",
+            },
+            this.mainAgentSpans.get(managedSession.id),
+          );
+          break;
         case "agent_settled": {
           const failed = managedSession.status === "error";
+          this.finishDanglingTelemetry(managedSession.id, failed);
           managedSession.streamMessageId = undefined;
           managedSession.streamThinkingId = undefined;
           if (!failed) {
@@ -966,7 +1266,19 @@ export class ConversationService {
   }
 
   private writePerformanceLog(payload: Record<string, unknown>): void {
-    process.stdout.write(`[chat.perf] ${JSON.stringify(payload)}\n`);
+    const { traceId: perfTraceId, ...rest } = payload;
+    const conversationId =
+      typeof payload.conversationId === "string" ? payload.conversationId : undefined;
+    const activeSpan = conversationId
+      ? this.mainAgentSpans.get(conversationId)
+      : trace.getActiveSpan();
+    process.stdout.write(
+      `[chat.perf] ${JSON.stringify({
+        ...rest,
+        ...(perfTraceId ? { perfTraceId } : {}),
+        ...telemetryTraceFields(activeSpan),
+      })}\n`,
+    );
   }
 
   private flushPendingTitleRefinement(managedSession: ManagedSession): void {
