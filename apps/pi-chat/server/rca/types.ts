@@ -89,7 +89,7 @@ export interface Observation {
   toolCallId: string;
   expertTaskId?: string;
   summary: string;
-  rawRef: string;
+  rawRef?: string;
   snapshotRef?: string;
   facts: Record<string, unknown>;
   createdAt: string;
@@ -103,7 +103,7 @@ export interface Evidence {
   entity?: string;
   timeRange?: TimeRange;
   summary: string;
-  rawRef?: string;
+  rawRef: string;
   snapshotRef?: string;
   sourceItems?: string[];
   supports: string[];
