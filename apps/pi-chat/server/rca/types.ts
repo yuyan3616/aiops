@@ -61,8 +61,11 @@ export interface IncidentContext {
 
 export interface RcaTask {
   version: string;
-  context: IncidentContext;
-  availableModalities: Array<"metric" | "log" | "trace">;
+  context?: IncidentContext;
+  // Legacy benchmark fields are retained only for offline adapter/test compatibility.
+  caseId?: string;
+  alert?: AlertContext;
+  availableModalities: EvidenceModality[];
 }
 
 export interface Hypothesis {
@@ -86,7 +89,7 @@ export interface Observation {
   toolCallId: string;
   expertTaskId?: string;
   summary: string;
-  rawRef?: string;
+  rawRef: string;
   snapshotRef?: string;
   facts: Record<string, unknown>;
   createdAt: string;
