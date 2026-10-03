@@ -134,12 +134,14 @@ export class PiRuntimeMetrics implements RuntimeMetricRecorder {
   private readonly models: ReadonlySet<string>;
   private readonly tools: ReadonlySet<string>;
   private readonly reportedFailures = new Set<string>();
+  private readonly onFailure: (operation: string, error: unknown) => void;
 
   constructor(
     meter: Meter,
     env: NodeJS.ProcessEnv = process.env,
-    private readonly onFailure: (operation: string, error: unknown) => void = () => undefined,
+    onFailure: (operation: string, error: unknown) => void = () => undefined,
   ) {
+    this.onFailure = onFailure;
     this.providers = parseAllowlist(env.OTEL_METRIC_PROVIDER_ALLOWLIST, LABEL_LIMITS.provider);
     this.models = parseAllowlist(env.OTEL_METRIC_MODEL_ALLOWLIST, LABEL_LIMITS.model);
     this.tools = parseAllowlist(env.OTEL_METRIC_TOOL_ALLOWLIST, LABEL_LIMITS.tool);
