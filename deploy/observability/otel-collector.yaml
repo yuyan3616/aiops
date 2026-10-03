@@ -1,8 +1,30 @@
+extensions:
+  file_storage:
+    directory: /var/lib/otelcol/storage
+
 receivers:
   otlp:
     protocols:
       http:
         endpoint: 0.0.0.0:4318
+
+  # Only the aiops-rca-target Docker log directory should be mounted here.
+  # This avoids recursively collecting Collector/Loki logs.
+  filelog/target:
+    include:
+      - /var/log/aiops-target/*.log
+    start_at: end
+    include_file_path: true
+    storage: file_storage
+    retry_on_failure:
+      enabled: true
+    resource:
+      service.name: aiops-rca-target
+      deployment.environment.name: production
+    operators:
+      - type: container
+        format: docker
+        add_metadata_from_filepath: false
 
 processors:
   batch:
@@ -10,12 +32,23 @@ processors:
 exporters:
   debug:
     verbosity: detailed
-  otlphttp/tempo:
+
+  otlp_http/tempo:
     endpoint: http://tempo:4318
 
+  # Collector appends /v1/logs, so this reaches Loki at /otlp/v1/logs.
+  otlp_http/loki:
+    endpoint: http://loki:3100/otlp
+
 service:
+  extensions: [file_storage]
   pipelines:
     traces:
       receivers: [otlp]
       processors: [batch]
-      exporters: [debug, otlphttp/tempo]
+      exporters: [debug, otlp_http/tempo]
+
+    logs:
+      receivers: [filelog/target]
+      processors: [batch]
+      exporters: [otlp_http/loki]
