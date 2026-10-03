@@ -1,36 +1,44 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { resolveTraceEndpoint } from "./telemetry";
+import { resolveMetricsEndpoint, resolveTraceEndpoint } from "./telemetry";
 
-test("resolveTraceEndpoint prefers the trace-specific endpoint", () => {
-  assert.equal(
-    resolveTraceEndpoint({
-      OTEL_EXPORTER_OTLP_ENDPOINT: "http://collector:4318",
-      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "http://trace-backend:4318/custom",
-    } as NodeJS.ProcessEnv),
-    "http://trace-backend:4318/custom",
-  );
+test("signal-specific endpoints override the shared OTLP endpoint", () => {
+  const env = {
+    OTEL_EXPORTER_OTLP_ENDPOINT: "http://collector:4318",
+    OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "http://trace-backend:4318/custom",
+    OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: "http://metrics-backend:4318/custom",
+  } as NodeJS.ProcessEnv;
+
+  assert.equal(resolveTraceEndpoint(env), "http://trace-backend:4318/custom");
+  assert.equal(resolveMetricsEndpoint(env), "http://metrics-backend:4318/custom");
 });
 
-test("resolveTraceEndpoint appends the OTLP HTTP traces path", () => {
-  assert.equal(
-    resolveTraceEndpoint({
-      OTEL_EXPORTER_OTLP_ENDPOINT: "http://collector:4318/",
-    } as NodeJS.ProcessEnv),
-    "http://collector:4318/v1/traces",
-  );
+test("shared OTLP endpoint expands to independent HTTP signal paths", () => {
+  const env = {
+    OTEL_EXPORTER_OTLP_ENDPOINT: "http://collector:4318/",
+  } as NodeJS.ProcessEnv;
+
+  assert.equal(resolveTraceEndpoint(env), "http://collector:4318/v1/traces");
+  assert.equal(resolveMetricsEndpoint(env), "http://collector:4318/v1/metrics");
 });
 
-test("resolveTraceEndpoint leaves an explicit traces path unchanged", () => {
+test("explicit signal suffix on the shared endpoint is not duplicated", () => {
   assert.equal(
     resolveTraceEndpoint({
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://collector:4318/v1/traces",
     } as NodeJS.ProcessEnv),
     "http://collector:4318/v1/traces",
   );
+  assert.equal(
+    resolveMetricsEndpoint({
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://collector:4318/v1/metrics",
+    } as NodeJS.ProcessEnv),
+    "http://collector:4318/v1/metrics",
+  );
 });
 
-test("resolveTraceEndpoint disables tracing when no endpoint is configured", () => {
+test("signals remain disabled independently when no endpoint is configured", () => {
   assert.equal(resolveTraceEndpoint({} as NodeJS.ProcessEnv), undefined);
+  assert.equal(resolveMetricsEndpoint({} as NodeJS.ProcessEnv), undefined);
 });
