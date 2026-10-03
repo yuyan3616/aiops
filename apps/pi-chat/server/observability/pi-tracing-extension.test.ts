@@ -24,7 +24,6 @@ test("Pi tracing extension registers V1 lifecycle hooks", async () => {
     "tool_execution_start",
     "tool_execution_end",
     "turn_end",
-    "agent_before_settle",
     "agent_settled",
   ]);
 });
