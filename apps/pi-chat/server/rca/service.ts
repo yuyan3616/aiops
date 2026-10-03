@@ -783,7 +783,7 @@ export class RcaService {
     return this.dispatchAgenticV2(investigationId, briefs, options);
   }
 
-  private async withInvestigationLock  private async withInvestigationLock<T>(id: string, operation: () => Promise<T>): Promise<T> {
+  private async withInvestigationLock<T>(id: string, operation: () => Promise<T>): Promise<T> {
     const previous = this.investigationLocks.get(id) ?? Promise.resolve();
     let release!: () => void;
     const current = new Promise<void>((resolve) => {
@@ -1110,10 +1110,9 @@ export class RcaService {
         source: "main-agent-dispatch",
       });
       const rcaTask: RcaTask = {
-        caseId: investigation.caseId,
-        version: "runtime",
-        alert: investigation.alertContext,
-        availableModalities: ["metric", "log", "trace", "event", "alert", "topology"],
+        version: "live-v1",
+        context: investigation.context!,
+        availableModalities: ["metric", "log", "trace"],
       };
       const run = await this.requireExpertRunner().run({
         investigation,
@@ -1177,12 +1176,13 @@ export class RcaService {
           if (!call || call.status !== "completed") continue;
           const evidence: Evidence = {
             id: this.nextEvidenceId(draft),
-            caseId: draft.caseId,
+            investigationId: draft.id,
             modality: claim.modality,
             ...(claim.entity ? { entity: claim.entity } : {}),
-            timeRange: draft.alertContext.window,
+            timeRange: draft.context!.window,
             summary: claim.summary,
-            rawRef: call.rawRef ?? `investigation://${draft.id}/tool/${call.id}`,
+            ...(call.rawRef ? { rawRef: call.rawRef } : {}),
+            ...(call.snapshotRef ? { snapshotRef: call.snapshotRef } : {}),
             supports: claim.supports.filter((ref) => validHypotheses.has(ref)),
             contradicts: claim.contradicts.filter((ref) => validHypotheses.has(ref)),
             sourceQuery: call.query,
