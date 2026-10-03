@@ -1,3 +1,6 @@
+# Exemplar storage is a Prometheus process startup flag, not a scrape YAML setting.
+# This repository does not own/verify the production start command yet.
+# Do not claim --enable-feature=exemplar-storage is active from this file alone.
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
