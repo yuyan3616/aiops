@@ -23,6 +23,7 @@ export interface GlobalConfig {
   skillsDir: string;
   rcaCasesDir: string;
   rcaInvestigationsDir: string;
+  rcaExecutionsDir: string;
 }
 
 export function getGlobalConfig(rootDir = process.env.PI_CHAT_ROOT_DIR): GlobalConfig {
@@ -39,6 +40,9 @@ export function getGlobalConfig(rootDir = process.env.PI_CHAT_ROOT_DIR): GlobalC
     ),
     rcaInvestigationsDir: resolve(
       process.env.RCA_INVESTIGATIONS_DIR ?? join(resolvedRootDir, "data", "rca", "investigations"),
+    ),
+    rcaExecutionsDir: resolve(
+      process.env.RCA_EXECUTIONS_DIR ?? join(resolvedRootDir, "data", "rca", "executions"),
     ),
   };
 }

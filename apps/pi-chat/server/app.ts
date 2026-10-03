@@ -1,5 +1,6 @@
 import type { ConversationService } from "@server/conversation/service";
 import { errorResponse } from "@server/error";
+import type { RuntimeExecutionService } from "@server/rca/execution-service";
 import type { RcaService } from "@server/rca/service";
 import { createConversationRoutes, createRcaRoutes, createSystemRoutes } from "@server/routes";
 import { Hono } from "hono";
@@ -9,6 +10,7 @@ import pino from "pino";
 export function createApp(
   conversationService: ConversationService,
   rcaService: RcaService,
+  runtimeExecutionService: RuntimeExecutionService,
 ): Hono<HonoPinoEnv> {
   const app = new Hono<HonoPinoEnv>();
   const log = pino({
@@ -49,7 +51,7 @@ export function createApp(
     "/api/conversation",
     createConversationRoutes(conversationService, rcaService),
   );
-  app.route("/api/rca", createRcaRoutes(rcaService));
+  app.route("/api/rca", createRcaRoutes(rcaService, runtimeExecutionService));
   app.route("/api/system", createSystemRoutes(conversationService));
 
   return app;

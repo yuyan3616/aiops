@@ -1,0 +1,51 @@
+server:
+  port: ${MANAGEMENT_SERVER_PORT:8080}
+
+management-api:
+  token: ${MANAGEMENT_API_TOKEN:}
+
+agent-runtime:
+  base-url: ${AGENT_RUNTIME_BASE_URL:http://127.0.0.1:4328}
+  connect-timeout: ${AGENT_RUNTIME_CONNECT_TIMEOUT:2s}
+  read-timeout: ${AGENT_RUNTIME_READ_TIMEOUT:30s}
+  execution-token: ${AGENT_RUNTIME_EXECUTION_TOKEN:}
+
+spring:
+  application:
+    name: pi-ops-management-server
+  datasource:
+    url: jdbc:mysql://${MANAGEMENT_DB_HOST}:${MANAGEMENT_DB_PORT}/${MANAGEMENT_DB_NAME}?useSSL=false&allowPublicKeyRetrieval=true&connectionTimeZone=UTC
+    username: ${MANAGEMENT_DB_USERNAME}
+    password: ${MANAGEMENT_DB_PASSWORD}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      maximum-pool-size: ${MANAGEMENT_DB_MAX_POOL_SIZE:10}
+      minimum-idle: ${MANAGEMENT_DB_MIN_IDLE:1}
+      connection-timeout: ${MANAGEMENT_DB_CONNECTION_TIMEOUT:3000}
+  flyway:
+    enabled: true
+    validate-on-migrate: true
+    clean-disabled: true
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+  global-config:
+    banner: false
+
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+      group:
+        readiness:
+          include: readinessState,db
+        liveness:
+          include: livenessState

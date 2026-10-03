@@ -123,7 +123,48 @@ export class ConversationService {
   }
 
   async createConversation() {
-    const conversationId = randomUUID();
+    return this.createConversationWithId(randomUUID());
+  }
+
+  /**
+   * 为 Runtime Execution 创建或恢复一个固定 ID 的 Conversation。
+   *
+   * 外部执行在 reservation 阶段就固定 conversationId，重试时必须复用，
+   * 不能因为网络超时再次生成新的会话。
+   */
+  async ensureConversation(conversationId: string): Promise<void> {
+    if (!/^[0-9a-f-]{36}$/i.test(conversationId)) {
+      throw new Error("Invalid runtime conversation id");
+    }
+
+    await this.withSessionLock(conversationId, async () => {
+      const existing = await this.conversationRepository.get(conversationId);
+      if (existing) return;
+      await this.createConversationWithId(conversationId);
+    });
+  }
+
+  /**
+   * 判断稳定 execution marker 是否已经写入 Pi Session 历史。
+   * 只通过 SessionManager 的结构化 branch 读取，不依赖 JSONL 文件格式。
+   */
+  async hasExecutionMarker(conversationId: string, marker: string): Promise<boolean> {
+    const managedSession = await this.ensureManagedSession(conversationId);
+    try {
+      return new ConversationViewBuilder(managedSession.runtime.session.sessionManager.getBranch())
+        .build()
+        .some(
+          (item) =>
+            item.kind === "message" &&
+            item.message.role === "user" &&
+            item.message.text.includes(marker),
+        );
+    } finally {
+      this.done(managedSession);
+    }
+  }
+
+  private async createConversationWithId(conversationId: string) {
     const conversationWorkspaceDir = join(this.globalConfig.workspacesDir, conversationId);
     await mkdir(conversationWorkspaceDir, { recursive: true });
 

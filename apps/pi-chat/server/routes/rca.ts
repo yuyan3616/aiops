@@ -1,3 +1,5 @@
+import { verifyRuntimeExecutionToken } from "@server/rca/execution-auth";
+import type { RuntimeExecutionService } from "@server/rca/execution-service";
 import type { RcaService } from "@server/rca/service";
 import { Hono } from "hono";
 
@@ -15,22 +17,79 @@ import { Hono } from "hono";
  * Do not move RCA orchestration logic into these HTTP handlers; keep them thin
  * adapters over the service layer.
  */
-export function createRcaRoutes(rcaService: RcaService) {
+export function createRcaRoutes(
+  rcaService: RcaService,
+  runtimeExecutionService?: RuntimeExecutionService,
+) {
   const app = new Hono();
+
+  if (runtimeExecutionService) {
+    const authorized = (authorization: string | undefined) =>
+      verifyRuntimeExecutionToken(
+        authorization,
+        process.env.RCA_EXECUTION_API_TOKEN,
+      );
+
+    app.post("/executions", async (ctx) => {
+      if (!authorized(ctx.req.header("Authorization"))) {
+        return ctx.json({ error: "Runtime execution API is disabled or unauthorized." }, 401);
+      }
+
+      const idempotencyKey = ctx.req.header("Idempotency-Key");
+      if (!idempotencyKey) {
+        return ctx.json({ error: "Idempotency-Key header is required." }, 400);
+      }
+
+      const body = await ctx.req.json<{ caseId?: unknown }>();
+      if (typeof body.caseId !== "string") {
+        return ctx.json({ error: "caseId must be a string." }, 400);
+      }
+
+      return ctx.json(
+        await runtimeExecutionService.create({
+          caseId: body.caseId,
+          idempotencyKey,
+        }),
+        202,
+      );
+    });
+
+    app.get("/executions/:runtimeExecutionId", async (ctx) => {
+      if (!authorized(ctx.req.header("Authorization"))) {
+        return ctx.json({ error: "Runtime execution API is disabled or unauthorized." }, 401);
+      }
+      return ctx.json(
+        await runtimeExecutionService.get(ctx.req.param("runtimeExecutionId")),
+      );
+    });
+
+    app.post("/executions/:runtimeExecutionId/cancel", async (ctx) => {
+      if (!authorized(ctx.req.header("Authorization"))) {
+        return ctx.json({ error: "Runtime execution API is disabled or unauthorized." }, 401);
+      }
+      return ctx.json(
+        await runtimeExecutionService.cancel(ctx.req.param("runtimeExecutionId")),
+      );
+    });
+  }
+
   app.get("/investigations/:investigationId", async (ctx) => {
     return ctx.json(await rcaService.get(ctx.req.param("investigationId")));
   });
+
   app.get("/investigations/:investigationId/visualization", async (ctx) => {
     return ctx.json(
       await rcaService.getVisualization(ctx.req.param("investigationId")),
     );
   });
+
   app.post("/investigations/:investigationId/visualization/regenerate", async (ctx) => {
     return ctx.json(
       await rcaService.regenerateVisualization(ctx.req.param("investigationId")),
       202,
     );
   });
+
   app.get("/investigations/:investigationId/report", async (ctx) => {
     const investigationId = ctx.req.param("investigationId");
     const report = await rcaService.getReport(investigationId);
@@ -42,8 +101,12 @@ export function createRcaRoutes(rcaService: RcaService) {
     ctx.header("Cache-Control", "private, no-store");
     return ctx.body(report);
   });
+
   app.post("/investigations/:investigationId/cancel", async (ctx) => {
-    return ctx.json({ cancelled: await rcaService.cancel(ctx.req.param("investigationId")) });
+    return ctx.json({
+      cancelled: await rcaService.cancel(ctx.req.param("investigationId")),
+    });
   });
+
   return app;
 }
