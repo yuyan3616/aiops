@@ -1790,145 +1790,32 @@ export class RcaService {
   }
 
   private overviewTool(
-    investigation: Investigation,
+    _investigation: Investigation,
     kind: RcaOverviewKind,
     query: Record<string, unknown>,
   ): { tool: ObservabilityToolName; arguments_: Record<string, unknown> } {
-    const common = {
-      caseId: investigation.caseId,
-      from: investigation.alertContext.window.from,
-      to: investigation.alertContext.window.to,
-    };
     switch (kind) {
-      case "alerts":
-        return {
-          tool: "query_alerts",
-          arguments_: { ...common, ...query, limit: Math.min(Number(query.limit ?? 20), 20) },
-        };
-      case "dependencies":
-        return {
-          tool: "get_service_dependencies",
-          arguments_: {
-            caseId: investigation.caseId,
-            service:
-              query.service ??
-              investigation.alertContext.service ??
-              investigation.alertContext.entity.name,
-          },
-        };
       case "metrics":
         return {
-          tool: "query_metrics",
-          arguments_: { ...common, ...query, topN: Math.min(Number(query.topN ?? 20), 20) },
+          tool: typeof query.metric === "string" ? "query_metrics" : "discover_metrics",
+          arguments_: { ...query },
         };
       case "traces":
         return {
-          tool: "query_traces",
-          arguments_: { ...common, ...query, topN: Math.min(Number(query.topN ?? 10), 10) },
-        };
-      case "topology":
-        return {
-          tool: "get_topology",
+          tool: "search_traces",
           arguments_: {
-            caseId: investigation.caseId,
             ...query,
-            depth: Math.min(Number(query.depth ?? 1), 1),
+            limit: Math.min(Number(query.limit ?? 20), 50),
           },
         };
-    }
-  }
-
-  private async invokeRecordedTool(
-    investigation: Investigation,
-    bus: InvestigationEventBus,
-    tool: ObservabilityToolName,
-    arguments_: Record<string, unknown>,
-    expertTask?: ExpertTask,
-    signal?: AbortSignal,
-  ): Promise<RecordedAgentToolExecution> {
-    const tools = this.requireAgenticTools();
-    checkCancelled(signal);
-    const call: ToolCallRecord = {
-      id: this.nextToolId(investigation),
-      ...(expertTask ? { expertTaskId: expertTask.id } : {}),
-      tool,
-      query: arguments_,
-      status: "running",
-      startedAt: now(),
-      runtime: {
-        before: runtimeResourceSnapshot(),
-      },
-    };
-    investigation.toolCalls.push(call);
-    expertTask?.toolCallIds.push(call.id);
-    await this.saveInvestigation(investigation);
-    await bus.publish("tool.started", `${expertTask?.expert ?? "main"} called ${tool}.`, {
-      toolCall: call,
-    });
-
-    try {
-      const execution: ToolExecution = await tools.execute(tool, arguments_, signal);
-      checkCancelled(signal);
-      const agentContextResult = compactToolResultForAgent(tool, execution.result);
-      call.status = "completed";
-      call.resultSummary = execution.summary;
-      call.rawRef = execution.rawRef;
-      call.completedAt = now();
-      if (call.runtime) call.runtime.after = runtimeResourceSnapshot();
-      const observation: Observation = {
-        id: this.nextObservationId(investigation),
-        caseId: investigation.caseId,
-        modality: toolModality(tool),
-        toolCallId: call.id,
-        ...(expertTask ? { expertTaskId: expertTask.id } : {}),
-        summary: observationSummary(tool, execution),
-        ...(execution.rawRef ? { rawRef: execution.rawRef } : {}),
-        facts: observationFacts(tool, execution),
-        createdAt: now(),
-      };
-      investigation.observations ??= [];
-      investigation.observations.push(observation);
-      await this.repository.appendToolCall(investigation.id, call);
-      await this.saveInvestigation(investigation);
-      checkCancelled(signal);
-      await bus.publish("tool.completed", `${tool} completed: ${execution.summary}.`, {
-        toolCall: call,
-        agentContextResult,
-      });
-      await bus.publish("observation.created", observation.summary, {
-        observation,
-      });
-      return {
-        callId: call.id,
-        observationId: observation.id,
-        execution: {
-          result: execution.result,
-          summary: execution.summary,
-          rawRef: execution.rawRef,
-        },
-      };
-    } catch (error) {
-      const cancelled = signal?.aborted || isAbortError(error);
-      if (cancelled) {
-        investigation.observations = (investigation.observations ?? []).filter(
-          (observation) => observation.toolCallId !== call.id,
-        );
-      }
-      const alreadyCancelled = cancelled && call.status === "cancelled";
-      if (!alreadyCancelled) {
-        call.status = cancelled ? "cancelled" : "failed";
-        call.error = error instanceof Error ? error.message : String(error);
-        call.completedAt = now();
-        if (call.runtime) call.runtime.after = runtimeResourceSnapshot();
-        await this.repository.appendToolCall(investigation.id, call);
-        await this.saveInvestigation(investigation);
-        await bus.publish(
-          "tool.completed",
-          `${tool} ${cancelled ? "cancelled" : "failed"}: ${call.error}.`,
-          { toolCall: call },
-        );
-      }
-      throw error;
+      case "logs":
+        return {
+          tool: "search_logs",
+          arguments_: {
+            ...query,
+            limit: Math.min(Number(query.limit ?? 100), 200),
+          },
+        };
     }
   }
 
@@ -1940,6 +1827,9 @@ export class RcaService {
     arguments_: Record<string, unknown>,
     signal?: AbortSignal,
   ): Promise<RecordedAgentToolExecution> {
+    const investigation = await this.liveInvestigation(id);
+    this.assertLiveWritable(investigation);
+    const prepared = this.requireAgenticTools().prepare(tool, arguments_, investigation);
     const callId = await this.updateV2(id, (draft) => {
       const task = taskId ? draft.expertTasks.find((item) => item.id === taskId) : undefined;
       if (signal?.aborted || draft.status !== "running" || (taskId && task?.status !== "running")) {
@@ -1951,11 +1841,31 @@ export class RcaService {
       ) {
         throw new Error("Investigation operational safety limit reached: tool executions");
       }
+      if (prepared.scopeExtension) {
+        draft.scope.extensions ??= [];
+        const extension = {
+          ...(prepared.scopeExtension.target
+            ? { target: structuredClone(prepared.scopeExtension.target) }
+            : {}),
+          ...(prepared.scopeExtension.window
+            ? { window: structuredClone(prepared.scopeExtension.window) }
+            : {}),
+          reason: prepared.scopeExtension.reason,
+          createdAt: now(),
+        };
+        const duplicate = draft.scope.extensions.some(
+          (item) =>
+            item.reason === extension.reason &&
+            JSON.stringify(item.target ?? {}) === JSON.stringify(extension.target ?? {}) &&
+            JSON.stringify(item.window ?? {}) === JSON.stringify(extension.window ?? {}),
+        );
+        if (!duplicate) draft.scope.extensions.push(extension);
+      }
       const call: ToolCallRecord = {
         id: this.nextToolId(draft),
         ...(taskId ? { expertTaskId: taskId } : {}),
         tool,
-        query: arguments_,
+        query: prepared.arguments,
         status: "running",
         startedAt: now(),
         runtime: { before: runtimeResourceSnapshot() },
@@ -1972,12 +1882,32 @@ export class RcaService {
       );
       return call.id;
     });
-    const investigation = await this.liveInvestigation(id);
+
+    const persistedStart = await this.liveInvestigation(id);
     await bus.publish("tool.started", `${tool} started.`, {
-      toolCall: investigation.toolCalls.find((item) => item.id === callId),
+      toolCall: persistedStart.toolCalls.find((item) => item.id === callId),
     });
+
     try {
-      const execution = await this.requireAgenticTools().execute(tool, arguments_, signal);
+      const execution = await this.requireAgenticTools().executePrepared(id, prepared, signal);
+      checkCancelled(signal);
+      const agentContextResult = compactToolResultForAgent(tool, execution.result);
+      const snapshotRef = await this.repository.saveEvidenceSnapshot(id, callId, {
+        formatVersion: 1,
+        investigationId: id,
+        toolCallId: callId,
+        tool,
+        query: execution.arguments,
+        timeRange: execution.actualWindow,
+        retrievedAt: execution.result.retrievedAt,
+        backendAlias: execution.backendAlias,
+        contractVersion: execution.result.contractVersion,
+        resultStatus: execution.resultStatus,
+        result: execution.result,
+        agentResult: agentContextResult,
+      });
+      checkCancelled(signal);
+
       const observationId = await this.updateV2(id, (draft) => {
         const task = taskId ? draft.expertTasks.find((item) => item.id === taskId) : undefined;
         const call = draft.toolCalls.find((item) => item.id === callId)!;
@@ -1992,17 +1922,26 @@ export class RcaService {
         call.status = "completed";
         call.resultSummary = execution.summary;
         call.rawRef = execution.rawRef;
+        call.snapshotRef = snapshotRef;
+        call.resultStatus = execution.resultStatus;
         call.completedAt = now();
         if (call.runtime) call.runtime.after = runtimeResourceSnapshot();
         const observation: Observation = {
           id: this.nextObservationId(draft),
-          caseId: draft.caseId,
+          investigationId: draft.id,
           modality: toolModality(tool),
           toolCallId: callId,
           ...(taskId ? { expertTaskId: taskId } : {}),
           summary: observationSummary(tool, execution),
           ...(execution.rawRef ? { rawRef: execution.rawRef } : {}),
-          facts: observationFacts(tool, execution),
+          snapshotRef,
+          facts: {
+            source: taskId ? "pi-child-session" : "main-agent-overview",
+            resultStatus: execution.resultStatus,
+            backendAlias: execution.backendAlias,
+            warnings: execution.result.warnings.slice(0, 10),
+            truncationReasons: execution.result.truncationReasons.slice(0, 10),
+          },
           createdAt: now(),
         };
         draft.observations ??= [];
@@ -2010,13 +1949,15 @@ export class RcaService {
         return observation.id;
       });
       const persisted = await this.liveInvestigation(id);
-      await this.repository.appendToolCall(
-        id,
-        persisted.toolCalls.find((item) => item.id === callId)!,
-      );
+      const completedCall = persisted.toolCalls.find((item) => item.id === callId)!;
+      await this.repository.appendToolCall(id, completedCall).catch((error) => {
+        process.stderr.write(
+          `RCA tool-call projection append failed for ${id}/${callId}: ${String(error)}\n`,
+        );
+      });
       await bus.publish("tool.completed", `${tool} completed: ${execution.summary}.`, {
-        toolCall: persisted.toolCalls.find((item) => item.id === callId),
-        agentContextResult: compactToolResultForAgent(tool, execution.result),
+        toolCall: completedCall,
+        agentContextResult,
       });
       await bus.publish("observation.created", execution.summary, {
         observation: (persisted.observations ?? []).find((item) => item.id === observationId),
@@ -2028,6 +1969,10 @@ export class RcaService {
           result: execution.result,
           summary: execution.summary,
           rawRef: execution.rawRef,
+          snapshotRef,
+          resultStatus: execution.resultStatus,
+          actualWindow: execution.actualWindow,
+          query: execution.arguments,
         },
       };
     } catch (error) {
@@ -2039,69 +1984,16 @@ export class RcaService {
             ? "cancelled"
             : "failed";
         call.completedAt = now();
-        call.error = error instanceof Error ? error.message : String(error);
+        call.error = error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500);
         if (call.runtime) call.runtime.after = runtimeResourceSnapshot();
       });
+      const failed = await this.liveInvestigation(id);
+      const failedCall = failed.toolCalls.find((item) => item.id === callId);
+      if (failedCall) {
+        await this.repository.appendToolCall(id, failedCall).catch(() => undefined);
+      }
       throw error;
     }
-  }
-
-  private async acceptAgentFinding(
-    investigation: Investigation,
-    task: ExpertTask,
-    finding: AgentExpertFinding,
-    bus: InvestigationEventBus,
-  ): Promise<AgentExpertFinding> {
-    const validHypotheses = new Set(investigation.hypotheses.map((item) => item.id));
-    const taskCalls = new Set(task.toolCallIds);
-    let accepted = 0;
-
-    for (const claim of finding.evidenceClaims) {
-      if (!taskCalls.has(claim.toolCallId)) continue;
-      const call = investigation.toolCalls.find((item) => item.id === claim.toolCallId);
-      if (!call || call.status !== "completed") continue;
-      const evidence: Evidence = {
-        id: this.nextEvidenceId(investigation),
-        caseId: investigation.caseId,
-        modality: claim.modality,
-        ...(claim.entity ? { entity: claim.entity } : {}),
-        timeRange: investigation.alertContext.window,
-        summary: claim.summary,
-        rawRef: call.rawRef ?? `investigation://${investigation.id}/tool/${call.id}`,
-        supports: claim.supports.filter((id) => validHypotheses.has(id)),
-        contradicts: claim.contradicts.filter((id) => validHypotheses.has(id)),
-        sourceQuery: call.query,
-        toolCallId: call.id,
-        expertTaskId: task.id,
-        facts: {
-          source: "pi-child-session",
-          findingStrength: finding.strength,
-        },
-        createdAt: now(),
-      };
-      investigation.evidence.push(evidence);
-      task.evidenceIds.push(evidence.id);
-      for (const entity of finding.candidateEntities) {
-        if (!investigation.scope.candidateEntities.includes(entity)) {
-          investigation.scope.candidateEntities.push(entity);
-        }
-      }
-      accepted++;
-      await bus.publish("evidence.created", evidence.summary, {
-        evidence,
-        expertTaskId: task.id,
-      });
-    }
-
-    if (accepted === 0 && (finding.strength === "strong" || finding.strength === "moderate")) {
-      return {
-        ...finding,
-        status: finding.status === "blocked" ? "blocked" : "inconclusive",
-        strength: "inconclusive",
-        summary: `${finding.summary} No valid tool-backed evidence claim was accepted.`,
-      };
-    }
-    return finding;
   }
 
   private nextObservationId(investigation: Investigation): string {
