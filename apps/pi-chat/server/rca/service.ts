@@ -1599,7 +1599,7 @@ export class RcaService {
     return intervention;
   }
 
-  interruptActiveDispatch  interruptActiveDispatch(investigationId: string): boolean {
+  interruptActiveDispatch(investigationId: string): boolean {
     const running = this.agenticRunning.get(investigationId);
     if (running?.activeDispatchControllers?.size) {
       let interrupted = false;
@@ -1634,9 +1634,10 @@ export class RcaService {
     return this.visualizationService.getOrCreate(investigationId);
   }
 
-  regenerateVisualization(
+  async regenerateVisualization(
     investigationId: string,
   ): Promise<InvestigationVisualizationArtifact> {
+    this.assertLiveWritable(await this.liveInvestigation(investigationId));
     return this.visualizationService.regenerate(investigationId);
   }
 
@@ -2099,6 +2100,7 @@ export class RcaService {
         throw error;
       }
     }
+    this.assertLiveWritable(investigation);
     if (investigation.schemaVersion === 2) {
       const cancelled = await this.updateV2(investigationId, (draft) => {
         if (draft.status !== "running") return false;
