@@ -87,8 +87,12 @@ export class RcaScorer {
     if (!investigation.completedAt || !investigation.rootCause) {
       throw new Error("Ground truth cannot be read before an investigation is completed");
     }
+    const caseId = caseId;
+    if (!caseId) {
+      throw new Error("RCA100 offline scorer only supports legacy investigations with caseId");
+    }
     const truth = JSON.parse(
-      await readFile(join(this.answerKeyDir, `${investigation.caseId}.gt.json`), "utf8"),
+      await readFile(join(this.answerKeyDir, `${caseId}.gt.json`), "utf8"),
     ) as GroundTruthFile;
     const rawTruth = truth.raw_ground_truth
       ? (JSON.parse(truth.raw_ground_truth) as RawGroundTruth)
@@ -127,8 +131,8 @@ export class RcaScorer {
     );
     const traceableEvidence = evidence.filter(
       (item) =>
-        item.caseId === investigation.caseId &&
-        item.rawRef.startsWith(`rca100://${investigation.caseId}/`) &&
+        item.caseId === caseId &&
+        item.rawRef.startsWith(`rca100://${caseId}/`) &&
         Object.keys(item.sourceQuery).length > 0 &&
         completedCallIds.has(item.toolCallId),
     );
@@ -155,7 +159,7 @@ export class RcaScorer {
     );
     const evaluation: RcaEvaluation = {
       investigationId,
-      caseId: investigation.caseId,
+      caseId: caseId,
       evaluatedAt: new Date().toISOString(),
       overallScore,
       passed: entityMatched && mechanismMatched && evidenceScore >= 0.8 && reasoningScore === 1,
