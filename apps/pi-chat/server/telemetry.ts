@@ -70,13 +70,21 @@ function positiveInteger(raw: string | undefined, fallback: number): number {
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+export function resolveServiceInstanceId(
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  return env.OTEL_SERVICE_INSTANCE_ID?.trim() || env.HOSTNAME?.trim() || undefined;
+}
+
 function telemetryResource(env: NodeJS.ProcessEnv) {
+  const serviceInstanceId = resolveServiceInstanceId(env);
   return resourceFromAttributes({
     "service.name": env.OTEL_SERVICE_NAME?.trim() || "aiops-rca-target",
     "service.version":
       env.OTEL_SERVICE_VERSION?.trim() || env.PI_CHAT_RELEASE_SHA?.trim() || "unknown",
     "deployment.environment.name":
       env.OTEL_DEPLOYMENT_ENVIRONMENT?.trim() || env.NODE_ENV?.trim() || "development",
+    ...(serviceInstanceId ? { "service.instance.id": serviceInstanceId } : {}),
   });
 }
 
