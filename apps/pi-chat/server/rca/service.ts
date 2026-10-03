@@ -10,7 +10,7 @@ import {
   type BudgetProjection,
 } from "./budget";
 import { InvestigationEventBus, type InvestigationEventListener } from "./events";
-import { getParquetRuntimeDiagnostics } from "./parquet";
+import { LIVE_CONTRACT_VERSION, LIVE_FORMAT_VERSION, LIVE_LIMITS, validateTimeRange } from "./live/types";
 import { PiExpertRunError, PiExpertRunner, type RecordedAgentToolExecution } from "./pi-expert";
 import { InvestigationRepository } from "./repository";
 import { InvestigationVisualizationService } from "./visualization/service";
@@ -38,12 +38,14 @@ import type {
   HypothesisStatus,
   Investigation,
   InvestigationBrief,
+  IncidentContext,
   InvestigationUserIntervention,
   Observation,
   RCAResult,
   RcaTask,
   RuntimeResourceSnapshot,
   ToolCallRecord,
+  TimeRange,
 } from "./types";
 
 interface RunningAgenticInvestigation {
@@ -57,7 +59,7 @@ interface RunningAgenticInvestigation {
   cancellationPromise?: Promise<void>;
 }
 
-export type RcaOverviewKind = "alerts" | "dependencies" | "metrics" | "traces" | "topology";
+export type RcaOverviewKind = "metrics" | "traces" | "logs";
 
 interface HypothesisMutationBase {
   requestId?: string;
@@ -114,8 +116,16 @@ export interface HypothesisMutationBatchResult {
 
 export interface AgenticBeginOptions {
   investigationId?: string;
+  operationId?: string;
   conversationId?: string;
   onEvent?: InvestigationEventListener;
+}
+
+export interface LiveIncidentInput {
+  symptom: string;
+  trigger?: IncidentContext["trigger"];
+  target: IncidentContext["target"];
+  window: TimeRange | { lookbackMinutes: number };
 }
 
 export interface AgenticResumeOptions {
@@ -194,7 +204,6 @@ function bytesToMb(bytes: number): number {
 
 function runtimeResourceSnapshot(): RuntimeResourceSnapshot {
   const memory = process.memoryUsage();
-  const parquet = getParquetRuntimeDiagnostics();
   return {
     at: now(),
     rssMb: bytesToMb(memory.rss),
@@ -202,53 +211,20 @@ function runtimeResourceSnapshot(): RuntimeResourceSnapshot {
     heapTotalMb: bytesToMb(memory.heapTotal),
     externalMb: bytesToMb(memory.external),
     arrayBuffersMb: bytesToMb(memory.arrayBuffers),
-    activeParquetScans: parquet.activeScans,
-    maxConcurrentParquetScans: parquet.maxConcurrentScans,
-    totalParquetScans: parquet.totalScans,
-    parquetBatchesRead: parquet.batchesRead,
-    parquetRowsScanned: parquet.rowsScanned,
   };
 }
 
 function toolModality(tool: ObservabilityToolName): EvidenceModality {
-  if (tool === "query_metrics" || tool === "get_metric_catalog") return "metric";
-  if (tool === "query_logs" || tool === "get_log_fields") return "log";
-  if (tool === "query_traces" || tool === "get_trace_fields") return "trace";
-  if (tool === "query_events") return "event";
-  if (tool === "query_alerts" || tool === "get_alert_context") return "alert";
-  return "topology";
+  if (tool === "query_metrics" || tool === "discover_metrics") return "metric";
+  if (tool === "search_logs") return "log";
+  return "trace";
 }
 
-function observationSummary(tool: ObservabilityToolName, execution: ToolExecution): string {
-  if (tool !== "query_metrics") return execution.summary;
-  const compact = compactToolResultForAgent(tool, execution.result);
-  if (!compact || typeof compact !== "object" || Array.isArray(compact)) return execution.summary;
-  const data = (compact as { data?: unknown }).data;
-  if (!data || typeof data !== "object" || Array.isArray(data)) return execution.summary;
-  const anomalies = (data as { anomalies?: unknown }).anomalies;
-  if (!Array.isArray(anomalies) || anomalies.length === 0) {
-    return `${execution.summary}; no metric anomaly summary was returned`;
-  }
-  const top = anomalies
-    .slice(0, 3)
-    .map((item) => {
-      if (!item || typeof item !== "object" || Array.isArray(item)) return undefined;
-      const row = item as Record<string, unknown>;
-      const entity = String(row.entity ?? row.service ?? "entity");
-      const metric = String(row.metric ?? "metric");
-      const baseline = Number(row.baselineMedian);
-      const incident = Number(row.incidentMedian);
-      const ratio = Number(row.ratio);
-      const direction = String(row.direction ?? "unknown");
-      const values =
-        Number.isFinite(baseline) && Number.isFinite(incident)
-          ? `${baseline.toPrecision(4)}→${incident.toPrecision(4)}`
-          : "n/a";
-      const ratioText = Number.isFinite(ratio) ? ` x${ratio.toFixed(2)}` : "";
-      return `${entity} ${metric} ${values}${ratioText} (${direction})`;
-    })
-    .filter((item): item is string => Boolean(item));
-  return top.length ? `metric observation: ${top.join("; ")}` : execution.summary;
+function observationSummary(_tool: ObservabilityToolName, execution: ToolExecution): string {
+  const warnings = execution.result.warnings.slice(0, 2);
+  return warnings.length
+    ? `${execution.summary}; ${warnings.join("; ")}`
+    : execution.summary;
 }
 
 function observationFacts(
@@ -259,6 +235,55 @@ function observationFacts(
     tool,
     result: compactToolResultForAgent(tool, execution.result),
   };
+}
+
+function freezeIncidentContext(input: LiveIncidentInput): IncidentContext {
+  const symptom = input.symptom.trim().slice(0, 1500);
+  if (!symptom) throw new Error("Incident symptom is required");
+  const target = Object.fromEntries(
+    Object.entries(input.target ?? {})
+      .filter(([, value]) => typeof value === "string" && value.trim())
+      .map(([key, value]) => [key, String(value).trim().slice(0, 256)]),
+  ) as IncidentContext["target"];
+  if (!target.service && !target.entity && !target.container) {
+    throw new Error("Incident target requires service, entity, or container");
+  }
+  let window: TimeRange;
+  if ("lookbackMinutes" in input.window) {
+    const lookbackMinutes = Math.floor(input.window.lookbackMinutes);
+    if (!Number.isFinite(lookbackMinutes) || lookbackMinutes < 1 || lookbackMinutes > 1440) {
+      throw new Error("lookbackMinutes must be between 1 and 1440");
+    }
+    const to = new Date();
+    const from = new Date(to.getTime() - lookbackMinutes * 60_000);
+    window = { from: from.toISOString(), to: to.toISOString() };
+  } else {
+    window = {
+      from: new Date(input.window.from).toISOString(),
+      to: new Date(input.window.to).toISOString(),
+    };
+  }
+  validateTimeRange(window);
+  return {
+    symptom,
+    trigger: structuredClone(input.trigger ?? { type: "manual" }),
+    window,
+    target,
+  };
+}
+
+function liveRequestHash(input: LiveIncidentInput): string {
+  return createHash("sha256").update(JSON.stringify(input)).digest("hex");
+}
+
+export class RcaServiceError extends Error {
+  readonly code: "legacy_read_only" | "operation_conflict";
+
+  constructor(code: RcaServiceError["code"], message = code) {
+    super(message);
+    this.name = "RcaServiceError";
+    this.code = code;
+  }
 }
 
 export class RcaService {
@@ -291,94 +316,103 @@ export class RcaService {
     this.expertRunner = modelRuntime && tools ? new PiExpertRunner(modelRuntime, tools) : undefined;
   }
 
-  async beginAgentic(caseId: string, options: AgenticBeginOptions = {}): Promise<Investigation> {
-    const tools = this.requireAgenticTools();
-    const id = options.investigationId ?? createInvestigationId();
+  async beginAgentic(
+    input: LiveIncidentInput | string,
+    options: AgenticBeginOptions = {},
+  ): Promise<Investigation> {
+    if (typeof input === "string") {
+      throw new RcaServiceError(
+        "legacy_read_only",
+        "legacy_read_only: RCA100 case-based investigation creation is disabled",
+      );
+    }
+    const requestHash = liveRequestHash(input);
+    const operationId = options.operationId?.trim();
+    const id =
+      options.investigationId ??
+      (operationId
+        ? `INV-op-${createHash("sha256").update(operationId).digest("hex").slice(0, 20)}`
+        : createInvestigationId());
+
+    if (operationId) {
+      try {
+        const existing = await this.repository.get(id);
+        if (
+          existing.source?.kind !== "live" ||
+          existing.creation?.operationId !== operationId ||
+          existing.creation.requestHash !== requestHash
+        ) {
+          throw new RcaServiceError(
+            "operation_conflict",
+            `operation_conflict: start operation ${operationId} has different input`,
+          );
+        }
+        return existing;
+      } catch (error) {
+        if (
+          error instanceof RcaServiceError ||
+          (error as NodeJS.ErrnoException).code !== "ENOENT"
+        ) {
+          throw error;
+        }
+      }
+    }
+
+    const context = freezeIncidentContext(input);
     const bus = await this.busFor(id);
     const controller = new AbortController();
     const unsubscribe = options.onEvent ? bus.subscribe(options.onEvent) : undefined;
+    const investigation: Investigation = {
+      id,
+      status: "running",
+      symptom: context.symptom,
+      context,
+      formatVersion: LIVE_FORMAT_VERSION,
+      source: {
+        kind: "live",
+        contractVersion: LIVE_CONTRACT_VERSION,
+      },
+      creation: {
+        ...(operationId ? { operationId } : {}),
+        requestHash,
+      },
+      scope: {
+        candidateEntities: [
+          context.target.service,
+          context.target.entity,
+          context.target.container,
+        ].filter((value): value is string => Boolean(value)),
+        extensions: [],
+      },
+      hypotheses: [],
+      observations: [],
+      evidence: [],
+      expertTasks: [],
+      toolCalls: [],
+      rounds: 0,
+      startedAt: now(),
+      schemaVersion: 2,
+      budgetLedger: [],
+    };
     this.agenticRunning.set(id, {
       conversationId: options.conversationId,
       controller,
       unsubscribe,
+      investigation,
       activeOperations: 0,
     });
-    const releaseOperation = this.trackAgenticOperation(id);
-
-    const call: ToolCallRecord = {
-      id: "C01",
-      tool: "get_alert_context",
-      query: { caseId },
-      status: "running",
-      startedAt: now(),
-    };
-    await bus.publish("tool.started", "Loading alert context.", { toolCall: call });
-
     try {
-      const execution = await tools.execute("get_alert_context", { caseId }, controller.signal);
-      call.status = "completed";
-      call.resultSummary = execution.summary;
-      call.rawRef = execution.rawRef;
-      call.completedAt = now();
-
-      const alert = execution.result as RcaTask["alert"];
-      const investigation: Investigation = {
-        id,
-        caseId,
-        status: "running",
-        symptom: `${alert.title}: ${alert.entity.name}`,
-        alertContext: alert,
-        scope: {
-          alertService: alert.service,
-          alertOperation: alert.operation,
-          timeRange: alert.window,
-          candidateEntities: [alert.entity.name],
-        },
-        hypotheses: [],
-        observations: [],
-        evidence: [],
-        expertTasks: [],
-        toolCalls: [call],
-        rounds: 0,
-        startedAt: now(),
-        schemaVersion: 2,
-        budgetLedger: [],
-      };
-      const active = this.agenticRunning.get(id);
-      if (active) active.investigation = investigation;
-      const alertObservation: Observation = {
-        id: this.nextObservationId(investigation),
-        caseId,
-        modality: "alert",
-        toolCallId: call.id,
-        summary: `alert context: ${alert.title} on ${alert.entity.name}`,
-        ...(execution.rawRef ? { rawRef: execution.rawRef } : {}),
-        facts: { alert },
-        createdAt: now(),
-      };
-      investigation.observations?.push(alertObservation);
-      await this.repository.appendToolCall(id, call);
       await this.saveInvestigation(investigation);
-      await bus.publish("observation.created", alertObservation.summary, {
-        observation: alertObservation,
-      });
-      await bus.publish("tool.completed", "Alert context loaded.", { toolCall: call });
-      await bus.publish("investigation.started", `Investigation started for ${alert.title}.`, {
-        caseId,
-        alert,
-        mode: "agentic",
+      await bus.publish("investigation.started", `Investigation started: ${context.symptom}`, {
+        incident: context,
+        mode: "live",
+        formatVersion: LIVE_FORMAT_VERSION,
+        contractVersion: LIVE_CONTRACT_VERSION,
       });
       return investigation;
     } catch (error) {
-      call.status = isAbortError(error) || controller.signal.aborted ? "cancelled" : "failed";
-      call.error = error instanceof Error ? error.message : String(error);
-      call.completedAt = now();
-      await this.repository.appendToolCall(id, call);
-      await bus.publish("tool.completed", "Loading alert context failed.", { toolCall: call });
-      if (!controller.signal.aborted) this.cleanupAgentic(id);
+      this.cleanupAgentic(id);
       throw error;
-    } finally {
-      releaseOperation();
     }
   }
 
