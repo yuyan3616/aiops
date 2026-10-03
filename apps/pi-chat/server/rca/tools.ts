@@ -18,7 +18,7 @@ import type {
   TraceGetInput,
   TraceSearchInput,
 } from "./live/providers";
-import type { Investigation, InvestigationScope, TimeRange } from "./types";
+import type { Investigation, TimeRange } from "./types";
 
 export const OBSERVABILITY_TOOL_NAMES = [
   "search_traces",
