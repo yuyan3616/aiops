@@ -15,6 +15,7 @@ import {
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import type { GlobalConfig } from "@server/config";
+import { createPiTracingExtension } from "@server/observability/pi-tracing-extension";
 import {
   renderConversationRcaContext,
   type ConversationRcaContext,
@@ -121,6 +122,7 @@ export async function createRuntime(options: RuntimeOptions) {
         additionalExtensionPaths: [webAccessExtensionPath, langfuseExtensionPath],
         extensionFactories: [
           rcaContextExtension,
+          createPiTracingExtension({ conversationId: conversationRecord.id }),
           async (pi) => {
             const packageName = "pi-mcp-adapter";
             const { createMcpAdapter } = (await import(packageName)) as {

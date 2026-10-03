@@ -11,6 +11,7 @@ import { ObservabilityToolRegistry } from "@server/rca/tools";
 
 import { ensureDir, getGlobalConfig } from "./config";
 import { ensurePackyModelsConfig } from "./model-provider";
+import { shutdownTelemetry } from "./telemetry";
 
 const globalConfig = getGlobalConfig();
 await ensureDir([globalConfig.rootDir, globalConfig.skillsDir, globalConfig.rcaInvestigationsDir]);
@@ -62,7 +63,9 @@ async function shutdown() {
   if (closing) return;
   closing = true;
   service.close();
-  server.close(() => process.exit(0));
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  await shutdownTelemetry();
+  process.exit(0);
 }
 
 function handleShutdown() {
