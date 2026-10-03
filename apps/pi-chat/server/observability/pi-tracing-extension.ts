@@ -55,7 +55,7 @@ export function createPiTracingExtension(
       if (!active) return;
 
       const durationMs = Date.now() - active.startedAt;
-      active.span.setAttribute("pi.provider.duration_ms", durationMs);
+      active.span.setAttribute("pi.provider.ttfb_ms", durationMs);
       if (statusCode !== undefined) {
         active.span.setAttribute("http.response.status_code", statusCode);
       }
@@ -63,7 +63,7 @@ export function createPiTracingExtension(
         code: isError ? SpanStatusCode.ERROR : SpanStatusCode.OK,
       });
       logTelemetryEvent(
-        "pi.provider.request.completed",
+        "pi.provider.ttfb.completed",
         {
           conversationId: options.conversationId,
           durationMs,
@@ -206,7 +206,7 @@ export function createPiTracingExtension(
 
       const fields = modelFields(ctx.model);
       const span = tracer.startSpan(
-        "pi.provider.request",
+        "pi.provider.ttfb",
         {
           kind: SpanKind.CLIENT,
           attributes: {
@@ -219,7 +219,7 @@ export function createPiTracingExtension(
       );
       providerSpan = { span, startedAt: Date.now() };
       logTelemetryEvent(
-        "pi.provider.request.started",
+        "pi.provider.ttfb.started",
         {
           conversationId: options.conversationId,
           ...fields,
