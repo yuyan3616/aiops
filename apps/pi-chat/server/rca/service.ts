@@ -10,7 +10,7 @@ import {
   type BudgetProjection,
 } from "./budget";
 import { InvestigationEventBus, type InvestigationEventListener } from "./events";
-import { LIVE_CONTRACT_VERSION, LIVE_FORMAT_VERSION, LIVE_LIMITS, validateTimeRange } from "./live/types";
+import { LIVE_CONTRACT_VERSION, LIVE_FORMAT_VERSION, validateTimeRange } from "./live/types";
 import { PiExpertRunError, PiExpertRunner, type RecordedAgentToolExecution } from "./pi-expert";
 import { InvestigationRepository } from "./repository";
 import { InvestigationVisualizationService } from "./visualization/service";
@@ -227,59 +227,10 @@ function observationSummary(_tool: ObservabilityToolName, execution: ToolExecuti
     : execution.summary;
 }
 
-function observationFacts(
-  tool: ObservabilityToolName,
-  execution: ToolExecution,
-): Record<string, unknown> {
-  return {
-    tool,
-    result: compactToolResultForAgent(tool, execution.result),
-  };
-}
-
-function freezeIncidentContext(input: LiveIncidentInput): IncidentContext {
-  const symptom = input.symptom.trim().slice(0, 1500);
-  if (!symptom) throw new Error("Incident symptom is required");
-  const target = Object.fromEntries(
-    Object.entries(input.target ?? {})
-      .filter(([, value]) => typeof value === "string" && value.trim())
-      .map(([key, value]) => [key, String(value).trim().slice(0, 256)]),
-  ) as IncidentContext["target"];
-  if (!target.service && !target.entity && !target.container) {
-    throw new Error("Incident target requires service, entity, or container");
-  }
-  let window: TimeRange;
-  if ("lookbackMinutes" in input.window) {
-    const lookbackMinutes = Math.floor(input.window.lookbackMinutes);
-    if (!Number.isFinite(lookbackMinutes) || lookbackMinutes < 1 || lookbackMinutes > 1440) {
-      throw new Error("lookbackMinutes must be between 1 and 1440");
-    }
-    const to = new Date();
-    const from = new Date(to.getTime() - lookbackMinutes * 60_000);
-    window = { from: from.toISOString(), to: to.toISOString() };
-  } else {
-    window = {
-      from: new Date(input.window.from).toISOString(),
-      to: new Date(input.window.to).toISOString(),
-    };
-  }
-  validateTimeRange(window);
-  return {
-    symptom,
-    trigger: structuredClone(input.trigger ?? { type: "manual" }),
-    window,
-    target,
-  };
-}
-
-function liveRequestHash(input: LiveIncidentInput): string {
-  return createHash("sha256").update(JSON.stringify(input)).digest("hex");
-}
-
 export class RcaServiceError extends Error {
   readonly code: "legacy_read_only" | "operation_conflict";
 
-  constructor(code: RcaServiceError["code"], message = code) {
+  constructor(code: RcaServiceError["code"], message: string = code) {
     super(message);
     this.name = "RcaServiceError";
     this.code = code;
@@ -502,7 +453,10 @@ export class RcaService {
           ...(typeof query.entity === "string" ? { entity: query.entity } : {}),
           timeRange: recorded.execution.actualWindow ?? draft.context!.window,
           summary: recorded.execution.summary,
-          ...(recorded.execution.rawRef ? { rawRef: recorded.execution.rawRef } : {}),
+          rawRef:
+            recorded.execution.rawRef ??
+            recorded.execution.snapshotRef ??
+            `investigation://${draft.id}/tool/${recorded.callId}`,
           ...(recorded.execution.snapshotRef
             ? { snapshotRef: recorded.execution.snapshotRef }
             : {}),
@@ -1181,7 +1135,10 @@ export class RcaService {
             ...(claim.entity ? { entity: claim.entity } : {}),
             timeRange: draft.context!.window,
             summary: claim.summary,
-            ...(call.rawRef ? { rawRef: call.rawRef } : {}),
+            rawRef:
+              call.rawRef ??
+              call.snapshotRef ??
+              `investigation://${draft.id}/tool/${call.id}`,
             ...(call.snapshotRef ? { snapshotRef: call.snapshotRef } : {}),
             supports: claim.supports.filter((ref) => validHypotheses.has(ref)),
             contradicts: claim.contradicts.filter((ref) => validHypotheses.has(ref)),
