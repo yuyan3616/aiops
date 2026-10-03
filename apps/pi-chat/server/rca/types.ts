@@ -340,6 +340,10 @@ export interface Investigation {
     kind: "live";
     contractVersion: "1";
   };
+  creation?: {
+    operationId?: string;
+    requestHash: string;
+  };
   scope: InvestigationScope;
   hypotheses: Hypothesis[];
   observations?: Observation[];
