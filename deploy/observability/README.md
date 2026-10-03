@@ -95,3 +95,68 @@ docker build -t aiops-rca-target:baseline .
 ```
 
 然后按原来的启动命令重新创建 `aiops-rca-target` 即可。
+
+
+## 5. 接入 Tempo
+
+这一步只用于单机测试。Tempo 使用 monolithic 模式和本地磁盘，不需要 Kafka。
+
+创建 Tempo 数据卷：
+
+```bash
+docker volume create tempo-data
+```
+
+启动 Tempo：
+
+```bash
+docker rm -f tempo 2>/dev/null || true
+
+docker run -d \
+  --name tempo \
+  --restart unless-stopped \
+  --network aiops-observability \
+  --memory=320m \
+  --memory-swap=384m \
+  -p 127.0.0.1:3200:3200 \
+  -v "$PWD/deploy/observability/tempo.yaml:/etc/tempo.yaml:ro" \
+  -v tempo-data:/var/tempo \
+  grafana/tempo:3.1.0 \
+  -target=all \
+  -config.file=/etc/tempo.yaml
+```
+
+检查 Tempo：
+
+```bash
+docker ps | grep tempo
+docker logs --tail 100 tempo
+curl -s http://127.0.0.1:3200/ready
+```
+
+Collector 配置已同时把 traces 转发到 `http://tempo:4318`，因此 Tempo 启动后需要重建 Collector：
+
+```bash
+docker rm -f otel-collector
+
+docker run -d \
+  --name otel-collector \
+  --restart unless-stopped \
+  --memory=128m \
+  --network aiops-observability \
+  -v "$PWD/deploy/observability/otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro" \
+  otel/opentelemetry-collector-contrib:latest
+```
+
+然后在页面发一次 Agent 请求，再检查 Tempo 搜索 API：
+
+```bash
+curl -s "http://127.0.0.1:3200/api/search?limit=20"
+```
+
+如果要彻底清理本次 Tempo 测试：
+
+```bash
+docker rm -f tempo
+docker volume rm tempo-data
+```
