@@ -101,7 +101,9 @@ Logs 可用于：
 - provider / tool 错误文本。
 - 与 Investigation 时间窗口相关的运行时事件。
 
-首版不能假设每条日志天然携带 traceId / spanId。若 Target 日志当前没有 Trace Context，Trace ↔ Logs 首版只能以 service + absolute time window + 事件语义做相关性判断，不能伪造精确 Trace-Log Join。
+当前 Pi lifecycle telemetry 日志已经通过 `logTelemetryEvent()` 从对应 Span 注入 `traceId / spanId`，因此 `pi.agent.* / pi.model.* / pi.provider.* / pi.tool.*` 这类关键生命周期日志具备精确 Trace-Log 关联基础。
+
+普通 Hono / Pino 应用日志目前不保证天然携带 Trace Context。后续应统一从当前 active span 提取 `traceId / spanId` 注入关键日志；在某条日志真实没有 Trace Context 时，只能使用 service + absolute time window + 事件语义做相关性判断，不能伪造精确 Trace-Log Join。
 
 ### 2.3 Metrics
 
@@ -134,8 +136,166 @@ CPU 正常
 应用性能正常
 ~~~
 
-以后若补充应用级 request count / error rate / latency 等指标，再扩展 Metrics 语义，不需要修改 Investigation 主模型。
+除现有 host/docker 指标外，Target 需要补充应用级 RED / Agent Runtime 指标，至少覆盖：
 
+~~~text
+pi_agent_runs_total
+pi_agent_run_duration_seconds
+
+pi_model_turns_total
+pi_model_turn_duration_seconds
+
+pi_provider_requests_total
+pi_provider_request_duration_seconds
+
+pi_tool_calls_total
+pi_tool_call_duration_seconds
+~~~
+
+其中 duration 使用 Histogram，以便 Prometheus 计算 P50 / P90 / P95 / P99。Counter / Histogram label 必须保持低基数，只允许类似：
+
+~~~text
+agent_type
+provider
+model
+tool_name
+status
+~~~
+
+禁止把以下高基数字段作为 Prometheus label：
+
+~~~text
+traceId
+spanId
+conversationId
+toolCallId
+requestId
+完整错误文本
+~~~
+
+Metric 与 Trace 的单请求关联通过 OpenTelemetry Exemplar 完成，而不是通过 Prometheus label。
+
+## 2.4 Trace / Log / Metric 统一 Trace Context
+
+三种信号必须围绕同一套 Trace Context 建立关联，但实现方式不同：
+
+~~~text
+Trace  → traceId / spanId 是原生身份
+Log    → 关键日志显式携带 traceId / spanId
+Metric → 通过 Exemplar 关联 traceId / spanId
+~~~
+
+目标效果：
+
+~~~text
+                         traceId = abc123
+                              │
+              ┌───────────────┼────────────────┐
+              ▼               ▼                ▼
+           Tempo            Loki           Prometheus
+           Trace            Log             Metric
+              │               │                │
+        traceId=abc123   traceId=abc123    exemplar
+        spanId=def456    spanId=def456     trace_id=abc123
+                                           span_id=def456
+~~~
+
+### 2.4.1 Trace
+
+Tempo 中的 Span 继续作为关联中心。当前关键 Span：
+
+~~~text
+pi.agent.run
+pi.model.turn
+pi.provider.request
+pi.tool.call
+~~~
+
+必须保留真实的 `traceId / spanId / parentSpanId`。
+
+### 2.4.2 Log
+
+关键生命周期日志必须在对应 Span 尚未结束时写出，并携带：
+
+~~~text
+traceId
+spanId
+~~~
+
+现有 `logTelemetryEvent()` 已经具备该能力。
+
+后续普通应用日志如果发生在 active span 内，应通过统一 telemetry context helper 自动注入当前 `traceId / spanId`，避免各处手写。
+
+若当前没有 active span，则日志允许没有 Trace Context；不能生成伪造 ID。
+
+### 2.4.3 Metric Exemplar
+
+Prometheus Metric 不得使用 `traceId / spanId` 作为 label。
+
+正确方式是：
+
+~~~text
+pi_provider_request_duration_seconds{
+  provider="...",
+  model="...",
+  status="success"
+}
+        │
+        └─ exemplar:
+           trace_id="abc123"
+           span_id="def456"
+~~~
+
+应用级 Histogram / Counter 在记录时应运行于对应 Span 的 active context 内，使 OpenTelemetry Metrics SDK 能把该观测值与当前 Trace Context 关联。
+
+实现时不能只保存一个 Span 对象，然后在无 active context 的情况下调用 `histogram.record()` 并假设 Exemplar 一定存在。关键记录应确保：
+
+~~~text
+context.active()
+  ↓
+current Span
+  ↓
+Metric observation
+  ↓
+Exemplar(traceId/spanId)
+~~~
+
+如需显式切换 context，应使用 `context.with(trace.setSpan(...))` 或等价方式。
+
+### 2.4.4 Collector / Prometheus
+
+Target 应用 Metrics 通过 OTLP 发送到 Collector。因此 Collector metrics pipeline 需要同时接收：
+
+~~~text
+otlp
+host_metrics
+docker_stats
+~~~
+
+Prometheus exporter 需要启用支持 Exemplar 的 OpenMetrics 输出能力，并在实际部署版本上验证：
+
+~~~text
+Metric 已写入 Prometheus
++
+Exemplar 中真实存在 trace_id / span_id
+~~~
+
+不能把“Prometheus 能看到指标”当成三信号关联已经完成。
+
+### 2.4.5 关联优先级
+
+RCA Runtime 后续使用三信号时，关联可信度按以下顺序处理：
+
+~~~text
+1. exact traceId/spanId
+2. exact traceId
+3. service + absolute time window + structured event semantics
+4. 仅时间重叠
+~~~
+
+第 1、2 类可以称为精确跨信号关联。
+
+第 3、4 类只能称为时间/语义相关，不能直接升级为因果证明。
 ## 3. 当前 RCA Runtime 问题
 
 当前 RCA 主链已经形成：
@@ -841,9 +1001,9 @@ LokiProvider 负责：
 - 返回 rawRef。
 - 不把整个时间窗口日志全部塞给模型。
 
-首版必须容忍当前日志没有 traceId。
+LokiProvider 必须保留日志中真实存在的 `traceId / spanId` 字段，并支持按 traceId 精确过滤关键 telemetry logs。
 
-如果后续 Target 日志补充 Trace Context，可在不修改 Investigation 模型的情况下增加 traceId / spanId 字段并提升跨模态关联精度。
+对于没有 Trace Context 的普通应用日志，仍按 service + time window + message semantics 查询；不能为统一格式而填充虚假 traceId。
 
 ## 19. Prometheus 接入
 
@@ -868,37 +1028,50 @@ PrometheusProvider 负责：
 - bounded samples / aggregation。
 - API error 分类。
 
-首版重点围绕当前真实采集范围：
+Metrics Provider 需要同时支持两类真实指标：
 
 ~~~text
-host CPU
-host load
-host memory
-paging
-disk
-filesystem
-network
-docker stats
+Infrastructure
+├─ host CPU
+├─ host load
+├─ host memory
+├─ paging
+├─ disk
+├─ filesystem
+├─ network
+└─ docker stats
+
+Application / Agent
+├─ agent run count / duration
+├─ model turn count / duration
+├─ provider request count / duration
+└─ tool call count / duration
 ~~~
 
-Metrics Expert 不能因为当前没有应用 latency metric 就自行发明 metric 名称。
+Metrics Expert 不能自行发明不存在的 metric 名称。
+
+对应用级 Histogram 查询时，Provider 应在后端能力允许时保留或返回 exemplar 中的 `traceId / spanId`，使 Main Agent / Metrics Expert 能从异常 Metric 下钻到代表性 Trace。
 
 ## 20. 跨模态相关性
 
 所有 Expert 共享 Investigation 的绝对窗口和目标。
 
-首版相关性层级：
+相关性层级：
 
 ~~~text
 Trace:
-service + operation + exact span timestamp
+traceId + spanId + service + operation + timestamp
 
 Logs:
-service + timestamp + message semantics
-(+ traceId if真实存在)
+优先 traceId + spanId
+否则 service + timestamp + message semantics
 
-Metrics:
-container/host labels + timestamp
+Application Metrics:
+聚合 label + timestamp
++ Exemplar(traceId/spanId)
+
+Infrastructure Metrics:
+host/container labels + timestamp
 ~~~
 
 允许 Main Agent 得出：
@@ -1073,6 +1246,42 @@ query_alerts（RCA100 版本）
 
 ## 27. 更新后的实施顺序
 
+### 前置增强：Target 三信号统一关联
+
+在 RCA Runtime 正式消费三种后端前，先完善 Target 应用级 Metric 和三信号 Trace Context。
+
+建议文件级范围：
+
+~~~text
+修改
+apps/pi-chat/server/telemetry.ts
+apps/pi-chat/server/observability/pi-tracing-extension.ts
+apps/pi-chat/server/telemetry.test.ts
+apps/pi-chat/server/observability/pi-tracing-extension.test.ts
+apps/pi-chat/package.json
+apps/pi-chat/.env.example
+deploy/observability/otel-collector.yaml
+pnpm-lock.yaml
+
+新增
+apps/pi-chat/server/observability/pi-runtime-metrics.ts
+apps/pi-chat/server/observability/pi-runtime-metrics.test.ts
+
+可选新增
+apps/pi-chat/server/observability/telemetry-context.ts
+~~~
+
+要求：
+
+- Trace / Log / Metric 使用同一生命周期事实。
+- lifecycle log 继续携带真实 traceId / spanId。
+- Application Metrics 使用低基数 label。
+- Application Metrics 通过 Exemplar 关联 traceId / spanId。
+- Collector 接收 Target OTLP Metrics。
+- 实际验证 Prometheus 中 Exemplar 可查询。
+- 不为普通无 context 日志伪造 Trace Context。
+
+第一提交优先完成 Agent / Provider / Tool / Turn Metrics；HTTP RED Metrics、Node.js Runtime Metrics 可以作为后续独立提交，避免扩大本轮风险。
 ### 阶段 0：RCA Runtime 网络连通性
 
 从 main / Production Runtime 实际运行环境验证：
@@ -1254,8 +1463,8 @@ Main Agent
 
 ## 29. 当前已知限制
 
-1. Logs 当前不保证携带 traceId / spanId，精确 Trace-Log correlation 可能暂时不可用。
-2. Prometheus 当前主要是 host/docker metrics，不是完整应用 RED metrics。
+1. Pi lifecycle telemetry logs 已有 traceId / spanId；普通应用日志仍不保证有 Trace Context。
+2. Prometheus 当前已具备 host/docker metrics；应用级 Agent / Provider / Tool Metrics 与 Exemplar 仍需按本规格补充。
 3. Topology 尚无真实 Provider；不能继续偷偷使用 RCA100 topology。
 4. 外部 Alert ingress 尚未接入，首版仍以 manual Investigation 为主。
 5. Grafana 不是本轮 Agent 调查的依赖。
@@ -1274,7 +1483,9 @@ Main Agent
 6. lookback 由 Server 一次性冻结。
 7. Trace / Log / Metrics 各自使用独立 Provider capability。
 8. LLM 不直接自由编写 TraceQL / LogQL / PromQL。
-9. Metrics 首版严格按 host/docker 能力解释，不假装已有应用 RED 指标。
-10. Logs 无 trace context 时只做诚实的 service/time 相关性。
-11. RCA Runtime 与 ECS observability backend 先解决受控网络访问，再接 Agent。
-12. 旧 RCA100 Investigation 只读，不保留完整旧 Runtime 用于 Resume。
+9. 先补应用级 Agent / Provider / Tool Metrics，并保持低基数 label。
+10. Metric ↔ Trace 使用 Exemplar，不把 traceId/spanId 作为 Prometheus label。
+11. Pi lifecycle Logs ↔ Trace 使用真实 traceId/spanId；普通日志无 context 时只做诚实的 service/time 相关性。
+12. 实际验收必须确认 Prometheus Exemplar 中可查到真实 trace_id/span_id。
+13. RCA Runtime 与 ECS observability backend 先解决受控网络访问，再接 Agent。
+14. 旧 RCA100 Investigation 只读，不保留完整旧 Runtime 用于 Resume。
