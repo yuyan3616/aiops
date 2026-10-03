@@ -73,7 +73,9 @@ External / Admin / Alert Platform
 
 核心原则：
 
-> **Spring 管“平台如何管理一次执行”，Node/Pi 管“Agent 如何完成一次执行”。**
+> **LLM 决策，Spring 调度，Node/Pi 执行。**
+
+这里的“Spring 调度”不仅包括最外层 Task / Execution，也包括 Spring-managed RCA 中 Main Agent 与 SubAgent 之间的跨 Session 确定性编排。Main Agent 决定“派谁、查什么”，Spring 创建/恢复 Session、提交 Prompt、记录 SubTask / AgentRun / AgentTurn、搬运 findings；Node/Pi 负责单个 Session 的模型执行、工具调用以及 Investigation / Evidence。完整规格见 [Spring 多 Agent 编排规格](spring-multi-agent-orchestration-spec.md)。
 
 ## 4. 职责边界
 
@@ -95,17 +97,19 @@ External / Admin / Alert Platform
 - 平台级 Agent / LLM 配置；
 - 告警接入与任务创建；
 - Task / Execution 元数据；
+- Main/SubAgent 跨 Session 调度；
+- AgentRun / AgentTurn / SubTask 元数据；
+- findings 搬运、blocked/resume、恢复与取消传播；
 - 审计；
 - 配额；
-- 调度；
 - 多 Runtime 节点治理。
 
 ### 4.2 Node.js + Pi Agent Server 继续负责
 
 - Conversation Runtime；
 - Pi Session 创建、恢复与回收；
-- Main Agent 调度；
-- Expert Agent Session；
+- Main Agent 的调查决策与 Prompt 行为；
+- Main / SubAgent Pi Session 的实际执行；
 - Tool Calling；
 - Hypothesis / Evidence / Observation；
 - Investigation 状态机；
@@ -270,7 +274,7 @@ agent-runtime:
 
 ## 10. 数据所有权
 
-第一阶段不引入 MySQL，避免出现两个 Investigation 事实源。
+第一阶段设计时不引入 MySQL；当前实现阶段已新增 MySQL，但它只保存管理面与调度元数据，不成为 Investigation 的第二事实源。
 
 ```text
 Investigation / Evidence / Hypothesis / Agent Runtime State
@@ -280,7 +284,7 @@ Investigation / Evidence / Hypothesis / Agent Runtime State
                  （唯一事实源）
 ```
 
-未来引入 MySQL 时，优先保存**管理元数据**：
+MySQL 只保存**管理/调度元数据**：
 
 - task_id；
 - user_id；
@@ -288,6 +292,7 @@ Investigation / Evidence / Hypothesis / Agent Runtime State
 - requested_at；
 - tenant / source；
 - platform-level status mirror；
+- agent_run / agent_turn / subtask（进入 Spring 外置编排后）；
 - audit metadata。
 
 其中 Runtime 状态镜像只能用于查询和治理，不能反向覆盖 Agent 内部状态。
@@ -302,15 +307,11 @@ Investigation / Evidence / Hypothesis / Agent Runtime State
 
 ### Node 重启
 
-继续由 Node 当前恢复机制负责：
-
-- running Investigation → interrupted；
-- tool / expert task 做对应恢复收敛；
-- Spring 不复制该恢复逻辑。
+Node 继续负责 Pi Session / Investigation 的 Runtime 恢复，不要求 Spring 解析 sessionFile。进入 Spring 外置编排后，Spring 只通过 Runtime API 对账 Session / Turn 状态，不盲目创建第二个 Session。
 
 ### Spring 重启
 
-第一阶段 Spring 无状态，重启不影响 Agent Runtime。
+当前 Spring 已有 MySQL 持久化。进入多 Agent 编排后，Spring 必须从 AgentRun / AgentTurn / SubTask 的持久状态恢复在途调度，不能依赖 JVM 内存。完整崩溃窗口见多 Agent 编排规格。
 
 ## 12. 安全边界
 
@@ -434,3 +435,30 @@ Runtime health 失败不能直接推断某个 Investigation 已失败；它只�
 - 本分支不同时执行 Spring Boot 4.x 升级；
 - 合并管理面基础结构后，应单独建立升级任务评估 Spring Boot 4.x；
 - 新增第三方依赖时要同时核对 Boot 3.5 与未来 Boot 4 的兼容性，避免形成迁移阻塞。
+
+
+## 20. 架构修正：跨 Session 编排归 Spring
+
+随着 `spring-multi-agent-orchestration-spec.md` 固化，本文早期“Node 继续负责 Main Agent / Expert Agent 调度”的表述以新规格为准。
+
+目标边界：
+
+```text
+Main Agent
+  → 决策、brief、turn-state
+
+Spring
+  → durable scheduler
+  → Main/Sub Session 生命周期
+  → SubTask / AgentRun / AgentTurn
+  → findings 回传
+  → blocked/resume
+  → crash recovery / cancel propagation
+
+Node/Pi
+  → 单 Session 执行
+  → Tool Calling
+  → Investigation / Hypothesis / Evidence
+```
+
+迁移期间保留 `LEGACY_INLINE` 与 `SPRING_EXTERNAL` 双模式；现有 Web RCA 在外置编排稳定前不改变调度语义。
