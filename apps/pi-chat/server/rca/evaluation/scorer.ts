@@ -87,7 +87,7 @@ export class RcaScorer {
     if (!investigation.completedAt || !investigation.rootCause) {
       throw new Error("Ground truth cannot be read before an investigation is completed");
     }
-    const caseId = caseId;
+    const caseId = investigation.caseId;
     if (!caseId) {
       throw new Error("RCA100 offline scorer only supports legacy investigations with caseId");
     }
