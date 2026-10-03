@@ -1,1338 +1,226 @@
-# Live Observability RCA 迁移规格
+# Live Observability RCA 迁移规格 v2
 
-状态：待审查；Target 可观测基础设施已完成，RCA Runtime 接入尚未实现  
-目标分支：main  
-基础设施基线分支：target/production-baseline  
-基础设施基线 HEAD：f2c9746c7211fbc6b4ab9bf756a03f89c40965a4
+状态：根据源码审查修订；开发按关卡推进，生产切换前完成全部 P0 验收。
+目标分支：main。审查代码基线：b81c1bfe94ee13843e1cdc933d60a3fc6b00357a。
+Target 代码基线：f2c9746c7211fbc6b4ab9bf756a03f89c40965a4；Target Spec 提交：5955790345ae10396bdcf6d21af86a25b67b3a14。
 
-目标：将当前以 RCA100 caseId / parquet 为核心的数据集型 RCA Runtime，迁移为面向真实可观测系统的 Live RCA Runtime。Target 侧 Trace / Logs / Metrics 三条真实链路已经部署并验证可查询；本规格只指导 `main` 分支的 RCA Runtime 如何消费 Tempo、Loki、Prometheus，不指导 Target 埋点实现。Target 侧应用指标、日志 Trace Context 与 Metric Exemplar 的实现另见 `target/production-baseline` 分支的 Target Observability 规格。迁移完成后，RCA100 不再作为生产运行时数据源保留。
+## 1. 目标、前提与职责
 
-## 1. 已完成基础设施基线
+生产最终仅保留 Live Observability：Tempo / Loki / Prometheus → Provider → Tool → Observation / Evidence → Expert / Main Agent → RCA。
 
-截至 target/production-baseline@f2c9746，Target 侧已经完成：
+Target 三条存储查询链路已验证，是现有前提；不代表 RCA Runtime 的部署环境已具备网络权限，也不代表应用指标、完整 Provider generation Span 或 Exemplar 已实现。
 
-~~~text
-Target
-  ↓
-OTel Collector
-  ├─ Trace   → Tempo
-  ├─ Logs    → Loki
-  └─ Metrics → Prometheus
-~~~
+本规格只指导消费端。Target SDK、埋点、Collector 与存储配置见 Target 分支独立 Spec。公共数据语义见 [Telemetry Contract v1](telemetry-contract-v1.md)。
 
-并已实际部署、验证可以查询。
+不长期维护 RCA100 + Live 双 Runtime；不重写现有 Budget v2、Expert Runner、Hypothesis、事件机制；不开放自由 TraceQL/LogQL/PromQL、任意 backend URL；首版不新增 Alertmanager、真实 Event/Topology Provider 或可恢复的用户 Pause。
 
-当前仓库中对应配置位于：
+## 2. 当前真实实现与改动边界
 
-~~~text
-deploy/observability/
-├─ otel-collector.yaml
-├─ tempo.yaml
-├─ loki.yaml
-└─ prometheus.yaml
-~~~
+| 位置 | 当前行为 | 迁移要求 |
+|---|---|---|
+| index.ts / config.ts | 创建 RCA100Adapter，读取 RCA100_CASES_DIR | 注入三种 Provider；删除生产数据集配置 |
+| main-agent-tools.ts | start 要求 t数字 caseId；overview 无 logs | 新入口、logs overview、更新所有 Schema |
+| service.ts beginAgentic | 查询 get_alert_context 后创建调查 | Server 直接构造 IncidentContext，不伪造告警工具调用 |
+| tools.ts | Registry 直接依赖 Adapter，所有工具要求 caseId | 显式工具元数据与 Provider capability |
+| pi-expert.ts | 使用 RcaTask.alert，并覆盖 caseId | 使用通用执行上下文，Server 约束查询范围 |
+| profiles/* | 工具白名单与 Event/Topology 角色写死 | 同步切换工具、角色、modalities、预算与 Prompt |
+| conversation/* / chat-events / visualization | 通过 investigationId 关联，仍展示 caseId | 保留关联机制，适配展示与历史读取 |
+| repository.ts / events.ts | 原子快照与独立 JSONL；事件追加失败被吞 | 声明事实来源，增加投影补齐策略 |
 
-关键历史提交：
+ToolCallRecord / InvestigationEvent 已不以 caseId 为身份。避免为去掉 caseId 而重新设计这些对象。
 
-~~~text
-33667a7  功能: 增加 Pi Agent OpenTelemetry Trace
-6a0e0f5  修复: 兼容 Pi 0.86.1 Trace 生命周期事件
-6e53bc0  功能: 接入 Tempo Trace 存储
-032bbb3  功能: 接入 Loki 日志存储
-37e817e  修复: 自动创建 Collector 状态目录
-4c22b85  修复: 更新 Collector 日志接收器名称
-f2c9746  功能: 接入 Prometheus 指标存储
-~~~
+## 3. 版本与历史兼容（P0）
 
-因此以下工作不再属于本规格待办：
+必须区分持久化格式、Budget 协议和数据来源。
 
-- Target Trace 埋点。
-- Collector Trace pipeline。
-- Collector Logs pipeline。
-- Collector Metrics pipeline。
-- Tempo 部署。
-- Loki 部署。
-- Prometheus 部署。
-- 验证后端是否能存入和查询数据。
+第一阶段保留现有 schemaVersion: 2 的执行语义，新增 formatVersion: 3、source: { kind: "live", contractVersion: "1" }。实现前补充字段验证；不能仅把 schemaVersion 改成 3，因为现有大量 schemaVersion === 2 判断会绕过锁、预算与晚到结果保护。
 
-本规格的起点是：真实 telemetry 已经存在，下一步让 RCA Runtime 正确、安全、可审计地使用这些数据。
+如后续统一版本，必须先将所有 v2 分支替换为显式 Budget/执行能力判断，并覆盖回归测试。formatVersion 不承担 Budget capability 判断。
 
-## 2. 当前数据覆盖范围
+新调查不写 caseId，使用 context。旧文件不批量改写；读取层将旧 caseId/alertContext 解释为 legacy RCA100，保留原字段及历史证据。
 
-虽然三种后端都已可查询，但三种数据目前表达的语义不同，Agent 不得把它们当成同等粒度的证据。
+旧调查仅允许读取、报告、历史解释及不触发新取证的展示。Service 层统一拒绝 Resume、Overview、Dispatch、Hypothesis mutation、Conclude 等调查写入，返回 legacy_read_only。不是仅隐藏前端按钮。
 
-### 2.1 Trace
+启动恢复仍可修复旧 running 状态，但不声明 resumable:true；来源判断不能只看 schemaVersion。禁止为历史解释重新加载 task.json/parquet。
 
-Trace 来自 Target 的 Pi Agent OpenTelemetry 埋点。
-
-当前重点 Span 包括：
-
-~~~text
-pi.agent.run
-pi.model.turn
-pi.provider.request
-pi.tool.call
-~~~
-
-Trace 是目前最接近应用内部执行路径的证据，可用于：
-
-- 请求总耗时。
-- Provider 调用耗时。
-- Tool 调用耗时。
-- Parent/Child 关系。
-- Critical Path。
-- Error Span。
-- 未观测时间区间。
-
-### 2.2 Logs
-
-Collector 当前只采集 aiops-rca-target Docker 日志目录，并附加：
-
-~~~text
-service.name = aiops-rca-target
-deployment.environment.name = production
-~~~
-
-Logs 可用于：
-
-- error / exception。
-- timeout。
-- retry。
-- provider / tool 错误文本。
-- 与 Investigation 时间窗口相关的运行时事件。
-
-当前 Pi lifecycle telemetry 日志已经通过 `logTelemetryEvent()` 从对应 Span 注入 `traceId / spanId`，因此 `pi.agent.* / pi.model.* / pi.provider.* / pi.tool.*` 这类关键生命周期日志具备精确 Trace-Log 关联基础。
-
-普通 Hono / Pino 应用日志目前不保证天然携带 Trace Context。后续应统一从当前 active span 提取 `traceId / spanId` 注入关键日志；在某条日志真实没有 Trace Context 时，只能使用 service + absolute time window + 事件语义做相关性判断，不能伪造精确 Trace-Log Join。
-
-### 2.3 Metrics
-
-当前 Prometheus 数据来自 Collector：
-
-~~~text
-host_metrics
-docker_stats
-~~~
-
-包括主机 / 容器层面的 CPU、load、memory、paging、disk、filesystem、network 以及 Docker 指标。
-
-因此首版 Metrics 主要用于：
-
-- 主机资源饱和。
-- 容器资源异常。
-- CPU / 内存 / 网络 / 文件系统等基础设施异常。
-
-当前不能把 Prometheus 证据描述成完整的应用 RED 指标。
-
-例如：
-
-~~~text
-CPU 正常
-~~~
-
-最多能削弱“CPU 饱和导致慢”的假设，不能推出：
-
-~~~text
-应用性能正常
-~~~
-
-当前 `main` Runtime 必须以“能力发现/真实存在”为准消费 Prometheus，不得假设应用级指标已经存在。
-
-Target 后续会补充应用级 Agent / Provider / Tool / Turn 指标，并通过 Metric Exemplar 关联 Trace；这些生产侧埋点属于 `target/production-baseline` 的独立规格，不在本 Spec 中实施。
-
-因此 MetricsProvider 必须支持两种状态：
-
-~~~text
-当前：host/docker infrastructure metrics
-未来：+ application/agent metrics + exemplars
-~~~
-
-当应用级 metric 或 exemplar 尚未出现时，Provider 应明确返回 capability / no-data 结果，而不是让 Agent 猜测指标名或伪造 trace 关联。
-
-## 2.4 RCA Runtime 消费的跨信号关联契约
-
-本节定义 `main` 分支需要消费的 telemetry contract，不规定 Target 如何实现。
-
-RCA Runtime 按以下优先级使用跨信号关联：
-
-~~~text
-Trace  → traceId / spanId
-Log    → 若真实存在，则使用 traceId / spanId
-Metric → 若真实存在，则使用 Exemplar(traceId/spanId)
-~~~
-
-关联可信度：
-
-~~~text
-1. exact traceId + spanId
-2. exact traceId
-3. service + absolute time window + structured semantics
-4. 仅时间重叠
-~~~
-
-第 1、2 类可作为精确跨信号关联；第 3、4 类只能作为候选相关性，不能自动升级为因果证明。
-
-Provider 层要求：
-
-- TempoProvider 保留 traceId / spanId / parentSpanId。
-- LokiProvider 保留日志里真实存在的 traceId / spanId，并允许按 traceId 精确过滤；没有则如实为空。
-- PrometheusProvider 在后端返回 exemplar 时保留其中真实 traceId / spanId；没有 exemplar 时不得伪造。
-- Main Agent / Expert 必须区分“精确关联”和“仅时间相关”。
-
-Target 如何生成日志 Trace Context、应用级 Metrics 与 Exemplar，不属于本 Spec。
-## 3. 当前 RCA Runtime 问题
-
-当前 RCA 主链已经形成：
-
-~~~text
-Conversation
-→ Main Agent
-→ Investigation
-→ Hypothesis
-→ Expert Agent
-→ Tool / Evidence
-→ RCA Report
-~~~
-
-但调查启动与数据访问仍然带有 RCA100 数据集约束：
-
-~~~text
-start_rca_investigation(caseId)
-→ RcaService.beginAgentic(caseId)
-→ get_alert_context
-→ RCA100Adapter
-→ task.json / parquet
-~~~
-
-Trace / Log / Metrics Expert 的工具也仍围绕 RCA100 设计。
-
-因此用户即使已经明确给出真实目标和时间范围，例如：
-
-> 帮我分析一下 aiops-rca-target 最近 10 分钟的 Trace，看看请求耗时主要集中在哪些 Span 上。
-
-Main Agent 仍可能要求 t039 这类 caseId。
-
-这已经成为下一阶段的核心架构阻塞。
-
-## 4. 最终目标架构
-
-生产运行时目标：
-
-~~~text
-                         Investigation
-                               │
-                               ▼
-                          Main Agent
-                               │
-             ┌─────────────────┼─────────────────┐
-             ▼                 ▼                 ▼
-        Trace Expert        Log Expert       Metrics Expert
-             │                 │                 │
-             ▼                 ▼                 ▼
-       TraceProvider       LogProvider      MetricsProvider
-             │                 │                 │
-             ▼                 ▼                 ▼
-           Tempo              Loki           Prometheus
-~~~
-
-核心原则：
-
-1. Investigation 是唯一调查核心对象。
-2. caseId 不再是生产领域模型中的调查身份。
-3. Main Agent 面向“需要什么证据”，不面向数据集或后端产品。
-4. Expert 按 modality 取证。
-5. Provider 封装具体后端协议。
-6. 后端 URL、认证、网络信息完全由 Server 管理。
-7. Trace / Logs / Metrics 使用同一个固定 Investigation 时间窗口。
-8. 真实可观测数据是生产 Runtime 的唯一证据来源。
-9. RCA100 迁移完成后退出生产 Runtime。
-
-## 5. 非目标
-
-本轮不做：
-
-- 不长期维护 RCA100 + Live 双轨。
-- 不部署 Grafana。
-- 不接 Alertmanager。
-- 不做故障注入。
-- 不实现任意 TraceQL / LogQL / PromQL 自由执行工具。
-- 不做大规模前端 UI 重构。
-- 不重写 Main Agent / Expert / Evidence 的职责边界。
-- 不把 Tempo / Loki / Prometheus 原始大响应整体发送给模型。
-- 不允许 Agent 指定任意 backend URL。
-- 不因为 Metrics 已接入就宣称已有应用级 RED 指标。
-- 不为了跨模态关联而伪造不存在的 traceId / spanId。
-
-## 6. Investigation 领域模型
-
-### 6.1 移除 caseId 作为核心身份
-
-目标：
+## 4. 领域模型与权威字段
 
 ~~~ts
-export interface Investigation {
-  id: string;
-
-  status: InvestigationStatus;
+interface IncidentContext {
   symptom: string;
-
-  context: IncidentContext;
-  scope: InvestigationScope;
-
-  hypotheses: Hypothesis[];
-  observations?: Observation[];
-  evidence: Evidence[];
-  expertTasks: ExpertTask[];
-  toolCalls: ToolCallRecord[];
-
-  rounds: number;
-  startedAt: string;
-  completedAt?: string;
-
-  // 现有 budget / interruption / recovery 字段继续保留
-}
-~~~
-
-新调查不再要求：
-
-~~~ts
-caseId: string;
-~~~
-
-### 6.2 IncidentContext
-
-把偏 RCA100 的 AlertContext 演进为通用 IncidentContext：
-
-~~~ts
-export interface IncidentContext {
-  symptom: string;
-
-  trigger:
-    | { type: "manual" }
-    | {
-        type: "alert";
-        eventId?: string;
-        title?: string;
-        source?: string;
-      }
-    | {
-        type: "api";
-        source?: string;
-      };
-
+  trigger: { type: "manual" } | { type: "alert"; eventId?: string; title?: string; source?: string } | { type: "api"; source?: string };
   window: TimeRange;
-
-  target: {
-    service?: string;
-    operation?: string;
-    entity?: string;
-    environment?: string;
-    region?: string;
-    container?: string;
-  };
+  target: { service?: string; operation?: string; entity?: string; environment?: string; region?: string; container?: string };
 }
-~~~
-
-首版主要使用 manual。
-
-以后 Alertmanager / Grafana Alert / 外部 API 只负责构造 IncidentContext，不改变调查主链。
-
-### 6.3 InvestigationScope
-
-~~~ts
-export interface InvestigationScope {
-  service?: string;
-  operation?: string;
-  entity?: string;
-  container?: string;
-
-  timeRange: TimeRange;
-
+interface InvestigationScope {
   candidateEntities: string[];
+  // 经显式记录的范围扩展；不能覆盖原始 context。
+  extensions?: Array<{ target?: Record<string, string>; window?: TimeRange; reason: string; createdAt: string }>;
 }
 ~~~
 
-## 7. start_rca_investigation 新协议
-
-不再接受 caseId。
+context 是不可变触发事实、目标和 incident window 的唯一权威来源。Investigation.symptom 如保留，仅由 context 派生。scope 不重复保存独立可写的 incident window/target。
 
-~~~ts
-interface StartRcaInvestigationInput {
-  symptom: string;
+保留现有 status、tasks、calls、observations、evidence、hypotheses、rounds、interventions、Budget ledger 与 recovery。新 Observation/Evidence 使用 investigationId；局部 C/O/E 编号继续在调查锁内生成。
 
-  target: {
-    service?: string;
-    operation?: string;
-    entity?: string;
-    container?: string;
-    environment?: string;
-  };
+manual symptom 与 user intervention 是用户上下文，不是 telemetry Evidence。创建调查不消耗一次虚假的查询，也不创建假的 alert Observation。
 
-  window:
-    | {
-        kind: "absolute";
-        from: string;
-        to: string;
-      }
-    | {
-        kind: "lookback";
-        minutes: number;
-      };
+## 5. 新入口、Conversation 与时间冻结
 
-  forceNew?: boolean;
-}
-~~~
+start_rca_investigation 输入：symptom、target、window、可选 forceNew。window 为 absolute(from,to) 或 lookback(minutes)。
 
-约束：
+Server 验证：至少 service/entity/container 一项；字符串长度、UTC 时间、from<to、最大 24h；lookback 1～1440 分钟。Server 在创建操作中读取一次 T，冻结 from/to；不要求模型调用 utc_time 计算。
 
-- service / entity / container 至少一个。
-- absolute from/to 必须合法且 from <= to。
-- lookback 建议限制 1～1440 分钟。
-- forceNew 保持现有会话关联语义。
-- 不允许因为缺少 caseId 而拒绝真实调查。
+ConversationRecord.activeInvestigationId / investigationIds 保持现有机制。running 不可被 forceNew 隐式替换；终态或 legacy 只有显式新调查请求才能替换。创建使用稳定 operationId/输入 hash 做去重，重放不能重新冻结窗口；创建与会话关联之间的失败应可恢复，不自动创建重复调查。
 
-## 8. 相对时间冻结
+查询窗口规则：
 
-用户说：
+- incident：固定 context.window，专家默认使用。
+- baseline：显式比较窗口，验证时间合法、与 incident 不重叠；不是健康真值。
+- expanded：有理由的查询扩展，由 Server 校验、记录，最多 24h；不修改 incident。
 
-> 最近 10 分钟
+Server 覆盖默认目标与窗口，验证允许的范围扩展；不能靠 Prompt 或对象 spread 顺序保证。Evidence.timeRange 写实际 query window，包含 baseline/expanded 引用，不能统一写 incident window。
 
-Main Agent 不再先调用 utc_time 并自己计算。
+冻结时间不冻结数据；查询结果必须保存 retrievedAt 和证据快照，晚到数据不能覆写旧证据。
 
-推荐：
+## 6. 网络、安全与部署
 
-~~~json
-{
-  "symptom": "aiops-rca-target 请求耗时分析",
-  "target": {
-    "service": "aiops-rca-target"
-  },
-  "window": {
-    "kind": "lookback",
-    "minutes": 10
-  }
-}
-~~~
+在实际 Production RCA Runtime 环境先验证三个 endpoint 的受控查询、认证、tenant、timeout、cancel。Server 配置 TEMPO_URL/LOKI_URL/PROMETHEUS_URL 与可选 tenant/auth，模型不能修改或看到 credential。
 
-Server 在 start_rca_investigation 真正执行时读取一次当前时间 T：
+跨 Railway/ECS 使用私网、VPN、受认证代理或 Tunnel 等访问边界。禁止裸暴露当前无认证后端。redirect 不能逃出受控 endpoint；查询/错误脱敏。tenant/backend identity 由 Server 固定，记录别名而非 Secret。
 
-~~~text
-from = T - 10min
-to = T
-~~~
+首版明确单写者：同一 Investigation 只能由一个 Runtime 进程修改。现有锁、queue、semaphore 不提供跨进程保护；多副本共享存储前需独立设计 lease/CAS 等控制。
 
-随后绝对窗口写入 Investigation。
+## 7. Provider 与统一结果合同
 
-之后：
+保留按模态独立的 TraceProvider(searchTraces/getTrace)、LogProvider(searchLogs)、MetricsProvider(discoverMetrics/queryMetrics)。Client 管 HTTP/timeout/retry/Abort，Provider 管协议编译与归一化，Registry 管授权/范围/审计。
 
-~~~text
-Trace Expert
-Log Expert
-Metrics Expert
-~~~
+每个方法要求传入执行 AbortSignal；后台管理查询使用独立且有 deadline 的 Signal。
 
-全部默认使用同一个 from/to。
+统一结果：status(success/no_data/partial/unsupported)、实际 query、retrievedAt、bounded data、warnings、truncationReasons、snapshotRef、backendAlias、contractVersion。失败使用 typed error，不包装成 no_data。
 
-不能出现：
+error 分类：cancelled、timeout、unavailable、unauthorized、invalid_query、not_found、invalid_response、rate_limited、storage_error。记录 retryable 与脱敏诊断。
 
-~~~text
-Trace   08:36 ~ 08:46
-Logs    08:38 ~ 08:48
-Metrics 08:40 ~ 08:50
-~~~
+available capability 由配置和真实能力决定；不能声明六种模态均可用。缺失应用指标/Exemplar 返回 capability 不可用，不猜指标。
 
-## 9. RCA Runtime 到 ECS Observability 的网络边界
+## 8. Trace 查询与分析
 
-Target 三条链路已验证可查询，不代表部署在其他环境的 RCA Runtime 已经具备访问权限。
+Trace Expert 仅 search_traces / get_trace；参数由 Server 编译，使用锁定 Tempo 版本的 /api/search 与 /api/v2/traces/{traceId}，先验证响应 schema。
 
-在 Agent 接入之前必须从 RCA Runtime 实际部署环境执行连接 smoke test：
+search 参数：受控 target/window、operation、status、minDurationMs、limit、可选 baseline。返回 sampleCount/sampleStats，不能把有限搜索样本 P99 描述成系统 P99。说明搜索采样和排序偏差；未知总体匹配数不编造 matched。
 
-~~~text
-RCA Runtime
-├─ Tempo endpoint reachable
-├─ Loki endpoint reachable
-└─ Prometheus endpoint reachable
-~~~
+NormalizedTrace 保留 ID、parent、service、时间、status、有界 attributes、completeness/warnings。完整性未知与截断区分。get_trace 校验 ID 和结果 scope；不能通过任意 traceId 绕过环境/tenant/目标授权。
 
-Server 配置：
+TraceAnalyzer 对 direct child intervals 做裁剪和 union，计算未覆盖区间；不得直接减去 child duration。缺失 parent、重叠、时钟偏差、未结束 span、截断都要报告。截断 trace 不能宣称完整 critical path。
 
-~~~text
-TEMPO_URL
-LOKI_URL
-PROMETHEUS_URL
-~~~
+Gap 是观测边界，不证明网络、排队或 runtime pause。当前 Target Provider headers-only span 未完成修复前，只能解释 response-header 时间，不能据此认定完整模型生成耗时。
 
-可选：
+## 9. Logs 查询
 
-~~~text
-TEMPO_TENANT_ID
-LOKI_TENANT_ID
-~~~
+Log Expert 仅 search_logs。结构化参数包含 scope/window、severity、lifecycleStatus、event、keywords、traceId、spanId、limit、明确 mode(anomaly/all/custom)。遗漏 keywords 不等于全日志查询。
 
-安全约束：
+按合同解析 Docker/Pino，正确映射 service_name、numeric level 与 lifecycle status。ID 精确过滤走内容/structured metadata，不建高基数 stream label。无 Context 如实缺失。
 
-- Agent 看不到上述 URL。
-- Agent 不能修改上述 URL。
-- Credential 不进入 Tool Result。
-- 不允许为了 Railway / RCA Runtime 访问而把当前无认证 Tempo、Loki、Prometheus 直接裸暴露到公网。
-- 若跨 ECS / Railway 网络访问，应通过受控反向代理、VPN、私网连接、Tunnel 或等价访问边界，并增加认证或来源限制。
+模式计数与摘要必须标明基于完整后端聚合还是有界返回样本；未知 matched 不编造。保留 timestamp 来源、实际过滤条件和截断说明。
 
-第一个开发 smoke test 不是 LLM 调用，而是 Server 从真实运行环境分别完成一次受控查询。
+## 10. Metrics 查询与 Exemplar
 
-## 10. Provider 能力边界
+Metrics Expert 仅 discover_metrics / query_metrics。discovery 限定目标和窗口，返回真实名称、type、unit、允许 labels、支持操作；不全量枚举 catalog。
 
-不建立一个包含所有 optional 方法的巨大 ObservabilityProvider。
+query 使用结构化 operation(raw/rate/increase/quantile)、metric、labelFilters、aggregation/groupBy、window、stepSeconds、可选 baseline、includeExemplars。各操作必须匹配类型，quantile 验证 0～1；限定标签名/数量/长度与聚合维度，拒绝任意 PromQL。
 
-按 modality 拆分。
+Counter 处理 reset；Histogram 计算 rate(bucket) 和 quantile；Gauge 用峰值/持续时间等适用摘要。不把累计 Counter 或 bucket count 当普通温度式序列比较。step 由 Server 根据 points 上限调整并回显，不隐藏改变分辨率。
 
-### 10.1 TraceProvider
+CPU 正常只能削弱 CPU 饱和假设，不能证明应用健康；service 与 host/container 的归属需有元数据映射。
 
-~~~ts
-interface TraceProvider {
-  searchTraces(
-    query: TraceSearchQuery,
-    signal?: AbortSignal
-  ): Promise<TraceSearchResult>;
+includeExemplars 触发独立的有界 /api/v1/query_exemplars，关联原始 series/value/time；不将聚合 P99 点绑定成单一 Trace。允许 unsupported/no exemplar/trace expired，并区分这些状态与 no_data。
 
-  getTrace(
-    traceId: string,
-    options?: GetTraceOptions,
-    signal?: AbortSignal
-  ): Promise<NormalizedTrace>;
-}
-~~~
+## 11. 工具、Profile 与 Main Overview
 
-实现：
+Registry 注入三个 Provider；显式定义每个工具的 modality、schema、capability、budget。未知工具拒绝，删除默认 topology fallback。
 
-~~~text
-TraceProvider
-└─ TempoTraceProvider
-~~~
+同步修改 OBSERVABILITY_TOOL_NAMES、compactToolResultForAgent、toolModality、Profile tools/modalities/toolBudgets、expert Prompt、Main Prompt、dispatch schema、Conversation context、聊天事件及 visualization。
 
-### 10.2 LogProvider
+新 dispatch 仅 trace/log/metrics；没有真实 Provider 的 event-topology 不进入新 Session，历史类型仍可读。删除生产 get_alert_context/schema/parquet/events/alerts/topology 工具路径。
 
-~~~ts
-interface LogProvider {
-  searchLogs(
-    query: LogSearchQuery,
-    signal?: AbortSignal
-  ): Promise<LogSearchResult>;
-}
-~~~
+query_rca_overview 仅 traces/logs/metrics，使用同一 Provider 和更小结果上限。Main 不需要知道具体后端产品。screen_rca_candidates 改为真实 capability 驱动的有界检查；无结构/应用指标能力时明确 unsupported，不能偷偷读取 RCA100 或用 host CPU 冒充各服务请求指标。
 
-实现：
+专家仍不能决定最终 RCA，Evidence/Finding/Hypothesis/Conclusion 因果门槛保留。精确关联也只证明执行归属，不能自动升级为因果。
 
-~~~text
-LogProvider
-└─ LokiLogProvider
-~~~
+## 12. 并发、取消、Recovery 与 Budget
 
-第一版不让 Agent 任意写 LogQL。
+保留 updateV2/withInvestigationLock、dispatch operation 去重、reservation ledger、每调查 3/全局 9 runtime slots、晚到结果检查。I/O 不放调查锁内；锁内只提交状态和 Budget。
 
-### 10.3 MetricsProvider
+Provider 增加每后端全局并发限制（初始 4），排队可取消；限制同专家并行查询，不能把一个 Agent task 的槽位误当全部 fetch 的限流。
 
-~~~ts
-interface MetricsProvider {
-  discoverMetrics(
-    query: MetricDiscoveryQuery,
-    signal?: AbortSignal
-  ): Promise<MetricDiscoveryResult>;
+cancel/intervention 必须独立于存储成功发出 abort：持久化失败路径仍停止子 Session、排队、fetch/body、retry/backoff；存储错误如实返回并保留诊断。提交时检查 Signal、调查/任务状态及 generation，晚到结果不被接受。
 
-  queryMetrics(
-    query: MetricQuery,
-    signal?: AbortSignal
-  ): Promise<MetricQueryResult>;
-}
-~~~
+保持 slot 到底层 Promise/finally 真正 settled 才释放；不用 Promise.race 伪装底层停止。客户端 abort 不保证远端计算立即停止，仍设置 backend timeout。
 
-实现：
+Cancel 是不可恢复终态；首版不新增用户 Pause。restart interrupted 的 Live 调查可恢复，旧调查只读。恢复保留已完成证据，不自动全量重查。
 
-~~~text
-MetricsProvider
-└─ PrometheusMetricsProvider
-~~~
+transport retry 最多一次，仅对明确 transient reset/502/503/504 或 deadline 尚允许的超时；取消不 retry，400/401/403/非法参数不 retry。429 只在有限 Retry-After/deadline 内允许。每次 attempt 记录，但一次逻辑 ToolCall 只消费一次 tool-execution safety budget。
 
-第一版不让 Agent 任意写 PromQL。
+Expert Recovery 与 transport retry 分开：延续现有 Primary/Recovery policy，仅明确 transient、无已完成取证工作的专家失败按既有规则申请恢复；不要因为后端失败就把所有 failed task 当免费重试。
 
-discoverMetrics 的目的不是把整个 Prometheus catalog 全塞给模型，而是避免 Agent 猜 metric name。
+## 13. 持久化、证据与审计（P0）
 
-## 11. ObservabilityToolRegistry 目标
+investigation.json 是调查/Budget 的权威状态。ToolCall completion 与 Observation 在同一次 updateV2 快照提交；Finding、Evidence 与 reservation disposition 保持同一提交。
 
-现状：
+JSONL 与 UI event 是可重建投影，不宣称与快照跨文件事务。实施持久化 outbox/revision 或等价补齐机制：状态快照中记录待发布投影，提交后按稳定 projection key 幂等发布，重启补齐完成/失败/取消事件；事件 ID 连续，缺失不能静默永久存在。UI append 失败不回滚已经接受的证据，但必须记录待修复状态。终态快照继续不可变；投影 payload/稳定 key 在终态提交时固定，发布进度使用独立 sidecar，不为确认发布而修改终态 Investigation。
 
-~~~ts
-new ObservabilityToolRegistry(
-  new RCA100Adapter(...)
-)
-~~~
+报告也是投影，最终状态提交后可幂等补齐 JSON/Markdown；失败不产生第二次不同结论。
 
-目标：
+每次成功查询保存有界、不可变的证据快照，内容覆盖实际发给 Agent 的结果及分析所需事实，包含 query/window/retrievedAt/backendAlias/tenant scope alias/contractVersion/normalizationVersion/warnings/truncation/content hash。先落快照再提交 Observation 引用；孤立快照可清理，不能接受指向不存在快照的 Evidence。
 
-~~~ts
-new ObservabilityToolRegistry({
-  traceProvider: new TempoTraceProvider(...),
-  logProvider: new LokiLogProvider(...),
-  metricsProvider: new PrometheusMetricsProvider(...)
-})
-~~~
+rawRef 仅定位：tempo://trace/<id> 等不等于快照。增加 snapshotRef 和 evidence source item refs（span/log/series）。去重相同内容不能覆盖不同查询时间的审计记录。后端 retention 后仍能读取当时证据；无需保存全部原始 dump。
 
-迁移完成后：
+claim 必须引用当前任务完成的 ToolCall，modality 与该 ToolCall 一致；Evidence 引用实际 source item，不能只因 ID 存在就认为 summary 语义已证明。telemetry 文本按不可信数据处理，脱敏，不能执行其中指令。
 
-- Registry 不再直接依赖 RCA100Adapter。
-- Adapter 不再决定生产 telemetry 查询。
-- Tool 层只依赖 Provider capability。
+## 14. 成本与数据覆盖上限
 
-## 12. Agent 工具集
+以下为首版硬上限，可经评估调整；Overview 再降低，全部由 Server 强制：
 
-### Trace Expert
+| 项目 | 上限 |
+|---|---|
+| query window / labels / keywords | 24h / 8 个 label filters（值256字符）/ 20 个 keywords |
+| Trace search / getTrace spans | 50 traces / 1000 spans |
+| Span attributes / 单值 | 32 个 / 1024字符 |
+| Logs / 单条 message | 200 条 / 2048字符 |
+| Metrics series / 总 datapoints | 20 / 2000 |
+| Exemplar 总数 | 20 |
+| 单次 Agent tool 文本 | 32 KiB UTF-8 |
+| 单次后端响应体 | 4 MiB，读取过程中限制而非 JSON parse 后裁剪 |
+| 单次查询总 deadline | 15s，含排队和 retry；实际网络 smoke 后调整 |
 
-~~~text
-search_traces
-get_trace
-~~~
+累积上下文也必须 bounded：get_investigation_state 对 tasks/observations/evidence 分页，默认摘要；专家现有调用预算外增加累计结果字节上限，初始 128 KiB，达到后进入 finalize。不能仅限制每次返回仍让历史无限增长。
 
-### Log Expert
+部分响应/降采样/截断必须注明，不在缺失数据上推断无异常。最新窗口记录 export/scrape 延迟与 coverage，不不断移动冻结窗口；必要时在同一窗口显式补查并新增证据快照。
 
-~~~text
-search_logs
-~~~
+## 15. 实施顺序与发布关卡
 
-首版 search_logs 结构化参数建议：
+1. 固定合同、格式/Budget/source、legacy 只读、窗口、审计及取消设计。
+2. Target 独立验证完整 Provider lifecycle 与 Exemplar 输出路径；main 可先消费明确已有的能力，不假装应用指标已存在。
+3. Production Runtime 受控网络/认证 smoke，锁定后端版本和字段映射。
+4. 三种 Client/Provider 单测与真实 smoke，验证 bounded、异常、取消、Exemplar 查询及证据快照；尚不切换 Agent。
+5. 同步切换新调查入口、Registry、工具/Profile/Overview/Prompt、Conversation 展示；保持 Budget v2。
+6. 验证并发、intervention、cancel、storage failure、restart、投影补齐、历史只读与上下文上限。
+7. 删除生产 RCA100Adapter/parquet/rcaCasesDir、旧配置、启动下载路径和 Prompt；保留历史读取与独立离线评估需要的隔离代码，不进入生产 import graph。
+8. 多模态闭环通过后上线；再进行 Provider Slow、Tool timeout、Application Error、Resource Pressure 故障验证。
 
-~~~ts
-interface LogSearchQuery {
-  from: string;
-  to: string;
+开发过程可有未发布中间提交，但生产切换必须原子完成入口和工具路由，不能让新 Live Investigation 临时回退到 RCA100。回滚按发布版本处理，不构建永久双 Runtime。
 
-  service?: string;
-  container?: string;
+## 16. 必须通过的验收
 
-  level?: string;
-  keywords?: string[];
+- 最近10分钟直接创建 Live Investigation；重放不重复创建/冻结，所有查询默认同窗。
+- Trace/Log/Metrics 均查询真实后端；no_data、partial、unsupported、unavailable 区分。
+- 并行专家/同调查工具返回乱序时，ID、状态、Budget 与证据引用正确。
+- intervention/cancel 发生于排队、fetch、body、retry、commit 前后；没有晚到 Evidence，没有泄漏 slot；存储失败仍 abort。
+- 进程在快照、journal、event、report 之间退出，重启可修复投影而不重复消费预算。
+- 旧 v2 RCA100 调查只读，不可 resume/dispatch/conclude；报告和追问可用。
+- Counter reset、Histogram quantile、Gauge、series映射与单位正确；Exemplar独立查询且降级诚实。
+- headers-only、截断Trace、未知采样/最新未到数据不被当完整证据；gap/时间重叠/CPU正常不升级为因果。
+- Secret 与恶意 telemetry 指令不进入执行路径；response与累积上下文上限有效。
+- 新格式仍走 Budget v2、终态保护、generation 检查；单写者部署约束被确认。
 
-  limit?: number;
-}
-~~~
-
-Provider 内部生成受控 LogQL。
-
-返回：
-
-- matched / returned。
-- compact log entries。
-- recurring patterns。
-- error / timeout / retry count summary。
-- truncated。
-- rawRef。
-
-### Metrics Expert
-
-~~~text
-discover_metrics
-query_metrics
-~~~
-
-discover_metrics 先发现当前 Prometheus 中可用、与目标相关的 metric 名称。
-
-query_metrics 使用受控结构化参数：
-
-~~~ts
-interface MetricQuery {
-  from: string;
-  to: string;
-
-  metric: string;
-
-  container?: string;
-  labelFilters?: Record<string, string>;
-
-  stepSeconds?: number;
-
-  baselineFrom?: string;
-  baselineTo?: string;
-}
-~~~
-
-Provider 内部生成 PromQL。
-
-首版 Tool Schema 应限制 labelFilters 数量和值长度，不能让模型构造任意查询文本。
-
-## 13. Main Agent Overview
-
-query_rca_overview 继续承担低成本候选发现，不读取大量原始数据。
-
-### traces
-
-~~~text
-Main Agent
-→ query_rca_overview(kind="traces")
-→ TraceProvider.searchTraces()
-→ Tempo
-~~~
-
-### logs
-
-~~~text
-Main Agent
-→ query_rca_overview(kind="logs")
-→ LogProvider.searchLogs()
-→ Loki
-~~~
-
-只返回错误模式 / 关键词摘要和少量样本，不替代 Log Expert 深挖。
-
-### metrics
-
-~~~text
-Main Agent
-→ query_rca_overview(kind="metrics")
-→ MetricsProvider
-→ Prometheus
-~~~
-
-首版 overview 应针对当前已有 host/container metrics 做资源异常摘要，不把它包装成应用级 latency/error 监控。
-
-Main Agent 不需要知道 Tempo、Loki、Prometheus 名字。
-
-## 14. Tempo 接入
-
-代码建议：
-
-~~~text
-apps/pi-chat/server/rca/observability/
-└─ trace/
-   ├─ types.ts
-   ├─ provider.ts
-   ├─ tempo-client.ts
-   ├─ tempo-provider.ts
-   ├─ trace-analysis.ts
-   └─ tempo-provider.test.ts
-~~~
-
-TempoClient 负责：
-
-- HTTP。
-- timeout。
-- 有限 retry。
-- AbortSignal。
-- tenant header。
-- API error 分类。
-
-首版：
-
-~~~text
-GET /api/search
-GET /api/v2/traces/{traceId}
-~~~
-
-Agent 不直接生成 TraceQL。
-
-## 15. search_traces
-
-结构化查询：
-
-~~~ts
-interface TraceSearchQuery {
-  from: string;
-  to: string;
-
-  service?: string;
-  operation?: string;
-  status?: "ok" | "error" | "unset";
-  minDurationMs?: number;
-
-  limit?: number;
-
-  baselineFrom?: string;
-  baselineTo?: string;
-}
-~~~
-
-TempoProvider 内部编译 TraceQL。
-
-返回 compact result：
-
-~~~json
-{
-  "sampleCount": 86,
-  "sampleStats": {
-    "minMs": 812,
-    "p50Ms": 1320,
-    "p90Ms": 2740,
-    "p95Ms": 3310,
-    "p99Ms": 4910,
-    "maxMs": 5260
-  },
-  "traces": [
-    {
-      "traceId": "abc",
-      "rootService": "aiops-rca-target",
-      "rootSpan": "pi.agent.run",
-      "durationMs": 5260,
-      "status": "ok",
-      "startTime": "..."
-    }
-  ],
-  "truncated": true
-}
-~~~
-
-必须叫 sampleStats。
-
-有限 search result 的 P99 是样本 P99，不能描述成系统整体 P99。
-
-## 16. NormalizedTrace 与 TraceAnalyzer
-
-Tempo 原始 OTel JSON 不直接进入 Agent。
-
-~~~ts
-interface NormalizedSpan {
-  spanId: string;
-  parentSpanId?: string;
-
-  name: string;
-  service: string;
-
-  startTime: string;
-  endTime: string;
-  durationMs: number;
-
-  status: "ok" | "error" | "unset";
-
-  attributes?: Record<string, string | number | boolean>;
-}
-
-interface NormalizedTrace {
-  traceId: string;
-
-  durationMs: number;
-  spanCount: number;
-  errorSpanCount: number;
-
-  spans: NormalizedSpan[];
-
-  truncated: boolean;
-}
-~~~
-
-TempoProvider：
-
-~~~text
-Tempo response
-→ NormalizedTrace
-~~~
-
-TraceAnalyzer：
-
-~~~text
-buildSpanTree()
-calculateCriticalPath()
-calculateUnobservedGaps()
-summarizeTrace()
-~~~
-
-## 17. Trace Gap 边界
-
-不能：
-
-~~~text
-parentDuration
-- child1Duration
-- child2Duration
-~~~
-
-因为 child spans 可能并发。
-
-必须：
-
-~~~text
-direct child intervals
-→ interval union
-→ covered intervals
-→ parent uncovered intervals
-~~~
-
-Gap 只说明存在未观测区间。
-
-不能仅凭 gap 推断：
-
-- 服务内部阻塞。
-- 网络慢。
-- queueing。
-- runtime pause。
-- missing instrumentation。
-
-## 18. Loki 接入
-
-代码建议：
-
-~~~text
-apps/pi-chat/server/rca/observability/
-└─ log/
-   ├─ types.ts
-   ├─ provider.ts
-   ├─ loki-client.ts
-   ├─ loki-provider.ts
-   └─ loki-provider.test.ts
-~~~
-
-LokiProvider 负责：
-
-- 将 service / container / level / keywords 转换为受控 LogQL。
-- 把 Loki stream response 归一化为 bounded log entries。
-- 对重复错误做有限聚合。
-- 保留原始 timestamp。
-- 返回 rawRef。
-- 不把整个时间窗口日志全部塞给模型。
-
-LokiProvider 必须保留日志中真实存在的 `traceId / spanId` 字段，并支持按 traceId 精确过滤关键 telemetry logs。
-
-对于没有 Trace Context 的普通应用日志，仍按 service + time window + message semantics 查询；不能为统一格式而填充虚假 traceId。
-
-## 19. Prometheus 接入
-
-代码建议：
-
-~~~text
-apps/pi-chat/server/rca/observability/
-└─ metrics/
-   ├─ types.ts
-   ├─ provider.ts
-   ├─ prometheus-client.ts
-   ├─ prometheus-provider.ts
-   └─ prometheus-provider.test.ts
-~~~
-
-PrometheusProvider 负责：
-
-- metric discovery。
-- range query。
-- label 过滤。
-- baseline / incident 对比。
-- bounded samples / aggregation。
-- API error 分类。
-
-Metrics Provider 的领域模型应能支持两类指标，但只能查询后端实际存在的能力：
-
-~~~text
-Infrastructure
-├─ host CPU
-├─ host load
-├─ host memory
-├─ paging
-├─ disk
-├─ filesystem
-├─ network
-└─ docker stats
-
-Application / Agent
-├─ agent run count / duration
-├─ model turn count / duration
-├─ provider request count / duration
-└─ tool call count / duration
-~~~
-
-Metrics Expert 不能自行发明不存在的 metric 名称。
-
-当 Prometheus 后端实际返回应用级 Histogram 和 exemplar 时，Provider 应保留 exemplar 中真实存在的 `traceId / spanId`，使 Main Agent / Metrics Expert 能从异常 Metric 下钻到代表性 Trace；若后端尚未提供，则显式降级为时间窗口相关分析。
-
-## 20. 跨模态相关性
-
-所有 Expert 共享 Investigation 的绝对窗口和目标。
-
-相关性层级：
-
-~~~text
-Trace:
-traceId + spanId + service + operation + timestamp
-
-Logs:
-优先 traceId + spanId
-否则 service + timestamp + message semantics
-
-Application Metrics:
-聚合 label + timestamp
-+ Exemplar(traceId/spanId)
-
-Infrastructure Metrics:
-host/container labels + timestamp
-~~~
-
-允许 Main Agent 得出：
-
-> 慢 Trace 与同一时间窗口内的 CPU 饱和同时出现，因此 CPU 资源异常是需要继续验证的候选。
-
-但不能仅凭“时间重叠”写成：
-
-> CPU 已经导致该 Trace 变慢。
-
-跨模态时间一致性是候选关联，不自动等于因果证明。
-
-## 21. Tool Result 与 Context 控制
-
-三个 Provider 都必须 bounded。
-
-Trace：
-
-- 最大 search result。
-- 最大 spans。
-- 最大 attributes。
-- 最大属性值长度。
-- truncated。
-
-Logs：
-
-- 最大 log entries。
-- 最大 message 长度。
-- 重复模式聚合。
-- truncated。
-
-Metrics：
-
-- 最大 series。
-- 最大 points。
-- downsample / aggregation。
-- truncated。
-
-Tool Result 必须真实返回给 Agent，但不能把原始后端大响应无界塞入上下文。
-
-## 22. Evidence / Observation
-
-现有主链继续：
-
-~~~text
-ToolCall
-→ Observation
-→ Evidence
-→ Finding
-→ Hypothesis
-→ RCA
-~~~
-
-Observation / Evidence 不再依赖 caseId 作为身份。
-
-使用 investigationId 关联。
-
-rawRef 形式：
-
-~~~text
-tempo://search/<query-hash>
-tempo://trace/<trace-id>
-
-loki://query/<query-hash>
-
-prometheus://query/<query-hash>
-~~~
-
-rawRef 只用于可追溯定位，不能包含 Secret。
-
-## 23. Provider 错误语义
-
-三种后端失败不能统一退化为“没有证据”。
-
-建议分类：
-
-~~~text
-cancelled
-timeout
-unavailable
-unauthorized
-invalid_query
-not_found
-invalid_response
-~~~
-
-语义：
-
-- no matching data != backend unavailable。
-- backend unavailable != system healthy。
-- cancelled != failed。
-- invalid query 应暴露给 Runtime 诊断，但不泄露敏感 URL。
-
-Expert 在后端不可用时可 blocked / inconclusive，不能生成虚假无异常结论。
-
-## 24. Retry / Cancel
-
-可恢复错误最多重试 1～2 次：
-
-- connection reset。
-- timeout。
-- 502。
-- 503。
-- 504。
-
-不重试：
-
-- 400。
-- 401。
-- 403。
-- 参数校验失败。
-- 编译后的查询非法。
-
-现有 Investigation AbortSignal 必须一直传到：
-
-~~~text
-Tempo fetch
-Loki fetch
-Prometheus fetch
-~~~
-
-Pause / Cancel 后不能继续后台查询。
-
-## 25. RCA100 Runtime 移除
-
-迁移完成后，从生产 Runtime 删除或停止引用：
-
-~~~text
-RCA100Adapter
-rcaCasesDir
-task.json 启动逻辑
-RCA100 parquet Trace 查询
-RCA100 parquet Logs 查询
-RCA100 parquet Metrics 查询
-RCA100 parquet Events 查询
-RCA100 topology 文件查询
-caseId 校验
-t039 运行时 Tool / Prompt 语义
-get_trace_fields
-get_log_fields
-get_metric_catalog（RCA100 版本）
-query_traces（RCA100 版本）
-query_logs（RCA100 版本）
-query_metrics（RCA100 版本）
-query_events（RCA100 版本）
-query_alerts（RCA100 版本）
-~~~
-
-不能机械删除文件。
-
-其中通用算法应迁移保留，例如：
-
-- percentile。
-- interval union。
-- critical path。
-- evidence compact。
-- causal reasoning。
-- budget / recovery。
-- ToolCall / Observation / Evidence 审计。
-
-## 26. 历史 Investigation
-
-不长期保留旧 RCA100 Runtime，只区分运行兼容与历史可读。
-
-建议：
-
-- 新 Investigation 不再写 caseId。
-- 新 Runtime 不执行 RCA100 查询。
-- 旧 Investigation 可以只读展示。
-- Resume 旧 RCA100 Investigation 时明确 legacy / unsupported。
-- 不为了 Resume t039 长期保留完整 RCA100 Adapter。
-
-## 27. 更新后的实施顺序
-
-### 阶段 0：RCA Runtime 网络连通性
-
-从 main / Production Runtime 实际运行环境验证：
-
-~~~text
-Tempo
-Loki
-Prometheus
-~~~
-
-三个 endpoint 都能通过受控网络访问。
-
-同时确认不能裸暴露无认证后端。
-
-通过标准：
-
-- Server 侧 health/smoke query 成功。
-- Timeout / connection failure 行为清晰。
-- Agent 尚不参与。
-
-### 阶段 1：Investigation 去 caseId 化
-
-- IncidentContext。
-- 新 start_rca_investigation。
-- Server lookback 冻结。
-- Main Agent Prompt 去掉 RCA100 前提。
-- 新 Observation / Evidence 关联 investigationId。
-
-通过标准：
-
-> “分析 aiops-rca-target 最近 10 分钟”能直接创建真实调查。
-
-### 阶段 2：三种 Provider 接入
-
-并行或按顺序完成：
-
-~~~text
-TraceProvider   → Tempo
-LogProvider     → Loki
-MetricsProvider → Prometheus
-~~~
-
-要求先做 Client / Provider 单测和真实 smoke test，再接 Agent Tool。
-
-### 阶段 3：Expert Tool 切换
-
-Trace Expert：
-
-~~~text
-search_traces
-get_trace
-~~~
-
-Log Expert：
-
-~~~text
-search_logs
-~~~
-
-Metrics Expert：
-
-~~~text
-discover_metrics
-query_metrics
-~~~
-
-原 RCA100 Tool 不再进入新 Expert Session。
-
-### 阶段 4：Main Agent Overview 切换
-
-query_rca_overview 的 traces / logs / metrics 全部路由真实 Provider。
-
-Main Agent 可以基于同一 Investigation Window 做低成本三模态 coverage，再按 hypothesis dispatch 专家。
-
-### 阶段 5：删除 RCA100 Runtime
-
-- 删除生产依赖。
-- 删除旧配置。
-- 删除仅用于 RCA100 的 parquet runtime。
-- 更新测试。
-- 更新 Prompt。
-- 更新 README / env。
-- 历史调查只读。
-
-### 阶段 6：真实多模态闭环验收
-
-~~~text
-Target
-  ↓
-Collector
-  ├─ Tempo
-  ├─ Loki
-  └─ Prometheus
-        ↓
-RCA Runtime
-        ↓
-Main Agent
-        ↓
-Trace / Log / Metrics Experts
-        ↓
-Evidence
-        ↓
-RCA
-~~~
-
-通过后再开始故障注入：
-
-~~~text
-Provider Slow
-Tool Timeout
-Application Error
-Resource Pressure
-~~~
-
-## 28. 验收场景
-
-### 场景 A：Trace 分析
-
-用户：
-
-> 帮我分析一下 aiops-rca-target 最近 10 分钟的 Trace，看看请求耗时主要集中在哪些 Span 上。
-
-要求：
-
-- 不询问 caseId。
-- 自动冻结时间窗口。
-- 查询真实 Tempo。
-- 搜索 Trace 后按需 get_trace。
-- 返回 Critical Path / Error Span / Gap。
-- 明确已观测与未观测边界。
-
-### 场景 B：Logs 调查
-
-用户：
-
-> 看一下 aiops-rca-target 最近 10 分钟有没有 timeout、error 或 retry。
-
-要求：
-
-- 使用同样的 Investigation window。
-- 查询真实 Loki。
-- 返回 bounded 日志证据和重复模式。
-- 没有匹配日志时明确“查询成功但无匹配”，而不是“Loki 不可用”。
-
-### 场景 C：Metrics 调查
-
-用户：
-
-> 看一下这段时间机器或容器资源有没有异常。
-
-要求：
-
-- 查询真实 Prometheus。
-- 使用当前真实 host/docker metrics。
-- 能判断 CPU / memory / load / network 等资源异常候选。
-- 不把基础设施指标误说成应用 latency/error 指标。
-
-### 场景 D：多模态 RCA
-
-用户：
-
-> aiops-rca-target 最近明显变慢，帮我定位原因。
-
-理想流程：
-
-~~~text
-Main Agent
-→ 创建 Investigation
-→ Trace overview
-→ Logs overview
-→ Metrics overview
-→ 建立竞争假设
-→ dispatch 有信息增益的 Expert
-→ Evidence 支持 / 反证
-→ RCA
-~~~
-
-不能变成机械地把三个后端全部全量扫描一次。
-
-## 29. 当前已知限制
-
-1. Pi lifecycle telemetry logs 当前已有 traceId / spanId；普通应用日志仍不保证有 Trace Context。
-2. Prometheus 当前已具备 host/docker metrics；应用级 Agent / Provider / Tool Metrics 与 Exemplar 属于 Target 分支独立改造项，main Runtime 不应假设其已经存在。
-3. Topology 尚无真实 Provider；不能继续偷偷使用 RCA100 topology。
-4. 外部 Alert ingress 尚未接入，首版仍以 manual Investigation 为主。
-5. Grafana 不是本轮 Agent 调查的依赖。
-
-这些限制必须在 Agent Prompt / Tool Description 中表达，避免模型越界推断。
-
-## 30. 审查重点
-
-进入实现前确认：
-
-1. Target Observability 三条 pipeline 视为已完成前置条件，不再重复建设。
-2. 本轮 RCA Runtime 同时面向 Tempo / Loki / Prometheus，而不是只先接 Tempo。
-3. 生产 Runtime 最终完全移除 RCA100。
-4. Investigation 不再以 caseId 为核心字段。
-5. AlertContext 演进为 IncidentContext。
-6. lookback 由 Server 一次性冻结。
-7. Trace / Log / Metrics 各自使用独立 Provider capability。
-8. LLM 不直接自由编写 TraceQL / LogQL / PromQL。
-9. main Runtime 只消费后端真实存在的 metric / log correlation 能力，不负责 Target 埋点实现。
-10. LokiProvider / PrometheusProvider 必须保留真实 traceId/spanId 或 exemplar，并在缺失时诚实降级。
-11. Main Agent 必须区分精确 trace 关联与 service/time 相关性。
-12. RCA Runtime 与 ECS observability backend 先解决受控网络访问，再接 Agent。
-13. 旧 RCA100 Investigation 只读，不保留完整旧 Runtime 用于 Resume。
+HTTP /api/rca 是外部接入预留边界，保持薄 Service adapter；当前已有读取/取消路由，不声称已经提供告警创建入口，也不删除它。
