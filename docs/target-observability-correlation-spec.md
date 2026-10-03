@@ -1,6 +1,6 @@
 # Target Observability 三信号关联与应用指标规格 v4
 
-状态：**Target 侧完成生命周期边界修正；验证结果见 validation 文档；生产部署验收未执行；Exemplar 明确不可用。**
+状态：**Target 侧完成生命周期边界修正并通过本地与远程 CI；验证结果见 validation 文档；生产部署验收未执行；Exemplar 明确不可用。**
 目标分支：`target/production-baseline`。
 实施起点：`70cb7f744881073991f13935646f5e9c076df7d1`。
 公共合同：`docs/telemetry-contract-v1.md`，本轮**不改变其既有语义**。

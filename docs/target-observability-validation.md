@@ -52,7 +52,9 @@
 
 工作流新增 Target 分支 push 触发，无需重新打开临时 PR。首轮边界修正 SHA `78f51450a937a45675ce85ec9f1e37eae030e828` 已通过远程 CI #368（run id `37132093075`），包括 frozen install、typecheck、lint、unit tests 和 build。
 
-随后补充“冷初始化不延迟已有会话 abort”和 abort 提前拒绝的处理，本地验证如上；这次追加修正的远程 CI 待提交后单独核查。生产验收仍未执行。
+最终追加修正 SHA `833958e461eaf9f46f62383fbf71bc7d9276a743` 补充“冷初始化不延迟已有会话 abort”和 abort 提前拒绝的处理；远程 CI #369（run id `37132410652`）全部成功，包含 frozen install、typecheck、lint、unit tests、build。
+
+[实现代码 CI #369](https://github.com/yuyan3616/aiops/actions/runs/37132410652)。此记录后的提交仅同步验证文档，不改变已验证的实现。生产验收仍未执行。
 
 ## 3. Exemplar 真实验证
 
