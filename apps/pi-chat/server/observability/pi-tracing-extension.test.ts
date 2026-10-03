@@ -471,6 +471,41 @@ test("provider tombstones consume late callbacks instead of touching the next ge
   assert.equal(h.metrics.filter((record) => record.kind === "provider")[1]?.outcome, "success");
 });
 
+test("provider generation without response headers does not poison the next header callback", async () => {
+  const h = createHarness();
+  await h.bind();
+
+  h.emit("agent_start");
+  h.emit("turn_start", { turnIndex: 0 });
+  h.emit("before_provider_headers");
+  h.advance(10);
+  h.emit("message_end", { message: assistant("error", "connection failed before response") });
+  h.emit("turn_end", {
+    turnIndex: 0,
+    message: assistant("error", "connection failed before response"),
+  });
+
+  h.emit("agent_start");
+  h.emit("turn_start", { turnIndex: 0 });
+  h.emit("before_provider_headers");
+  h.advance(20);
+  h.emit("after_provider_response", { status: 200 });
+  h.advance(30);
+  h.emit("message_end", { message: assistant() });
+
+  assert.equal(h.metrics.filter((record) => record.kind === "headers").length, 1);
+  assert.equal(
+    h.metrics.find((record) => record.kind === "headers")?.outcome,
+    "success",
+  );
+  assert.deepEqual(
+    h.metrics
+      .filter((record) => record.kind === "provider")
+      .map((record) => record.outcome),
+    ["error", "success"],
+  );
+});
+
 test("session shutdown force-closes dangling lifecycles exactly once", async () => {
   const h = createHarness();
   await h.bind();
