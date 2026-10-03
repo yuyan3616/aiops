@@ -21,8 +21,8 @@ export const traceProfile: ExpertProfile = {
   role: "trace",
   label: "Trace 调查",
   systemPrompt: loadProfileText(import.meta.url, "./SYSTEM.md"),
-  tools: ["get_trace_fields", "get_service_dependencies", "query_traces"],
-  modalities: ["trace", "topology"],
+  tools: ["search_traces", "get_trace"],
+  modalities: ["trace"],
   maxToolCalls: 12,
   selectSkills: (brief) => {
     const text = briefSearchText(brief);
