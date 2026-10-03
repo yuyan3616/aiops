@@ -27,6 +27,33 @@ receivers:
         format: docker
         add_metadata_from_filepath: false
 
+  # Host metrics read the ECS host through /hostfs, which must be mounted read-only.
+  host_metrics:
+    collection_interval: 15s
+    root_path: /hostfs
+    scrapers:
+      cpu:
+        metrics:
+          system.cpu.utilization:
+            enabled: true
+      load:
+      memory:
+        metrics:
+          system.memory.utilization:
+            enabled: true
+      paging:
+      disk:
+      filesystem:
+        metrics:
+          system.filesystem.utilization:
+            enabled: true
+      network:
+
+  # Container metrics require /var/run/docker.sock to be mounted.
+  docker_stats:
+    endpoint: unix:///var/run/docker.sock
+    collection_interval: 15s
+
 processors:
   batch:
 
@@ -41,6 +68,14 @@ exporters:
   otlp_http/loki:
     endpoint: http://loki:3100/otlp
 
+  prometheus:
+    endpoint: 0.0.0.0:9464
+    resource_constant_labels:
+      included:
+        - container.name
+        - container.image.name
+        - container.runtime
+
 service:
   extensions: [file_storage]
   pipelines:
@@ -53,3 +88,8 @@ service:
       receivers: [file_log/target]
       processors: [batch]
       exporters: [otlp_http/loki]
+
+    metrics:
+      receivers: [host_metrics, docker_stats]
+      processors: [batch]
+      exporters: [prometheus]
