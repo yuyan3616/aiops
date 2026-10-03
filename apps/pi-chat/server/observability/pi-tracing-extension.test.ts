@@ -19,14 +19,17 @@ interface TestContext {
 
 class FakeSpan {
   readonly attributes = new Map<string, unknown>();
+  readonly name: string;
+  private readonly traceId: string;
+  private readonly spanId: string;
   statusCode: number | undefined;
   endCount = 0;
 
-  constructor(
-    readonly name: string,
-    private readonly traceId: string,
-    private readonly spanId: string,
-  ) {}
+  constructor(name: string, traceId: string, spanId: string) {
+    this.name = name;
+    this.traceId = traceId;
+    this.spanId = spanId;
+  }
 
   setAttribute(name: string, value: unknown) {
     this.attributes.set(name, value);
