@@ -324,7 +324,7 @@ Collector → Prometheus 的最终 `job/instance/target_info` 映射仍需生产
 
 1. `beginShutdown()` 停止接受新的 create/send Agent 工作并停止 Session sweeper。
 2. HTTP server 停止接收新连接；已准入但仍在初始化/标题处理的 send 在真正 prompt 前再次检查关闭状态。
-3. 等待这些 send 完成准备或拒绝，再取 busy Session 快照并 `await session.abort()`；Pi 0.86.1 abort 等待 agent idle。
+3. 立即取消已运行的 Session；等待已准入 send 完成准备或拒绝后再次检查，幂等补充取消，不能因冷初始化阻塞现有 Session 的 abort。`await session.abort()` 在 Pi 0.86.1 等待 agent idle。
 4. `PI_CHAT_SHUTDOWN_TIMEOUT_MS` 是 drain + final export 的共同 wall-clock deadline；为导出预留 min(2s, 20%)，其余用于 server/session drain。
 5. drain 超时强制关闭 HTTP 连接，将残留 telemetry lifecycle 以 incomplete 关闭。
 6. Trace/Metrics Provider 分别 flush/shutdown，并只等待总 deadline 的剩余时间；拒绝 drain 也执行关闭与导出。

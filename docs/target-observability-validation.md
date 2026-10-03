@@ -39,18 +39,20 @@
 
 本轮基于以上 SHA 修正：cache warming veto、重复 Provider start 的保守降级、父级 incomplete 传播、host dispose 清理、shutdown 准入与共同 deadline，以及 generation Span 合同命名。
 
-新增回归覆盖：真实 TracerProvider 并发父子关系、dangling 父级状态、缺失 Provider end 后下一 turn、host dispose 幂等及迟到 callback、失败 Log/Metric 的 Span 收尾、初始化/标题准备期间 shutdown、await abort、hung drain/exporter 与异常 drain 收尾。
+新增回归覆盖：真实 TracerProvider 并发父子关系、dangling 父级状态、缺失 Provider end 后下一 turn、host dispose 幂等及迟到 callback、失败 Log/Metric 的 Span 收尾、初始化/标题准备期间 shutdown、冷初始化不阻塞已有会话取消、await abort、hung drain/exporter 与异常 drain 收尾。
 
 本轮本地验证环境：Node.js 24.19.0，pnpm 11.25.0。已通过：
 
 - `pnpm install --frozen-lockfile`（锁文件无变化）。
 - typecheck。
 - lint（无 error，保留仓库原有 warning）。
-- unit tests：114 项，112 passed，2 skipped，0 failed；跳过的是缺少本地 RCA100 t039 数据的集成用例，与本轮 Target 修正无关。
+- unit tests：116 项，114 passed，2 skipped，0 failed；跳过的是缺少本地 RCA100 t039 数据的集成用例，与本轮 Target 修正无关。
 - build。
 - 真实 OTLP Exemplar probe 仍确认 `exemplars=false`。
 
-工作流新增 Target 分支 push 触发，无需重新打开临时 PR。本轮远程 CI 尚待提交后运行；不能用上面的旧 CI 记录替代。生产验收仍未执行。
+工作流新增 Target 分支 push 触发，无需重新打开临时 PR。首轮边界修正 SHA `78f51450a937a45675ce85ec9f1e37eae030e828` 已通过远程 CI #368（run id `37132093075`），包括 frozen install、typecheck、lint、unit tests 和 build。
+
+随后补充“冷初始化不延迟已有会话 abort”和 abort 提前拒绝的处理，本地验证如上；这次追加修正的远程 CI 待提交后单独核查。生产验收仍未执行。
 
 ## 3. Exemplar 真实验证
 

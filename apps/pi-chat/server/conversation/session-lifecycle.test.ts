@@ -298,3 +298,51 @@ test("shutdown awaits Pi abort before disposing an active session", async () => 
   assert.deepEqual(await closing, { timedOut: false, activeSessions: 1 });
   assert.equal(disposed, 1);
 });
+
+test("a stuck admitted initialization does not defer abort of an existing running session", async () => {
+  const subject = service();
+  const pending = deferred<void>();
+  const target = session("a");
+  target.status = "running";
+  target.runtime.session.isStreaming = true;
+  let aborted = false;
+  Object.assign(target.runtime.session, {
+    abort: async () => {
+      aborted = true;
+      target.runtime.session.isStreaming = false;
+    },
+  });
+  Object.assign(subject, {
+    pendingSends: new Set([pending.promise]),
+    managedSessions: new Map([["a", target]]),
+    setStatus: (current: Session, status: string) => {
+      current.status = status;
+    },
+  });
+  const closing = subject.shutdown(10);
+  assert.equal(aborted, true);
+  assert.deepEqual(await closing, { timedOut: true, activeSessions: 1 });
+  pending.resolve();
+});
+
+test("abort rejection is handled while an admitted initialization remains pending", async () => {
+  const subject = service();
+  const pending = deferred<void>();
+  const target = session("a");
+  target.status = "running";
+  target.runtime.session.isStreaming = true;
+  Object.assign(target.runtime.session, {
+    abort: async () => {
+      throw new Error("abort failed");
+    },
+  });
+  Object.assign(subject, {
+    pendingSends: new Set([pending.promise]),
+    managedSessions: new Map([["a", target]]),
+    setStatus: (current: Session, status: string) => {
+      current.status = status;
+    },
+  });
+  assert.deepEqual(await subject.shutdown(10), { timedOut: true, activeSessions: 1 });
+  pending.resolve();
+});

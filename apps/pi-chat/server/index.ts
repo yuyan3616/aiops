@@ -76,11 +76,13 @@ async function shutdown() {
       closeIdleConnections?: () => void;
       closeAllConnections?: () => void;
     };
-    closableServer.closeIdleConnections?.();
-    const serverClosed = new Promise<void>((resolve) => server.close(() => resolve()));
     const result = await drainAndFlush({
       timeoutMs: shutdownDeadlineMs,
-      drain: () => Promise.all([serverClosed, service.shutdown(shutdownDeadlineMs)]),
+      drain: () => {
+        closableServer.closeIdleConnections?.();
+        const serverClosed = new Promise<void>((resolve) => server.close(() => resolve()));
+        return Promise.all([serverClosed, service.shutdown(shutdownDeadlineMs)]);
+      },
       forceClose: (timedOut) => {
         if (timedOut) {
           process.stderr.write(

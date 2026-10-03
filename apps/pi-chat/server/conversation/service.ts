@@ -128,24 +128,34 @@ export class ConversationService {
 
   async shutdown(timeoutMs = 10_000): Promise<{ timedOut: boolean; activeSessions: number }> {
     this.beginShutdown();
-    let activeSessions = 0;
+    const abortTasks = new Map<ManagedSession, Promise<void>>();
+    const abortBusySessions = () => {
+      for (const session of this.managedSessions.values()) {
+        if (!this.isRuntimeBusy(session) || abortTasks.has(session)) continue;
+        abortTasks.set(
+          session,
+          (async () => {
+            this.setStatus(session, "stopping");
+            try {
+              await session.runtime.session.abort();
+            } finally {
+              if (session.status !== "error") this.setStatus(session, "ready");
+            }
+          })().catch(() => {
+            // Handle rejection immediately even if an admitted initialization never settles.
+            process.stderr.write(
+              "[shutdown] Pi abort failed; remaining lifecycles will be closed incomplete.\n",
+            );
+          }),
+        );
+      }
+    };
+    // A cold initialization must not delay cancellation of already running sessions.
+    abortBusySessions();
     const settle = (async () => {
-      // Already admitted sends must finish initialization or reject before the snapshot.
       await Promise.allSettled([...this.pendingSends]);
-      const busySessions = [...this.managedSessions.values()].filter((session) =>
-        this.isRuntimeBusy(session),
-      );
-      activeSessions = busySessions.length;
-      await Promise.allSettled(
-        busySessions.map(async (managedSession) => {
-          this.setStatus(managedSession, "stopping");
-          try {
-            await managedSession.runtime.session.abort();
-          } finally {
-            if (managedSession.status !== "error") this.setStatus(managedSession, "ready");
-          }
-        }),
-      );
+      abortBusySessions();
+      await Promise.allSettled([...abortTasks.values()]);
     })();
     const { timedOut } = await settleBeforeDeadline(settle, timeoutMs);
 
@@ -153,7 +163,7 @@ export class ConversationService {
       if (!this.isBusy(managedSession)) this.release(id, { dropChannel: false });
     }
 
-    return { timedOut, activeSessions };
+    return { timedOut, activeSessions: abortTasks.size };
   }
 
   private assertAcceptingWork(): void {
