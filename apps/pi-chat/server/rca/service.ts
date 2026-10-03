@@ -1315,12 +1315,15 @@ export class RcaService {
     result: AgenticConclusionInput,
     locked = false,
   ): Promise<{ investigation: Investigation; report: string }> {
-    if (!locked && (await this.liveInvestigation(investigationId)).schemaVersion === 2) {
+    const current = await this.liveInvestigation(investigationId);
+    this.assertLiveWritable(current);
+    if (!locked && current.schemaVersion === 2) {
       return this.withInvestigationLock(investigationId, () =>
         this.concludeAgentic(investigationId, result, true),
       );
     }
     const investigation = await this.liveInvestigation(investigationId);
+    this.assertLiveWritable(investigation);
     if (investigation.schemaVersion === 2) {
       this.assertRunning(investigation);
       if (
@@ -1547,64 +1550,47 @@ export class RcaService {
     content: string,
   ): Promise<InvestigationUserIntervention | undefined> {
     const investigation = await this.liveInvestigation(investigationId);
-    if (investigation.schemaVersion === 2) {
-      const cleaned = content.trim().slice(0, 4000);
-      if (!cleaned) return undefined;
-      const intervention = await this.updateV2(investigationId, (draft) => {
-        if (draft.status !== "running") return undefined;
-        const item: InvestigationUserIntervention = {
-          id: this.nextUserInterventionId(draft),
-          content: cleaned,
-          createdAt: now(),
-        };
-        draft.userInterventions ??= [];
-        draft.userInterventions.push(item);
-        for (const task of draft.expertTasks) {
-          if (task.status !== "running" && task.status !== "pending") continue;
-          task.status = "cancelled";
-          task.completedAt = now();
-          task.taskGeneration = (task.taskGeneration ?? 0) + 1;
-          task.terminationReason = "user_superseded";
-          task.termination = { reason: "aborted" };
-          const reservation = foldBudget(draft).reservations.get(task.budgetReservationId ?? "");
-          if (reservation && !reservation.terminal) {
-            appendLedgerEvent(
-              draft,
-              nextLedgerEvent(draft, {
-                type: "budget.released",
-                reservationId: task.budgetReservationId!,
-                taskId: task.id,
-                budgetClass: task.budgetClass!,
-                reason: "user_superseded",
-              }),
-            );
-          }
+    this.assertLiveWritable(investigation);
+    const cleaned = content.trim().slice(0, 4000);
+    if (!cleaned || investigation.status !== "running") return undefined;
+
+    // Abort in-flight specialist/provider work before any storage await. A storage
+    // failure must never leave superseded I/O running in the background.
+    this.interruptActiveDispatch(investigationId);
+
+    const intervention = await this.updateV2(investigationId, (draft) => {
+      if (draft.status !== "running") return undefined;
+      const item: InvestigationUserIntervention = {
+        id: this.nextUserInterventionId(draft),
+        content: cleaned,
+        createdAt: now(),
+      };
+      draft.userInterventions ??= [];
+      draft.userInterventions.push(item);
+      for (const task of draft.expertTasks) {
+        if (task.status !== "running" && task.status !== "pending") continue;
+        task.status = "cancelled";
+        task.completedAt = now();
+        task.taskGeneration = (task.taskGeneration ?? 0) + 1;
+        task.terminationReason = "user_superseded";
+        task.termination = { reason: "aborted" };
+        const reservation = foldBudget(draft).reservations.get(task.budgetReservationId ?? "");
+        if (reservation && !reservation.terminal) {
+          appendLedgerEvent(
+            draft,
+            nextLedgerEvent(draft, {
+              type: "budget.released",
+              reservationId: task.budgetReservationId!,
+              taskId: task.id,
+              budgetClass: task.budgetClass!,
+              reason: "user_superseded",
+            }),
+          );
         }
-        return item;
-      });
-      if (!intervention) return undefined;
-      this.interruptActiveDispatch(investigationId);
-      const bus = await this.busFor(investigationId);
-      await bus.publish("user.intervention", "User supplied additional investigation context.", {
-        intervention,
-        source: "user",
-      });
-      return intervention;
-    }
-    if (investigation.status !== "running") return undefined;
-
-    const cleanedContent = content.trim().slice(0, 4000);
-    if (!cleanedContent) return undefined;
-
-    const intervention: InvestigationUserIntervention = {
-      id: this.nextUserInterventionId(investigation),
-      content: cleanedContent,
-      createdAt: now(),
-    };
-    investigation.userInterventions ??= [];
-    investigation.userInterventions.push(intervention);
-    await this.saveInvestigation(investigation);
-
+      }
+      return item;
+    });
+    if (!intervention) return undefined;
     const bus = await this.busFor(investigationId);
     await bus.publish("user.intervention", "User supplied additional investigation context.", {
       intervention,
@@ -1613,7 +1599,7 @@ export class RcaService {
     return intervention;
   }
 
-  interruptActiveDispatch(investigationId: string): boolean {
+  interruptActiveDispatch  interruptActiveDispatch(investigationId: string): boolean {
     const running = this.agenticRunning.get(investigationId);
     if (running?.activeDispatchControllers?.size) {
       let interrupted = false;
@@ -1669,6 +1655,8 @@ export class RcaService {
   }
 
   async cancel(investigationId: string): Promise<boolean> {
+    const investigation = await this.liveInvestigation(investigationId);
+    this.assertLiveWritable(investigation);
     const running = this.agenticRunning.get(investigationId);
     if (!running) return false;
     await this.requestAgenticCancellation(investigationId, running);
@@ -1731,12 +1719,29 @@ export class RcaService {
     running: RunningAgenticInvestigation,
   ): Promise<void> {
     if (!running.cancellationPromise) {
+      // Stop queue/fetch/body/backoff immediately. Persistence follows and may
+      // fail independently, but a failed save must not keep backend I/O alive.
+      running.controller.abort();
+      this.interruptActiveDispatch(investigationId);
       running.cancellationPromise = this.markAgenticCancelled(investigationId, running);
-      if (running.investigation?.schemaVersion !== 2) running.controller.abort();
     }
     await running.cancellationPromise;
     if (running.activeOperations === 0) {
       this.cleanupAgentic(investigationId);
+    }
+  }
+
+  private assertLiveWritable(investigation: Investigation): void {
+    if (
+      investigation.source?.kind !== "live" ||
+      investigation.formatVersion !== LIVE_FORMAT_VERSION ||
+      investigation.source.contractVersion !== LIVE_CONTRACT_VERSION ||
+      !investigation.context
+    ) {
+      throw new RcaServiceError(
+        "legacy_read_only",
+        "legacy_read_only: historical RCA100 investigations are read-only",
+      );
     }
   }
 
