@@ -26,7 +26,7 @@ Task 不保存 hypothesis、evidence、toolCall 等 Agent 内部状态。
 
 Execution 表示 Task 的一次实际运行尝试。建议字段：executionId、taskId、attempt、runtime、runtimeRequestId、investigationId、status、startedAt、finishedAt、failureCode、failureMessage。
 
-Execution 只引用 Investigation ID，不复制 Investigation 内容。
+Execution 不复制 Investigation 内容。进入 Spring 外置多 Agent 编排后，Execution 下还会拥有 AgentRun / AgentTurn / SubTask 等**调度元数据**；Hypothesis / Evidence / ToolCall 仍然不搬入 Spring。
 
 ### Investigation —— Node/Pi 所有
 
@@ -78,25 +78,33 @@ Spring 可以做只读映射，但不能反向覆盖 Runtime。
 
 ## 8. Runtime 外部执行入口
 
-Runtime 侧已经提供受保护的 Runtime Execution API，并通过专用 Conversation 复用现有 Pi Main Agent：
+现有 Runtime Execution API 继续用于可靠启动/恢复 Main Agent Session，但它不再被定义为“完整多 Agent 调度器”。
+
+目标链路：
 
     Spring MEXEC
         ↓
-    POST /api/rca/executions
-        ↓
-    Runtime Execution (EXEC-...)
-        ↓
-    Dedicated Conversation
+    Runtime Execution / Main Agent Session reservation
         ↓
     Pi Main Agent
         ↓
-    RCA tools / Investigation
+    brief + turn-state
+        ↓
+    Spring Multi-Agent Orchestrator
+        ↓
+    Sub Agent Session(s)
+        ↓
+    findings
+        ↓
+    Spring durable delivery
+        ↓
+    Main Agent next turn
 
-Spring 不直接调用 `RcaService.beginAgentic()`，也不另建第二套 orchestrator。Runtime Execution 负责可靠启动/恢复 Main Agent，Investigation 仍由现有 RCA 链路创建和推进。
+Spring 不直接调用 `RcaService.beginAgentic()`；Investigation 仍由 Node/Pi 所有。跨 Session 调度、SubTask 状态、findings 回传、blocked/resume 和恢复归 Spring。完整设计见 [Spring 多 Agent 编排规格](spring-multi-agent-orchestration-spec.md)。
 
 ## 9. 数据库边界
 
-引入数据库后，Spring 保存 management_task 与 management_execution；不保存 hypothesis、evidence、observation、tool_call、budget_ledger，这些仍属于 Runtime。
+V1 已由 Spring 保存 management_task 与 management_execution。进入外置多 Agent 编排后，V2 再增加 management_agent_run、management_agent_turn、management_subtask；Spring 仍不保存 hypothesis、原始 evidence、observation、tool_call，这些属于 Runtime。
 
 建议表：
 
@@ -225,3 +233,30 @@ DISPATCHING / UNKNOWN / RUNNING
 ```
 
 任何远程结果不确定的取消都会保持 UNKNOWN，而不会谎报 CANCELLED。execute 与 cancel 的并发竞态通过持锁状态检查处理：如果 cancel 先把 Execution 推入终态，后续 execute 在真正调用 Runtime 前会再次检查终态并停止。
+
+
+## 15. MEXEC 下的多 Agent 调度模型
+
+Task / Execution 仍是平台最外层模型，但 MEXEC 内部增加：
+
+```text
+MEXEC
+  ├── Main AgentRun
+  │     └── 多个 AgentTurn
+  └── SubTask 1..N
+        └── Sub AgentRun
+              └── 初始/续查 AgentTurn
+```
+
+SubTask 表示“查什么”，AgentRun 表示“哪个 Session 执行”，AgentTurn 表示“这次向 Session 提交了哪一个 Prompt”。
+
+这样可以独立处理：
+
+- Main 长会话多轮 findings 回传；
+- 子 Agent 并发；
+- Prompt ack 丢失后的幂等对账；
+- blocked/resume 复用原 Session；
+- Spring 重启恢复；
+- cancel/conclude 竞态。
+
+详细字段、状态机、锁和恢复窗口以 [Spring 多 Agent 编排规格](spring-multi-agent-orchestration-spec.md) 为准。
