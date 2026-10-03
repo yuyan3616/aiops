@@ -191,6 +191,49 @@ export class InvestigationRepository {
     await appendFile(join(directory, "tool-calls.jsonl"), `${JSON.stringify(toolCall)}\n`, "utf8");
   }
 
+  async saveEvidenceSnapshot(
+    investigationId: string,
+    toolCallId: string,
+    snapshot: unknown,
+  ): Promise<string> {
+    if (!/^C\d+$/.test(toolCallId)) throw new Error("Invalid tool call id for snapshot");
+    const directory = join(this.directory(investigationId), "evidence-snapshots");
+    await mkdir(directory, { recursive: true });
+    const target = join(directory, `${toolCallId}.json`);
+    const serialized = JSON.stringify(structuredClone(snapshot), null, 2);
+    try {
+      const handle = await open(target, "wx");
+      try {
+        await handle.writeFile(serialized, "utf8");
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      const directoryHandle = await open(directory, "r");
+      try {
+        await directoryHandle.sync();
+      } finally {
+        await directoryHandle.close();
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const current = await readFile(target, "utf8");
+      if (current !== serialized) {
+        throw new Error(`Immutable evidence snapshot conflict for ${investigationId}/${toolCallId}`);
+      }
+    }
+    return `investigation://${investigationId}/evidence-snapshots/${toolCallId}.json`;
+  }
+
+  async getEvidenceSnapshot(investigationId: string, toolCallId: string): Promise<unknown> {
+    if (!/^C\d+$/.test(toolCallId)) throw new Error("Invalid tool call id for snapshot");
+    const raw = await readFile(
+      join(this.directory(investigationId), "evidence-snapshots", `${toolCallId}.json`),
+      "utf8",
+    );
+    return JSON.parse(raw) as unknown;
+  }
+
   async saveReport(investigationId: string, result: RCAResult, report: string): Promise<void> {
     const directory = this.directory(investigationId);
     await mkdir(directory, { recursive: true });

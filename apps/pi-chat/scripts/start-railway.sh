@@ -6,7 +6,6 @@ export PI_CHAT_HOST="${PI_CHAT_HOST:-127.0.0.1}"
 export PI_CHAT_PORT="${PI_CHAT_PORT:-4328}"
 export PI_CHAT_ROOT_DIR="${PI_CHAT_ROOT_DIR:-/tmp/pi-chat}"
 export RCA_INVESTIGATIONS_DIR="${RCA_INVESTIGATIONS_DIR:-/tmp/pi-chat/data/rca/investigations}"
-export RCA100_CASES_DIR="${RCA100_CASES_DIR:-/app/apps/pi-chat/.rca-data/cases}"
 
 PUBLIC_PORT="${PORT:-3000}"
 

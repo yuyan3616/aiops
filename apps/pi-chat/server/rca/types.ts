@@ -42,10 +42,29 @@ export interface AlertContext {
   region?: string;
 }
 
+export interface IncidentContext {
+  symptom: string;
+  trigger:
+    | { type: "manual" }
+    | { type: "alert"; eventId?: string; title?: string; source?: string }
+    | { type: "api"; source?: string };
+  window: TimeRange;
+  target: {
+    service?: string;
+    operation?: string;
+    entity?: string;
+    environment?: string;
+    region?: string;
+    container?: string;
+  };
+}
+
 export interface RcaTask {
-  caseId: string;
   version: string;
-  alert: AlertContext;
+  context?: IncidentContext;
+  // Legacy benchmark fields are retained only for offline adapter/test compatibility.
+  caseId?: string;
+  alert?: AlertContext;
   availableModalities: EvidenceModality[];
 }
 
@@ -64,24 +83,29 @@ export interface Hypothesis {
 
 export interface Observation {
   id: string;
-  caseId: string;
+  investigationId?: string;
+  caseId?: string;
   modality: EvidenceModality;
   toolCallId: string;
   expertTaskId?: string;
   summary: string;
   rawRef?: string;
+  snapshotRef?: string;
   facts: Record<string, unknown>;
   createdAt: string;
 }
 
 export interface Evidence {
   id: string;
-  caseId: string;
+  investigationId?: string;
+  caseId?: string;
   modality: EvidenceModality;
   entity?: string;
   timeRange?: TimeRange;
   summary: string;
   rawRef: string;
+  snapshotRef?: string;
+  sourceItems?: string[];
   supports: string[];
   contradicts: string[];
   sourceQuery: Record<string, unknown>;
@@ -225,11 +249,11 @@ export interface RuntimeResourceSnapshot {
   heapTotalMb: number;
   externalMb: number;
   arrayBuffersMb: number;
-  activeParquetScans: number;
-  maxConcurrentParquetScans: number;
-  totalParquetScans: number;
-  parquetBatchesRead: number;
-  parquetRowsScanned: number;
+  activeParquetScans?: number;
+  maxConcurrentParquetScans?: number;
+  totalParquetScans?: number;
+  parquetBatchesRead?: number;
+  parquetRowsScanned?: number;
 }
 
 export interface ToolCallRecord {
@@ -240,6 +264,8 @@ export interface ToolCallRecord {
   status: "running" | "completed" | "failed" | "cancelled";
   resultSummary?: string;
   rawRef?: string;
+  snapshotRef?: string;
+  resultStatus?: "success" | "no_data" | "partial" | "unsupported";
   startedAt: string;
   completedAt?: string;
   runtime?: {
@@ -286,10 +312,17 @@ export interface RCAResult {
 }
 
 export interface InvestigationScope {
+  // Legacy RCA100 fields remain readable.
   alertService?: string;
   alertOperation?: string;
-  timeRange: TimeRange;
+  timeRange?: TimeRange;
   candidateEntities: string[];
+  extensions?: Array<{
+    target?: Record<string, string>;
+    window?: TimeRange;
+    reason: string;
+    createdAt: string;
+  }>;
 }
 
 export interface InvestigationUserIntervention {
@@ -300,10 +333,20 @@ export interface InvestigationUserIntervention {
 
 export interface Investigation {
   id: string;
-  caseId: string;
+  caseId?: string;
   status: InvestigationStatus;
   symptom: string;
-  alertContext: AlertContext;
+  alertContext?: AlertContext;
+  context?: IncidentContext;
+  formatVersion?: 3;
+  source?: {
+    kind: "live";
+    contractVersion: "1";
+  };
+  creation?: {
+    operationId?: string;
+    requestHash: string;
+  };
   scope: InvestigationScope;
   hypotheses: Hypothesis[];
   observations?: Observation[];

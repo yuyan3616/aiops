@@ -306,19 +306,35 @@ export function buildInvestigationFlow(
   const nodes: FlowNode[] = [];
   const edges: FlowEdge[] = [];
 
+  const incidentLabel =
+    investigation.caseId ??
+    investigation.context?.target.service ??
+    investigation.context?.target.entity ??
+    investigation.context?.target.container ??
+    investigation.symptom;
   const startId = addNode(nodes, {
     id: "start",
     kind: "start",
-    label: "开始调查\n" + investigation.caseId,
+    label: "开始调查\n" + truncate(incidentLabel, 34),
   });
+  const alertLabel = investigation.context
+    ? "IncidentContext\n" +
+      truncate(investigation.context.symptom, 34) +
+      "\n" +
+      truncate(
+        investigation.context.target.service ??
+          investigation.context.target.entity ??
+          investigation.context.target.container,
+        28,
+      )
+    : "告警上下文\n" +
+      truncate(investigation.alertContext?.title, 34) +
+      "\n" +
+      truncate(investigation.alertContext?.entity.name, 28);
   const alertId = addNode(nodes, {
     id: "alert",
     kind: "alert",
-    label:
-      "告警上下文\n" +
-      truncate(investigation.alertContext.title, 34) +
-      "\n" +
-      truncate(investigation.alertContext.entity.name, 28),
+    label: alertLabel,
   });
   addEdge(edges, startId, alertId);
 

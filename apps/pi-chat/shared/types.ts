@@ -115,6 +115,16 @@ export interface ConversationInvestigationSnapshot {
   state: ConversationInvestigationState;
   investigationId?: string;
   caseId?: string;
+  sourceKind?: "live" | "legacy";
+  target?: {
+    service?: string;
+    operation?: string;
+    entity?: string;
+    environment?: string;
+    region?: string;
+    container?: string;
+  };
+  window?: { from: string; to: string };
   symptom?: string;
   rounds?: number;
   rootCauseStatus?: "confirmed" | "probable" | "inconclusive";

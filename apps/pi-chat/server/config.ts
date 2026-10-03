@@ -21,7 +21,6 @@ export interface GlobalConfig {
   workspacesDir: string;
   mcpConfigPath: string;
   skillsDir: string;
-  rcaCasesDir: string;
   rcaInvestigationsDir: string;
 }
 
@@ -34,9 +33,6 @@ export function getGlobalConfig(rootDir = process.env.PI_CHAT_ROOT_DIR): GlobalC
     workspacesDir: join(resolvedRootDir, "workspaces"),
     mcpConfigPath: join(resolvedRootDir, ".mcp.json"),
     skillsDir: join(resolvedRootDir, "skills"),
-    rcaCasesDir: resolve(
-      process.env.RCA100_CASES_DIR ?? join(resolvedRootDir, "datasets", "RCA100", "cases"),
-    ),
     rcaInvestigationsDir: resolve(
       process.env.RCA_INVESTIGATIONS_DIR ?? join(resolvedRootDir, "data", "rca", "investigations"),
     ),
