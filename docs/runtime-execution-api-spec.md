@@ -1,6 +1,6 @@
 # Runtime Execution API 设计
 
-> 目标：让 Spring Management Server 可以启动完整 RCA，同时继续复用现有 Conversation + Pi Main Agent 链路。
+> 目标：让 Spring Management Server 可以可靠启动/恢复 Main Agent Session；跨 Main/SubAgent Session 的确定性调度由 Spring 外置编排负责。
 
 ## 1. 设计原则
 
@@ -13,13 +13,21 @@ Management Task
     ↓
 Runtime Execution
     ↓
-Dedicated Conversation
+Dedicated Main Conversation
     ↓
 Pi Main Agent
     ↓
 start_rca_investigation
     ↓
-Hypothesis / Expert / Evidence / Conclusion
+Hypothesis / brief / turn-state
+    ↓
+Spring Multi-Agent Orchestrator
+    ↓
+Sub Agent Session(s)
+    ↓
+findings → Main next turn
+    ↓
+Conclusion
 ```
 
 这意味着外部入口复用当前已经验证的 Main Agent，而不是另建 orchestrator。
@@ -124,7 +132,7 @@ runtimeExecutionId 和 conversationId 在 reservation 时就固定，重试不�
 ```text
 [RUNTIME_EXECUTION EXEC-xxx]
 请对 RCA case t039 发起并完成一次完整根因调查。
-必须使用当前 Main Agent 的 RCA tools 驱动 Investigation，并在证据允许时调用 conclude_investigation 收敛。
+必须使用当前 Main Agent 的 RCA tools 驱动 Investigation；需要专业取证时登记 brief 并以 waiting_sub 结束本轮，由外部编排方调度子 Session。
 ```
 
 该标识用于崩溃恢复时识别 Prompt 是否已经进入 Session 历史。
@@ -194,16 +202,18 @@ Runtime Execution 是 Runtime 自己的协议状态，不属于 Spring Task 数�
 Spring Task/Execution 与 Runtime Execution 的关系：
 
 ```text
-management_execution.runtime_request_id
+management_execution
         ↓
 Runtime runtimeExecutionId
         ↓
-Conversation
+Main AgentRun / Runtime Session
         ↓
 Investigation
 ```
 
-Spring 不根据本地状态猜 Investigation ID；由 Runtime Execution 查询返回关联关系。
+Runtime Execution 只解决 Main Session 的可靠启动/恢复。Spring 还拥有 AgentRun / AgentTurn / SubTask，并负责根据 Main turn-state 调度 Sub Session、校验 findings、回传 Main、恢复和取消。
+
+Spring 不根据本地状态猜 Investigation ID；关联关系由 Runtime API 返回。
 
 ## 10. 第一版验收
 
@@ -216,7 +226,8 @@ Spring 不根据本地状态猜 Investigation ID；由 Runtime Execution 查询�
 - 并发单飞测试；
 - 重放不重复 prompt 的测试；
 - Runtime 重启后 reservation 可恢复；
-- 不修改 Main Agent RCA 编排逻辑。
+- legacy 模式下不修改现有 Web RCA 行为；
+- SPRING_EXTERNAL 模式下，Main Agent dispatch 工具改为 register-only，不再直接创建专家 Session。
 
 
 ## 11. 安全边界
@@ -237,3 +248,19 @@ Authorization: Bearer <RCA_EXECUTION_API_TOKEN>
 - Spring 与 Node 的 token 必须独立于模型 Provider API Key，避免权限扩大。
 
 第一阶段仍是单 Runtime 实例模型。进程内 keyed lock 只解决单实例并发；未来多副本部署前，execution reservation 必须迁移到具备跨实例原子唯一约束的共享存储。
+
+
+## 12. 与 Spring 多 Agent 编排规格的关系
+
+本文只定义 Runtime 侧“可靠启动/恢复 Main Session”的 reservation 与幂等边界。
+
+在 `SPRING_EXTERNAL` 模式下：
+
+- Runtime Execution 不拥有跨 Session workflow；
+- Main Agent dispatch 只登记 brief；
+- Spring 读取 turn-state 并持久化 SubTask；
+- Spring 调用新的 Agent Session Runtime primitive 创建/恢复 Sub Session；
+- findings 由 Spring 可靠回传 Main Session；
+- Node 继续拥有 Investigation / Hypothesis / Evidence。
+
+完整状态机、数据模型、blocked/resume、崩溃恢复和取消传播见 [Spring 多 Agent 编排规格](spring-multi-agent-orchestration-spec.md)。
