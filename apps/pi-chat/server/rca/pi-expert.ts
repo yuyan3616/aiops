@@ -39,6 +39,10 @@ export interface RecordedAgentToolExecution {
     result: unknown;
     summary: string;
     rawRef?: string;
+    snapshotRef?: string;
+    resultStatus?: "success" | "no_data" | "partial" | "unsupported";
+    actualWindow?: import("./types").TimeRange;
+    query?: Record<string, unknown>;
   };
 }
 
