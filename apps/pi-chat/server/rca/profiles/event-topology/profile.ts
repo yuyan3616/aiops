@@ -21,7 +21,7 @@ export const eventTopologyProfile: ExpertProfile = {
   role: "event-topology",
   label: "Event / Topology 调查",
   systemPrompt: loadProfileText(import.meta.url, "./SYSTEM.md"),
-  tools: ["get_service_dependencies", "get_topology", "query_events", "query_alerts"],
+  tools: [],
   modalities: ["event", "topology", "alert"],
   maxToolCalls: 12,
   selectSkills: (brief) => {
