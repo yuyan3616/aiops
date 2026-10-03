@@ -422,6 +422,7 @@ export class RcaService {
     locked = false,
   ): Promise<Investigation> {
     const investigation = await this.repository.get(investigationId);
+    this.assertLiveWritable(investigation);
     if (investigation.schemaVersion === 2 && !locked) {
       return this.withInvestigationLock(investigationId, () =>
         this.resumeAgentic(investigationId, options, true),
@@ -470,64 +471,61 @@ export class RcaService {
     toolCallId: string;
     summary: string;
     rawRef?: string;
+    snapshotRef?: string;
     result: unknown;
   }> {
     const investigation = await this.liveInvestigation(investigationId);
+    this.assertLiveWritable(investigation);
     this.assertRunning(investigation);
     const bus = await this.busFor(investigationId);
     const signal = this.agenticRunning.get(investigationId)?.controller.signal;
     const releaseOperation = this.trackAgenticOperation(investigationId);
-
     try {
       const { tool, arguments_ } = this.overviewTool(investigation, kind, query);
-      const recorded =
-        investigation.schemaVersion === 2
-          ? await this.invokeRecordedToolV2(
-              investigationId,
-              undefined,
-              bus,
-              tool,
-              arguments_,
-              signal,
-            )
-          : await this.invokeRecordedTool(investigation, bus, tool, arguments_, undefined, signal);
+      const recorded = await this.invokeRecordedToolV2(
+        investigationId,
+        undefined,
+        bus,
+        tool,
+        arguments_,
+        signal,
+      );
       checkCancelled(signal);
-      const evidence: Evidence = {
-        id: this.nextEvidenceId(investigation),
-        caseId: investigation.caseId,
-        modality: toolModality(tool),
-        ...(typeof query.entity === "string" ? { entity: query.entity } : {}),
-        timeRange: investigation.alertContext.window,
-        summary: recorded.execution.summary,
-        rawRef:
-          recorded.execution.rawRef ??
-          `investigation://${investigation.id}/tool/${recorded.callId}`,
-        supports: [],
-        contradicts: [],
-        sourceQuery: arguments_,
-        toolCallId: recorded.callId,
-        facts: { source: "main-agent-overview" },
-        createdAt: now(),
-      };
-      if (investigation.schemaVersion === 2) {
-        await this.updateV2(investigationId, (draft) => {
-          if (signal?.aborted || draft.status !== "running")
-            throw new DOMException("Overview superseded", "AbortError");
-          evidence.id = this.nextEvidenceId(draft);
-          draft.evidence.push(evidence);
-        });
-      } else {
-        investigation.evidence.push(evidence);
-        await this.saveInvestigation(investigation);
-      }
-      checkCancelled(signal);
+      const evidence = await this.updateV2(investigationId, (draft) => {
+        if (signal?.aborted || draft.status !== "running") {
+          throw new DOMException("Overview superseded", "AbortError");
+        }
+        const item: Evidence = {
+          id: this.nextEvidenceId(draft),
+          investigationId: draft.id,
+          modality: toolModality(tool),
+          ...(typeof query.entity === "string" ? { entity: query.entity } : {}),
+          timeRange: recorded.execution.actualWindow ?? draft.context!.window,
+          summary: recorded.execution.summary,
+          ...(recorded.execution.rawRef ? { rawRef: recorded.execution.rawRef } : {}),
+          ...(recorded.execution.snapshotRef
+            ? { snapshotRef: recorded.execution.snapshotRef }
+            : {}),
+          supports: [],
+          contradicts: [],
+          sourceQuery: recorded.execution.query ?? arguments_,
+          toolCallId: recorded.callId,
+          facts: {
+            source: "main-agent-overview",
+            resultStatus: recorded.execution.resultStatus,
+          },
+          createdAt: now(),
+        };
+        draft.evidence.push(item);
+        return item;
+      });
       await bus.publish("evidence.created", evidence.summary, { evidence });
-
       return {
         evidenceId: evidence.id,
         toolCallId: recorded.callId,
         summary: evidence.summary,
         ...(recorded.execution.rawRef ? { rawRef: recorded.execution.rawRef } : {}),
+        ...(recorded.execution.snapshotRef ? { snapshotRef: recorded.execution.snapshotRef } : {}),
         result: compactToolResultForAgent(tool, recorded.execution.result),
       };
     } finally {
@@ -537,126 +535,14 @@ export class RcaService {
 
   async queryCandidateCoverage(
     investigationId: string,
-    candidates: string[],
-    topNPerCandidate = 6,
-  ): Promise<{
-    candidates: Array<{
-      candidate: string;
-      evidenceId: string;
-      toolCallId: string;
-      summary: string;
-      rawRef?: string;
-      result: unknown;
-    }>;
-  }> {
+    _candidates: string[],
+    _topNPerCandidate = 6,
+  ): Promise<never> {
     const investigation = await this.liveInvestigation(investigationId);
-    this.assertRunning(investigation);
-    const normalized = [...new Set(candidates.map((item) => item.trim()).filter(Boolean))].slice(
-      0,
-      8,
+    this.assertLiveWritable(investigation);
+    throw new Error(
+      "candidate_coverage_replaced: use discover_metrics/query_metrics with explicit scoped targets",
     );
-    if (normalized.length < 2) {
-      throw new Error("Candidate coverage requires at least two distinct candidates");
-    }
-
-    const bus = await this.busFor(investigationId);
-    const signal = this.agenticRunning.get(investigationId)?.controller.signal;
-    const releaseOperation = this.trackAgenticOperation(investigationId);
-    const topN = Math.max(1, Math.min(Math.floor(topNPerCandidate), 10));
-    const results: Array<{
-      candidate: string;
-      evidenceId: string;
-      toolCallId: string;
-      summary: string;
-      rawRef?: string;
-      result: unknown;
-    }> = [];
-
-    try {
-      for (const candidate of normalized) {
-        checkCancelled(signal);
-        const coverageQuery = {
-          caseId: investigation.caseId,
-          from: investigation.alertContext.window.from,
-          to: investigation.alertContext.window.to,
-          service: candidate,
-          topN,
-        };
-        const recorded =
-          investigation.schemaVersion === 2
-            ? await this.invokeRecordedToolV2(
-                investigationId,
-                undefined,
-                bus,
-                "query_metrics",
-                coverageQuery,
-                signal,
-              )
-            : await this.invokeRecordedTool(
-                investigation,
-                bus,
-                "query_metrics",
-                coverageQuery,
-                undefined,
-                signal,
-              );
-        checkCancelled(signal);
-
-        const summary = observationSummary("query_metrics", {
-          tool: "query_metrics",
-          arguments: coverageQuery,
-          ...recorded.execution,
-        });
-        const evidence: Evidence = {
-          id: this.nextEvidenceId(investigation),
-          caseId: investigation.caseId,
-          modality: "metric",
-          entity: candidate,
-          timeRange: investigation.alertContext.window,
-          summary: `candidate coverage for ${candidate}: ${summary}`,
-          rawRef:
-            recorded.execution.rawRef ??
-            `investigation://${investigation.id}/tool/${recorded.callId}`,
-          supports: [],
-          contradicts: [],
-          sourceQuery: {
-            ...coverageQuery,
-            purpose: "candidate-coverage",
-          },
-          toolCallId: recorded.callId,
-          facts: { source: "main-agent-candidate-coverage" },
-          createdAt: now(),
-        };
-        if (investigation.schemaVersion === 2) {
-          await this.updateV2(investigationId, (draft) => {
-            if (signal?.aborted || draft.status !== "running")
-              throw new DOMException("Coverage superseded", "AbortError");
-            evidence.id = this.nextEvidenceId(draft);
-            draft.evidence.push(evidence);
-            if (!draft.scope.candidateEntities.includes(candidate))
-              draft.scope.candidateEntities.push(candidate);
-          });
-        } else {
-          investigation.evidence.push(evidence);
-          if (!investigation.scope.candidateEntities.includes(candidate))
-            investigation.scope.candidateEntities.push(candidate);
-          await this.saveInvestigation(investigation);
-        }
-        await bus.publish("evidence.created", evidence.summary, { evidence });
-
-        results.push({
-          candidate,
-          evidenceId: evidence.id,
-          toolCallId: recorded.callId,
-          summary,
-          ...(recorded.execution.rawRef ? { rawRef: recorded.execution.rawRef } : {}),
-          result: compactToolResultForAgent("query_metrics", recorded.execution.result),
-        });
-      }
-      return { candidates: results };
-    } finally {
-      releaseOperation();
-    }
   }
 
   async updateHypotheses(
@@ -664,7 +550,9 @@ export class RcaService {
     mutations: HypothesisMutation[],
     locked = false,
   ): Promise<HypothesisMutationBatchResult> {
-    if (!locked && (await this.liveInvestigation(investigationId)).schemaVersion === 2) {
+    const current = await this.liveInvestigation(investigationId);
+    this.assertLiveWritable(current);
+    if (!locked && current.schemaVersion === 2) {
       return this.withInvestigationLock(investigationId, () =>
         this.updateHypotheses(investigationId, mutations, true),
       );
@@ -887,285 +775,15 @@ export class RcaService {
     options: AgenticDispatchOptions = {},
   ): Promise<AgenticDispatchResult> {
     const investigation = await this.liveInvestigation(investigationId);
+    this.assertLiveWritable(investigation);
     this.assertRunning(investigation);
-
-    if (investigation.schemaVersion === 2) {
-      return this.dispatchAgenticV2(investigationId, briefs, options);
+    if (briefs.some((brief) => brief.role === "event-topology")) {
+      throw new Error("unsupported: Live Investigation only supports trace/log/metrics experts");
     }
-
-    if (briefs.length === 0) throw new Error("At least one investigation brief is required");
-    if (briefs.length > 3)
-      throw new Error("At most three independent briefs may be dispatched in one batch");
-    const failedNoEvidenceRoles = new Set(
-      investigation.expertTasks
-        .filter((task) => task.status === "failed" && task.evidenceIds.length === 0)
-        .map((task) => task.expert),
-    );
-    const effectiveExistingTasks = investigation.expertTasks.filter(
-      (task) => !(task.status === "failed" && task.evidenceIds.length === 0),
-    ).length;
-    const recoveryBriefs = briefs.filter((brief) => failedNoEvidenceRoles.has(brief.role)).length;
-    const effectiveNewTasks = briefs.length - recoveryBriefs;
-    const totalAfterDispatch = investigation.expertTasks.length + briefs.length;
-    if (effectiveExistingTasks + effectiveNewTasks > 4 || totalAfterDispatch > 6) {
-      throw new Error(
-        "Sub-investigation budget exceeded (4 evidence-producing tasks plus up to 2 recovery tasks for failed/no-evidence roles)",
-      );
-    }
-
-    for (const brief of briefs) {
-      const baseline = brief.context.baselineWindow;
-      if (!baseline) continue;
-      const baselineFrom = Date.parse(baseline.from);
-      const baselineTo = Date.parse(baseline.to);
-      const mainFrom = Date.parse(brief.context.mainWindow.from);
-      const mainTo = Date.parse(brief.context.mainWindow.to);
-      if (
-        !Number.isFinite(baselineFrom) ||
-        !Number.isFinite(baselineTo) ||
-        !Number.isFinite(mainFrom) ||
-        !Number.isFinite(mainTo)
-      ) {
-        throw new Error("Brief contains an invalid baseline or main time window");
-      }
-      if (baselineFrom > baselineTo || mainFrom > mainTo) {
-        throw new Error("Brief time window start must not be after its end");
-      }
-      if (baselineTo > mainFrom && baselineFrom < mainTo) {
-        throw new Error(
-          "Brief baselineWindow overlaps mainWindow; choose a non-overlapping comparison window",
-        );
-      }
-    }
-
-    const knownHypotheses = new Set(investigation.hypotheses.map((item) => item.id));
-    for (const brief of briefs) {
-      if (!brief.question.trim()) throw new Error("Brief question is required");
-      if (brief.expected.length === 0) throw new Error("Brief expected outputs are required");
-      if (brief.hypothesisIds.length === 0) {
-        throw new Error("Brief must identify at least one hypothesis it can change");
-      }
-      for (const id of brief.hypothesisIds) {
-        if (!knownHypotheses.has(id)) throw new Error(`Brief references unknown hypothesis ${id}`);
-      }
-    }
-
-    const runner = this.requireExpertRunner();
-    const bus = await this.busFor(investigationId);
-    const running = this.agenticRunning.get(investigationId);
-    if (!running) throw new Error("Agentic investigation is not active");
-    checkCancelled(running.controller.signal);
-    const releaseOperation = this.trackAgenticOperation(investigationId);
-    const dispatchController = new AbortController();
-    running.activeDispatchController = dispatchController;
-    const dispatchSignal = AbortSignal.any([running.controller.signal, dispatchController.signal]);
-
-    try {
-      const taskPairs = briefs.map((brief) => {
-        const task: ExpertTask = {
-          id: this.nextTaskId(investigation),
-          expert: brief.role,
-          objective: brief.question.trim().slice(0, 1000),
-          status: "running",
-          hypothesisIds: [...new Set(brief.hypothesisIds)],
-          toolCallIds: [],
-          evidenceIds: [],
-          brief,
-          implementation: "pi-session",
-          createdAt: now(),
-        };
-        investigation.expertTasks.push(task);
-        return { task, brief };
-      });
-
-      investigation.rounds += 1;
-      await this.saveInvestigation(investigation);
-      for (const { task, brief } of taskPairs) {
-        await bus.publish("expert.started", `${task.expert} investigating: ${brief.question}`, {
-          expertTask: task,
-          round: investigation.rounds,
-          source: "main-agent-dispatch",
-        });
-      }
-
-      const rcaTask: RcaTask = {
-        caseId: investigation.caseId,
-        version: "runtime",
-        alert: investigation.alertContext,
-        availableModalities: ["metric", "log", "trace", "event", "alert", "topology"],
-      };
-
-      const settled = await Promise.allSettled(
-        taskPairs.map(async ({ task, brief }): Promise<DispatchedFinding> => {
-          try {
-            const run = await runner.run({
-              investigation,
-              task: rcaTask,
-              brief,
-              model: options.model,
-              signal: dispatchSignal,
-              invoke: (tool, arguments_) =>
-                this.invokeRecordedTool(investigation, bus, tool, arguments_, task, dispatchSignal),
-              onThinking: (delta) =>
-                bus
-                  .publish("expert.thinking.delta", "", {
-                    expertTaskId: task.id,
-                    delta,
-                  })
-                  .then(() => undefined),
-            });
-            checkCancelled(dispatchSignal);
-            task.sessionId = run.sessionId;
-            task.diagnostics = run.diagnostics;
-            task.usage = run.usage;
-            task.termination = run.termination;
-            if (run.termination.reason !== "completed" || !run.finding) {
-              throw new PiExpertRunError(
-                run.termination.detail ?? run.termination.reason,
-                run.diagnostics,
-                run.sessionId,
-                run.termination.providerTransient === true,
-                run.usage,
-                run.termination,
-              );
-            }
-
-            const finding = await this.acceptAgentFinding(investigation, task, run.finding, bus);
-            checkCancelled(dispatchSignal);
-            task.finding = finding;
-            task.status = finding.status === "failed" ? "failed" : "completed";
-            task.completedAt = now();
-            await this.saveInvestigation(investigation);
-            await bus.publish("expert.completed", `${task.expert} completed: ${finding.summary}`, {
-              expertTask: task,
-              finding,
-            });
-            const observationIds = (investigation.observations ?? [])
-              .filter((item) => item.expertTaskId === task.id)
-              .map((item) => item.id);
-            return {
-              taskRef: task.id,
-              role: task.expert,
-              status: task.status,
-              finding,
-              evidenceIds: [...task.evidenceIds],
-              observationIds,
-              ...(task.termination ? { termination: task.termination.reason } : {}),
-              ...(task.diagnostics ? { diagnostics: task.diagnostics } : {}),
-            };
-          } catch (error) {
-            const softInterrupted =
-              dispatchController.signal.aborted && !running.controller.signal.aborted;
-            const cancelled =
-              dispatchSignal.aborted ||
-              isAbortError(error) ||
-              (error instanceof PiExpertRunError && error.termination?.reason === "aborted");
-            if (error instanceof PiExpertRunError) {
-              task.diagnostics = error.diagnostics;
-              if (error.sessionId) task.sessionId = error.sessionId;
-              if (error.usage) task.usage = error.usage;
-              task.termination = error.termination ?? {
-                reason: cancelled
-                  ? "aborted"
-                  : error.providerTransient
-                    ? "provider_error"
-                    : error.diagnostics.failureReason === "json_invalid" ||
-                        error.diagnostics.failureReason === "json_missing"
-                      ? "invalid_output"
-                      : "runtime_error",
-                detail: safeRuntimeDetail(error),
-              };
-            } else {
-              task.termination = {
-                reason: cancelled ? "aborted" : "runtime_error",
-                detail: safeRuntimeDetail(error),
-              };
-            }
-            if (cancelled && task.status === "cancelled") {
-              throw error;
-            }
-            task.status = cancelled ? "cancelled" : "failed";
-            task.completedAt = now();
-            const finding: AgentExpertFinding = {
-              status: cancelled ? "failed" : "failed",
-              strength: "inconclusive",
-              summary: softInterrupted
-                ? "Dispatch superseded by user intervention."
-                : safeRuntimeDetail(error),
-              conclusions: [],
-              evidenceClaims: [],
-              candidateEntities: [],
-              verdict: "inconclusive",
-              suggestedFollowUps: [],
-            };
-            task.finding = finding;
-            await this.saveInvestigation(investigation);
-            await bus.publish(
-              "expert.completed",
-              `${task.expert} ${cancelled ? "cancelled" : "failed"}: ${finding.summary}`,
-              { expertTask: task, finding },
-            );
-            if (cancelled) throw error;
-            const observationIds = (investigation.observations ?? [])
-              .filter((item) => item.expertTaskId === task.id)
-              .map((item) => item.id);
-            if (observationIds.length > 0) {
-              finding.summary = `${finding.summary} ${observationIds.length} tool-backed observations were retained for recovery.`;
-              finding.suggestedFollowUps = [
-                "Use get_investigation_state to inspect retained observations before deciding whether a narrower recovery brief is needed.",
-              ];
-            }
-            return {
-              taskRef: task.id,
-              role: task.expert,
-              status: task.status,
-              finding,
-              evidenceIds: [],
-              observationIds,
-              ...(task.termination ? { termination: task.termination.reason } : {}),
-              ...(task.diagnostics ? { diagnostics: task.diagnostics } : {}),
-            };
-          }
-        }),
-      );
-
-      if (running.controller.signal.aborted) {
-        throw new DOMException("Investigation cancelled", "AbortError");
-      }
-
-      const interrupted = dispatchController.signal.aborted;
-      const results: DispatchedFinding[] = [];
-      for (const item of settled) {
-        if (item.status === "rejected") {
-          if (interrupted) continue;
-          throw item.reason;
-        }
-        results.push(item.value);
-      }
-
-      await bus.publish(
-        "round.completed",
-        interrupted
-          ? `Agentic batch ${investigation.rounds} interrupted by user intervention.`
-          : `Agentic batch ${investigation.rounds} completed.`,
-        {
-          round: investigation.rounds,
-          taskRefs: results.map((item) => item.taskRef),
-          evidenceIds: results.flatMap((item) => item.evidenceIds),
-          interrupted,
-          source: "main-agent",
-        },
-      );
-      return { findings: results, interrupted };
-    } finally {
-      if (running.activeDispatchController === dispatchController) {
-        running.activeDispatchController = undefined;
-      }
-      releaseOperation();
-    }
+    return this.dispatchAgenticV2(investigationId, briefs, options);
   }
 
-  private async withInvestigationLock<T>(id: string, operation: () => Promise<T>): Promise<T> {
+  private async withInvestigationLock  private async withInvestigationLock<T>(id: string, operation: () => Promise<T>): Promise<T> {
     const previous = this.investigationLocks.get(id) ?? Promise.resolve();
     let release!: () => void;
     const current = new Promise<void>((resolve) => {
