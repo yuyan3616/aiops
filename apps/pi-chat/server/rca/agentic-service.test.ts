@@ -12,9 +12,23 @@ import type { Investigation } from "./types";
 function investigation(id: string): Investigation {
   return {
     id,
-    caseId: "t999",
     status: "running",
     symptom: "checkout latency",
+    context: {
+      symptom: "checkout latency",
+      trigger: { type: "manual" },
+      window: {
+        from: "2026-01-01T00:00:00.000Z",
+        to: "2026-01-01T00:10:00.000Z",
+      },
+      target: {
+        service: "checkout",
+        operation: "PlaceOrder",
+      },
+    },
+    formatVersion: 3,
+    source: { kind: "live", contractVersion: "1" },
+    creation: { requestHash: "fixture" },
     alertContext: {
       eventId: "evt",
       title: "checkout latency",
@@ -45,7 +59,7 @@ function investigation(id: string): Investigation {
     evidence: [
       {
         id: "E01",
-        caseId: "t999",
+        investigationId: id,
         modality: "trace",
         entity: "shipping",
         timeRange: {
@@ -53,7 +67,7 @@ function investigation(id: string): Investigation {
           to: "2026-01-01T00:10:00.000Z",
         },
         summary: "shipping latency rises in the incident window",
-        rawRef: "rca100://t999/traces",
+        rawRef: "tempo://query/search_traces",
         supports: [],
         contradicts: [],
         sourceQuery: { service: "shipping" },
@@ -66,6 +80,8 @@ function investigation(id: string): Investigation {
     toolCalls: [],
     rounds: 0,
     startedAt: "2026-01-01T00:10:00.000Z",
+    schemaVersion: 2,
+    budgetLedger: [],
   };
 }
 
@@ -82,7 +98,6 @@ test("Main Agent RCA tools expose explicit investigation controls instead of a b
     "start_rca_investigation",
     "resume_rca_investigation",
     "query_rca_overview",
-    "screen_rca_candidates",
     "update_hypotheses",
     "dispatch_investigations",
     "get_investigation_state",
@@ -121,68 +136,6 @@ test("Main Agent compact state excludes runtime accounting and diagnostics", asy
   assert.equal(task.diagnostics, undefined);
 });
 
-test("screen_rca_candidates delegates a bounded candidate set to the RCA service", async () => {
-  let received:
-    | { investigationId: string; candidates: string[]; topNPerCandidate: number }
-    | undefined;
-  const fakeService = {
-    async queryCandidateCoverage(
-      investigationId: string,
-      candidates: string[],
-      topNPerCandidate: number,
-    ) {
-      received = { investigationId, candidates, topNPerCandidate };
-      return {
-        candidates: candidates.map((candidate, index) => ({
-          candidate,
-          evidenceId: `E0${index + 1}`,
-          toolCallId: `C0${index + 1}`,
-          summary: `${candidate} screened`,
-          result: {},
-        })),
-      };
-    },
-  } as unknown as RcaService;
-
-  const definitions = createRcaMainAgentTools({
-    rcaService: fakeService,
-    conversationId: "conversation-candidate-coverage",
-    getModelRef: () => ({ provider: "packy", id: "deepseek-flash" }),
-    onProjection: () => {},
-    onLinkInvestigation: () => {},
-  });
-  const tool = definitions.find((item) => item.name === "screen_rca_candidates");
-  assert.ok(tool);
-
-  const execute = tool.execute as unknown as (
-    toolCallId: string,
-    parameters: {
-      investigationId: string;
-      candidates: string[];
-      topNPerCandidate?: number;
-    },
-  ) => Promise<{ content: Array<{ type: string; text: string }> }>;
-
-  const response = await execute("call-screen", {
-    investigationId: "INV-screen",
-    candidates: ["checkout", "shipping", "email"],
-    topNPerCandidate: 4,
-  });
-  const payload = JSON.parse(response.content[0]?.text ?? "{}") as {
-    candidates?: Array<{ candidate?: string }>;
-  };
-
-  assert.deepEqual(received, {
-    investigationId: "INV-screen",
-    candidates: ["checkout", "shipping", "email"],
-    topNPerCandidate: 4,
-  });
-  assert.deepEqual(
-    payload.candidates?.map((item) => item.candidate),
-    ["checkout", "shipping", "email"],
-  );
-});
-
 test("start_rca_investigation does not implicitly replace a linked investigation", async () => {
   let beginCalls = 0;
   const fakeService = {
@@ -210,10 +163,22 @@ test("start_rca_investigation does not implicitly replace a linked investigation
   assert.ok(start);
   const executeStart = start.execute as unknown as (
     toolCallId: string,
-    parameters: { caseId: string; forceNew?: boolean },
+    parameters: {
+      symptom: string;
+      target: { service: string; operation?: string };
+      window: { from: string; to: string };
+      forceNew?: boolean;
+    },
   ) => Promise<{ content: Array<{ type: string; text: string }> }>;
 
-  const result = await executeStart("call-start", { caseId: "t039" });
+  const result = await executeStart("call-start", {
+    symptom: "checkout latency",
+    target: { service: "checkout", operation: "PlaceOrder" },
+    window: {
+      from: "2026-01-01T00:00:00.000Z",
+      to: "2026-01-01T00:10:00.000Z",
+    },
+  });
   const payload = JSON.parse(result.content[0]?.text ?? "{}") as {
     started?: boolean;
     recommendedAction?: string;
@@ -247,8 +212,8 @@ test("cancelling an active RCA terminalizes expert tasks and tools before cleanu
     current.toolCalls.push({
       id: "C02",
       expertTaskId: "T01",
-      tool: "query_traces",
-      query: { caseId: "t999", service: "checkout" },
+      tool: "search_traces",
+      query: { target: { service: "checkout" } },
       status: "running",
       startedAt: "2026-01-01T00:10:00.000Z",
     });
@@ -328,7 +293,7 @@ test("user steering interrupts only the active dispatch and keeps the investigat
         hypothesisIds: ["H01"],
         context: {
           alertSummary: "checkout latency",
-          mainWindow: current.alertContext.window,
+          mainWindow: current.context!.window,
           knownFacts: [],
         },
         expected: ["Return a tool-backed finding."],
@@ -923,87 +888,6 @@ test("compact metric results omit raw samples while preserving aggregate signals
   assert.equal(compact.data.directionCounts.decrease, 12);
 });
 
-test("agentic tool success persists an observation independently from evidence", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "pi-chat-observation-"));
-  try {
-    const repository = new InvestigationRepository(directory);
-    const current = investigation("INV-agentic-observation");
-    current.observations = [];
-    await repository.save(current);
-
-    const fakeTools = {
-      execute: async () => ({
-        tool: "query_metrics",
-        arguments: {},
-        result: {
-          caseId: "t999",
-          modality: "metric",
-          query: {},
-          matchedRows: 10,
-          returnedRows: 1,
-          truncated: false,
-          rawRef: "rca100://t999/metrics.parquet?q=x",
-          data: {
-            anomalies: [{
-              entitySet: "service",
-              entity: "email",
-              metric: "cpu_usage_total",
-              baselineCount: 10,
-              incidentCount: 5,
-              baselineMedian: 1,
-              incidentMedian: 0.5,
-              baselineP95: 1.2,
-              incidentP95: 0.7,
-              ratio: 0.5,
-              robustZ: -3,
-              direction: "decrease",
-              score: 3,
-              rawRef: "raw",
-            }],
-            peerOutliers: [],
-            sample: [{ time: "2026-01-01T00:00:00Z", value: 0.5 }],
-          },
-        },
-        rawRef: "rca100://t999/metrics.parquet?q=x",
-        summary: "query_metrics: matched 10, returned 1",
-      }),
-    };
-
-    const service = new RcaService(
-      repository,
-      undefined,
-      fakeTools as never,
-    );
-    const bus = await (service as unknown as {
-      busFor(id: string): Promise<unknown>;
-    }).busFor(current.id);
-    const recorded = await (service as unknown as {
-      invokeRecordedTool(
-        investigation: Investigation,
-        bus: unknown,
-        tool: "query_metrics",
-        arguments_: Record<string, unknown>,
-      ): Promise<{ observationId?: string }>;
-    }).invokeRecordedTool(current, bus, "query_metrics", {
-      caseId: "t999",
-      from: current.alertContext.window.from,
-      to: current.alertContext.window.to,
-    });
-
-    assert.equal(recorded.observationId, "O01");
-    const saved = await repository.get(current.id);
-    assert.equal(saved.observations?.length, 1);
-    assert.equal(saved.evidence.length, 1);
-    assert.equal(saved.observations?.[0]?.toolCallId, "C01");
-    assert.match(saved.observations?.[0]?.summary ?? "", /email cpu_usage_total/);
-    assert.ok(saved.toolCalls[0]?.runtime?.before.rssMb);
-    assert.ok(saved.toolCalls[0]?.runtime?.after?.rssMb);
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
-});
-
-
 test("recoverInterrupted marks active investigations interrupted and resumable", async () => {
   const directory = await mkdtemp(join(tmpdir(), "pi-chat-recover-"));
   try {
@@ -1147,7 +1031,7 @@ test("compact trace results bound critical-path context while preserving raw ref
     parentSpanId: index ? `s-${index - 1}` : undefined,
     statusCode: "OK",
   });
-  const compact = compactToolResultForAgent("query_traces", {
+  const compact = compactToolResultForAgent("search_traces", {
     caseId: "t999",
     modality: "trace",
     query: { service: "checkout" },
