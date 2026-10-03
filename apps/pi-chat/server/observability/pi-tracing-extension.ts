@@ -170,6 +170,11 @@ export function createPiTracingExtension(
     const toolTombstoneOrder: string[] = [];
     const diagnostics = new Set<string>();
 
+    const retireProviderHeader = (current: ActiveProvider): void => {
+      const index = providersAwaitingHeaders.indexOf(current);
+      if (index >= 0) providersAwaitingHeaders.splice(index, 1);
+    };
+
     const safeTelemetry = (operation: string, action: () => void): void => {
       try {
         action();
@@ -615,7 +620,12 @@ export function createPiTracingExtension(
         const message = event.message as { role?: string };
         if (message?.role !== "assistant") return;
         const current = providersAwaitingMessageEnd.shift();
-        if (!current || current.closed) return;
+        if (!current) return;
+        // Pi guarantees after_provider_response (when present) before stream completion.
+        // Once message_end arrives, no response-header callback for this generation can
+        // still legitimately arrive, so retire any unmatched header tombstone.
+        retireProviderHeader(current);
+        if (current.closed) return;
         const outcome = assistantMessageOutcome(event.message);
         closeProvider(current, outcome, completionReasonForMessage(event.message));
       });
