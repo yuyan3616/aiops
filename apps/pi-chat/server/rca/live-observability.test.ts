@@ -20,6 +20,8 @@ import { RcaService } from "./service";
 import { ObservabilityToolRegistry } from "./tools";
 import type { Investigation } from "./types";
 
+type FetchInput = Parameters<typeof fetch>[0];
+
 function jsonResponse(
   value: unknown,
   status = 200,
@@ -197,7 +199,7 @@ test("LiveHttpClient enforces auth, response size, timeout and finite retry sema
     baseUrl: "http://backend.test",
     backendAlias: "timeout",
     deadlineMs: 5,
-    fetchImpl: ((_: RequestInfo | URL, init?: RequestInit) =>
+    fetchImpl: ((_: FetchInput, init?: RequestInit) =>
       new Promise<Response>((_resolve, reject) => {
         const signal = init?.signal;
         const rejectAbort = () => reject(new DOMException("aborted", "AbortError"));
@@ -228,7 +230,7 @@ test("LiveHttpClient enforces auth, response size, timeout and finite retry sema
 
 test("TraceProvider returns bounded partial search results and Registry authorizes get_trace ids", async () => {
   const seen: URL[] = [];
-  const fetchImpl = (async (input: RequestInfo | URL) => {
+  const fetchImpl = (async (input: FetchInput) => {
     const url = new URL(String(input));
     seen.push(url);
     if (url.pathname.endsWith("/api/search")) {
@@ -354,7 +356,7 @@ test("LogProvider returns no_data honestly and redacts secrets in untrusted tele
 
 test("MetricsProvider preserves Counter reset, Histogram quantile, Gauge and unit semantics", async () => {
   const promql: string[] = [];
-  const fetchImpl = (async (input: RequestInfo | URL) => {
+  const fetchImpl = (async (input: FetchInput) => {
     const url = new URL(String(input));
     if (url.pathname.endsWith("/api/v1/series")) {
       return jsonResponse({
