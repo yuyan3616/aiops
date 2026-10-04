@@ -414,7 +414,7 @@ test("completed tool work commits Primary even if a transient model failure foll
     const invoke = (
       context as { invoke: (tool: string, args: Record<string, unknown>) => Promise<unknown> }
     ).invoke;
-    await invoke("query_traces", { caseId: "t039" });
+    await invoke("search_traces", { target: { service: "checkout" }, window: { kind: "incident" } });
     throw new PiExpertRunError(
       "provider temporarily unavailable",
       {
@@ -432,10 +432,42 @@ test("completed tool work commits Primary even if a transient model failure foll
   t.after(() => rm(state.directory, { recursive: true, force: true }));
   Object.assign(state.service, {
     tools: {
-      execute: async () => ({
-        result: { rawRef: "test://trace", data: {} },
-        summary: "trace queried",
-        rawRef: "test://trace",
+      prepare: (
+        tool: "search_traces",
+        arguments_: Record<string, unknown>,
+        investigation: Investigation,
+      ) => ({
+        tool,
+        arguments: arguments_,
+        target: investigation.context!.target,
+        window: investigation.context!.window,
+      }),
+      executePrepared: async (
+        _investigationId: string,
+        prepared: {
+          tool: "search_traces";
+          arguments: Record<string, unknown>;
+          window: { from: string; to: string };
+        },
+      ) => ({
+        tool: prepared.tool,
+        arguments: prepared.arguments,
+        result: {
+          status: "success",
+          query: { operation: "search_traces" },
+          timeRange: prepared.window,
+          retrievedAt: "2026-09-28T00:10:01Z",
+          backendAlias: "tempo",
+          contractVersion: "1",
+          data: { traces: [{ traceId: "00000000000000000000000000000001" }] },
+          warnings: [],
+          truncationReasons: [],
+        },
+        summary: "search_traces: success, returned 1",
+        resultStatus: "success",
+        actualWindow: prepared.window,
+        backendAlias: "tempo",
+        rawRef: "tempo://query/search_traces",
       }),
     },
   });
