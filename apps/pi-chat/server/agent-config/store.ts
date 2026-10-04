@@ -1,7 +1,6 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 
 export const EXPERT_TOOLS = [
   "search_traces",
@@ -42,6 +41,7 @@ export type ConfigFiles = Record<string, string>;
 const MAX_BYTES = 512 * 1024;
 const MAX_FILE_BYTES = 64 * 1024;
 const MAX_FILES = 128;
+// Accept old persisted cache IDs for pinned investigations; no bundled files are loaded.
 const VERSION = /^(?:[a-f0-9]{40}|bundled-[a-f0-9]{40})$/;
 const ID = /^[a-z][a-z0-9-]{0,47}$/;
 
@@ -168,24 +168,6 @@ export function validateBundle(version: string, files: ConfigFiles): ConfigBundl
     throw new Error("config_missing_roles");
   return freeze({ version, roles, skills });
 }
-const bundledDir = join(dirname(fileURLToPath(import.meta.url)), "bundled");
-export function readBundledFiles(): ConfigFiles {
-  const files: ConfigFiles = {
-    "manifest.json": readFileSync(join(bundledDir, "manifest.json"), "utf8"),
-  };
-  for (const path of referencedPaths(files["manifest.json"]!))
-    files[path] = readFileSync(join(bundledDir, path), "utf8");
-  for (const path of JSON.parse(files["manifest.json"]!).roles as string[]) {
-    const prompt = configPath(JSON.parse(files[path]!).systemPrompt);
-    files[prompt] = readFileSync(join(bundledDir, prompt), "utf8");
-  }
-  return files;
-}
-export function bundledVersion(files: ConfigFiles): string {
-  return `bundled-${createHash("sha1")
-    .update(JSON.stringify(Object.entries(files).sort(([a], [b]) => a.localeCompare(b))))
-    .digest("hex")}`;
-}
 interface CacheSnapshot {
   version: string;
   files: ConfigFiles;
@@ -198,29 +180,38 @@ export interface ConfigStoreOptions {
   refreshMs?: number;
   fetch?: typeof fetch;
 }
+export class AgentConfigUnavailableError extends Error {
+  constructor() {
+    super("agent_config_unavailable: Agent 配置不可用，请检查配置仓库连接或持久化缓存。");
+    this.name = "AgentConfigUnavailableError";
+  }
+}
 export class AgentConfigStore {
   private readonly bundles = new Map<string, ConfigBundle>();
-  private active: ConfigBundle;
-  private readonly defaultBundle: ConfigBundle;
+  private active?: ConfigBundle;
   private pending?: Promise<boolean>;
   private timer?: ReturnType<typeof setInterval>;
   private options: ConfigStoreOptions;
   lastRefreshError?: string;
   constructor(options: ConfigStoreOptions = {}) {
     this.options = options;
-    const files = readBundledFiles();
-    this.active = validateBundle(bundledVersion(files), files);
-    this.defaultBundle = this.active;
-    this.bundles.set(this.active.version, this.active);
+  }
+  get isReady(): boolean {
+    return Boolean(this.active);
   }
   get current(): ConfigBundle {
+    if (!this.active) throw new AgentConfigUnavailableError();
     return this.active;
   }
-  get bundled(): ConfigBundle {
-    return this.defaultBundle;
+  get status(): { state: "ready" | "unavailable"; version?: string; error?: string } {
+    return {
+      state: this.isReady ? "ready" : "unavailable",
+      ...(this.active ? { version: this.active.version } : {}),
+      ...(this.lastRefreshError ? { error: this.lastRefreshError } : {}),
+    };
   }
   get(version?: string): ConfigBundle {
-    if (!version) return this.active;
+    if (!version) return this.current;
     if (!VERSION.test(version)) throw new Error("config_invalid_version");
     const loaded = this.bundles.get(version);
     if (loaded) return loaded;
@@ -268,12 +259,10 @@ export class AgentConfigStore {
           this.active = this.get(JSON.parse(readFileSync(pointer, "utf8")).version);
       } catch {
         this.lastRefreshError = "config_cache_invalid";
-        process.stderr.write("Agent configuration: config_cache_invalid; using bundled snapshot\n");
+        process.stderr.write(
+          "Agent configuration: config_cache_invalid; no active configuration\n",
+        );
       }
-      const files = readBundledFiles();
-      const version = bundledVersion(files);
-      const path = join(this.options.cacheDir, `${version}.json`);
-      if (!existsSync(path)) this.atomicWrite(path, JSON.stringify({ version, files }));
     }
     await this.refresh();
     if (this.options.repository && !this.timer) {
@@ -348,7 +337,7 @@ export class AgentConfigStore {
     const commit = await request(`commits/${encodeURIComponent(ref)}`);
     const version = string(commit.sha);
     if (!/^[a-f0-9]{40}$/.test(version)) throw new Error("config_invalid_commit");
-    if (version === this.active.version) {
+    if (version === this.active?.version) {
       this.lastRefreshError = undefined;
       return false;
     }
