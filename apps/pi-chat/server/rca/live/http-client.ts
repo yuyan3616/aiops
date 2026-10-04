@@ -279,6 +279,9 @@ export class LiveHttpClient {
       }
     } finally {
       signal.removeEventListener("abort", onAbort);
+      if (signal.aborted) {
+        await reader.cancel("aborted").catch(() => undefined);
+      }
     }
     const output = new Uint8Array(length);
     let offset = 0;
