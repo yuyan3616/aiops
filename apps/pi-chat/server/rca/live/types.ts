@@ -194,11 +194,19 @@ export function validSpanId(value: string): boolean {
 
 export function redactTelemetryText(value: string): string {
   return value
+    .replace(
+      /\bauthorization\b\s*[:=]\s*(?:Bearer|Basic)\s+[^\s,;]+/gi,
+      "authorization=[REDACTED]",
+    )
     .replace(/\bBearer\s+[A-Za-z0-9._~+\/-]+=*/gi, "Bearer [REDACTED]")
     .replace(
-      /\b(api[_-]?key|secret|password|passwd|authorization|token)\b\s*[:=]\s*([^\s,;]+)/gi,
+      /\b(api[_-]?key|secret|password|passwd|authorization|token)\b\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,
       "$1=[REDACTED]",
     );
+}
+
+export function sensitiveTelemetryKey(value: string): boolean {
+  return /secret|token|password|passwd|authorization|api[_-]?key/i.test(value);
 }
 
 export function safeAttributeValue(value: unknown): string | number | boolean | undefined {
