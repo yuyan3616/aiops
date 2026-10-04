@@ -59,14 +59,30 @@ function object(value: unknown): Record<string, unknown> | undefined {
 }
 
 
+function normalizeOtelId(value: unknown, bytes: 8 | 16): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const id = value.trim();
+  const lower = id.toLowerCase();
+  if (/^[0-9a-f]+$/.test(lower) && lower.length === bytes * 2) return lower;
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(id)) return undefined;
+  try {
+    const decoded = Buffer.from(id, "base64");
+    if (decoded.length !== bytes) return undefined;
+    const hex = decoded.toString("hex");
+    return /^0+$/.test(hex) ? undefined : hex;
+  } catch {
+    return undefined;
+  }
+}
+
 function traceId(value: unknown): string | undefined {
-  const id = typeof value === "string" ? value.toLowerCase() : "";
-  return validTraceId(id) ? id : undefined;
+  const id = normalizeOtelId(value, 16);
+  return id && validTraceId(id) ? id : undefined;
 }
 
 function spanId(value: unknown): string | undefined {
-  const id = typeof value === "string" ? value.toLowerCase() : "";
-  return validSpanId(id) ? id : undefined;
+  const id = normalizeOtelId(value, 8);
+  return id && validSpanId(id) ? id : undefined;
 }
 
 function otlpAttributes(value: unknown): Record<string, string | number | boolean> {
@@ -267,6 +283,10 @@ export class TraceProvider {
     }
     const raw = await this.client.requestJson<Record<string, unknown>>({
       path: `/api/v2/traces/${encodeURIComponent(id)}`,
+      search: new URLSearchParams({
+        start: unixSeconds(input.window.from),
+        end: unixSeconds(input.window.to),
+      }),
       headers: { Accept: "application/json" },
       signal,
     });
@@ -526,6 +546,20 @@ export class LogProvider {
     if (keywords.length) {
       query += ` |~ ${quote(`(?i)(${keywords.map(regexEscape).join("|")})`)}`;
     }
+    const normalizedTraceId = input.traceId ? traceId(input.traceId) : undefined;
+    if (input.traceId && !normalizedTraceId) {
+      throw new LiveBackendError("invalid_query", "Invalid log trace id", {
+        backendAlias: this.backendAlias,
+      });
+    }
+    const normalizedSpanId = input.spanId ? spanId(input.spanId) : undefined;
+    if (input.spanId && !normalizedSpanId) {
+      throw new LiveBackendError("invalid_query", "Invalid log span id", {
+        backendAlias: this.backendAlias,
+      });
+    }
+    if (normalizedTraceId) query += ` |= ${quote(normalizedTraceId)}`;
+    if (normalizedSpanId) query += ` |= ${quote(normalizedSpanId)}`;
     const limit = Math.max(1, Math.min(Math.floor(input.limit ?? 100), LIVE_LIMITS.maxLogs));
     const search = new URLSearchParams({
       query,
@@ -552,7 +586,15 @@ export class LogProvider {
             continue;
           }
           const record = decodeLogLine(item[1], item[0], stream);
-          if (logMatches(record, input)) logs.push(record);
+          if (
+            logMatches(record, {
+              ...input,
+              ...(normalizedTraceId ? { traceId: normalizedTraceId } : {}),
+              ...(normalizedSpanId ? { spanId: normalizedSpanId } : {}),
+            })
+          ) {
+            logs.push(record);
+          }
         }
         if (logs.length >= limit) break;
       }
@@ -571,8 +613,8 @@ export class LogProvider {
           ...(input.severity ? { severity: input.severity } : {}),
           ...(input.lifecycleStatus ? { lifecycleStatus: input.lifecycleStatus } : {}),
           ...(input.event ? { event: input.event } : {}),
-          ...(input.traceId ? { traceId: input.traceId.toLowerCase() } : {}),
-          ...(input.spanId ? { spanId: input.spanId.toLowerCase() } : {}),
+          ...(normalizedTraceId ? { traceId: normalizedTraceId } : {}),
+          ...(normalizedSpanId ? { spanId: normalizedSpanId } : {}),
         },
         limit,
       },
@@ -736,10 +778,12 @@ export class MetricsProvider {
       start: unixSeconds(input.window.from),
       end: unixSeconds(input.window.to),
     });
+    const deadlineAt = Date.now() + LIVE_LIMITS.deadlineMs;
     const raw = await this.client.requestJson<Record<string, unknown>>({
       path: "/api/v1/series",
       search,
       signal,
+      deadlineAt,
     });
     const series = Array.isArray(raw.data) ? raw.data : [];
     const names = [...new Set(series.map((entry) => object(entry)?.__name__).filter(
@@ -750,32 +794,34 @@ export class MetricsProvider {
     const selected = names
       .filter((name) => !searchTerm || name.toLowerCase().includes(searchTerm))
       .slice(0, limit);
-    const descriptors: MetricDescriptor[] = [];
-    for (const name of selected) {
-      const metadataSearch = new URLSearchParams({ metric: name, limit: "1" });
-      const metadata = await this.client.requestJson<Record<string, unknown>>({
-        path: "/api/v1/metadata",
-        search: metadataSearch,
-        signal,
-      });
-      const rows = object(metadata.data)?.[name];
-      const first = Array.isArray(rows) ? object(rows[0]) : undefined;
-      const type = descriptorType(first?.type);
-      const unit = boundedString(first?.unit, 64);
-      const labels = [...new Set(
-        series
-          .filter((entry) => object(entry)?.__name__ === name)
-          .flatMap((entry) => Object.keys(object(entry) ?? {}))
-          .filter((label) => label !== "__name__" && !sensitiveTelemetryKey(label)),
-      )].slice(0, 32);
-      descriptors.push({
-        name,
-        type,
-        ...(unit ? { unit } : {}),
-        labels,
-        operations: allowedOps(type),
-      });
-    }
+    const descriptors = await Promise.all(
+      selected.map(async (name): Promise<MetricDescriptor> => {
+        const metadataSearch = new URLSearchParams({ metric: name, limit: "1" });
+        const metadata = await this.client.requestJson<Record<string, unknown>>({
+          path: "/api/v1/metadata",
+          search: metadataSearch,
+          signal,
+          deadlineAt,
+        });
+        const rows = object(metadata.data)?.[name];
+        const first = Array.isArray(rows) ? object(rows[0]) : undefined;
+        const type = descriptorType(first?.type);
+        const unit = boundedString(first?.unit, 64);
+        const labels = [...new Set(
+          series
+            .filter((entry) => object(entry)?.__name__ === name)
+            .flatMap((entry) => Object.keys(object(entry) ?? {}))
+            .filter((label) => label !== "__name__" && !sensitiveTelemetryKey(label)),
+        )].slice(0, 32);
+        return {
+          name,
+          type,
+          ...(unit ? { unit } : {}),
+          labels,
+          operations: allowedOps(type),
+        };
+      }),
+    );
     const truncated = names.length > selected.length;
     return providerResult(
       this.backendAlias,
