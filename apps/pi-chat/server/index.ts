@@ -27,7 +27,7 @@ await agentConfigStore.start({
   ref: process.env.AGENT_CONFIG_REF ?? "main",
   token: process.env.AGENT_CONFIG_GITHUB_TOKEN,
 });
-process.stdout.write(`Agent configuration version: ${agentConfigStore.current.version}\n`);
+process.stdout.write(`Agent configuration status: ${JSON.stringify(agentConfigStore.status)}\n`);
 const packyProvider = await ensurePackyModelsConfig(getAgentDir());
 if (packyProvider) {
   process.stdout.write(

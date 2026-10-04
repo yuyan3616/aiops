@@ -9,7 +9,7 @@ import {
   type TextContent,
   type ThinkingLevel,
 } from "@earendil-works/pi-ai";
-import { ModelRuntime, SessionManager, loadSkillsFromDir } from "@earendil-works/pi-coding-agent";
+import { ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
 import type { GlobalConfig } from "@server/config";
 import {
   conversationRcaContextFromInvestigation,
@@ -124,6 +124,7 @@ export class ConversationService {
   }
 
   async createConversation() {
+    agentConfigStore.get();
     const conversationId = randomUUID();
     const conversationWorkspaceDir = join(this.globalConfig.workspacesDir, conversationId);
     await mkdir(conversationWorkspaceDir, { recursive: true });
@@ -156,7 +157,7 @@ export class ConversationService {
     return this.createManagedSession(conversationRecord, sessionManager);
   }
 
-  async send(conversationId: string, userInput: string, skills?: string[]) {
+  async send(conversationId: string, userInput: string, _skills?: string[]) {
     const requestStartedAt = Date.now();
     const cleanedUserInput = userInput.trim();
     if (!cleanedUserInput || cleanedUserInput.length === 0) {
@@ -171,15 +172,8 @@ export class ConversationService {
       );
     }
 
-    const loadSkillsResult = loadSkillsFromDir({
-      dir: this.globalConfig.skillsDir,
-      source: "project",
-    });
-    const availableSkillList = loadSkillsResult.skills.map((skill) => skill.name);
-    const availableSkillsSet = new Set(availableSkillList);
-    const validSelectedSkills = (skills ?? []).filter((skill) => availableSkillsSet.has(skill));
-
-    const managedSession = await this.ensureManagedSession(conversationId, validSelectedSkills);
+    agentConfigStore.get();
+    const managedSession = await this.ensureManagedSession(conversationId, []);
     const session = managedSession.runtime.session;
     let handedOff = false;
     try {
@@ -238,6 +232,8 @@ export class ConversationService {
     if (!conversationRecord) {
       throw new Error(`Conversation with id ${id} not found.`);
     }
+    if (!agentConfigStore.isReady && !this.managedSessions.has(id))
+      return this.snapshotWithoutAgent(conversationRecord);
     const managedSession = await this.ensureManagedSession(id);
     try {
       const session = managedSession.runtime.session;
@@ -294,6 +290,48 @@ export class ConversationService {
     } finally {
       this.done(managedSession);
     }
+  }
+
+  private async snapshotWithoutAgent(record: ConversationRecord): Promise<ConversationSnapshot> {
+    const manager = existsSync(record.sessionFile)
+      ? SessionManager.open(record.sessionFile, this.globalConfig.sessionsDir, record.workspaceDir)
+      : SessionManager.inMemory(record.workspaceDir);
+    const context = manager.buildSessionContext();
+    const investigations = await this.loadLinkedInvestigations(record);
+    const rcaContext = await this.resolveRcaContext(record.id);
+    const channel = this.getEventChannel(record.id);
+    return {
+      conversation: this.summary(record, "cold"),
+      rca: {
+        state: rcaContext.state,
+        investigationId: rcaContext.investigationId,
+        sourceKind: rcaContext.sourceKind,
+        caseId: rcaContext.caseId,
+        target: rcaContext.incident?.target,
+        window: rcaContext.incident?.window,
+        symptom: rcaContext.symptom,
+        rounds: rcaContext.rounds,
+        rootCauseStatus: rcaContext.rootCauseStatus,
+      },
+      messageList: mergeMessageLists(
+        settleInterruptedRcaSessionTools(
+          new ConversationViewBuilder(manager.getBranch()).build(),
+          investigations,
+          false,
+        ),
+        reconcileRcaExecutionItems(record.externalMessageList ?? [], investigations),
+      ),
+      activeSkillNames: [],
+      model: context.model
+        ? { provider: context.model.provider, id: context.model.modelId }
+        : { provider: "", id: "" },
+      thinkingLevel: context.thinkingLevel as ThinkingLevel,
+      availableThinkingLevels: [],
+      status: "cold",
+      error: "agent_config_unavailable: Agent 配置不可用；仍可查看历史记录。",
+      stream: { id: channel.streamId, lastEventId: channel.lastId },
+      diagnostics: [],
+    };
   }
 
   async list(): Promise<ConversationSummary[]> {
@@ -433,16 +471,7 @@ export class ConversationService {
   }
 
   getAvailableSkills(): SkillOption[] {
-    const loadSkillsResult = loadSkillsFromDir({
-      dir: this.globalConfig.skillsDir,
-      source: "project",
-    });
-    return loadSkillsResult.skills.map((skill) => {
-      return {
-        name: skill.name,
-        description: skill.description,
-      };
-    });
+    return [];
   }
 
   async updateConfig(
@@ -580,7 +609,7 @@ export class ConversationService {
       turnConfigVersion =
         investigation &&
         (investigation.status === "running" || investigation.status === "interrupted")
-          ? (investigation.agentConfigVersion ?? agentConfigStore.bundled.version)
+          ? await this.rcaService.resolveAgentConfigVersion(investigation.id)
           : agentConfigStore.current.version;
       agentConfigStore.get(turnConfigVersion);
       return turnConfigVersion;
@@ -632,7 +661,6 @@ export class ConversationService {
       conversationRecord,
       sessionManager,
       modelRuntime: this.modelRuntime,
-      selectedSkills,
       customTools: rcaMainTools,
       getAgentConfigVersion,
       getRcaContext,
@@ -646,7 +674,7 @@ export class ConversationService {
       channel: this.getEventChannel(conversationRecord.id),
       status: runtime.session.isStreaming ? "running" : "ready",
       diagnostics: runtime.diagnostics.map((item) => item.message),
-      activeSkillNames: [...selectedSkills],
+      activeSkillNames: [],
     };
     this.managedSessions.set(managedSession.id, managedSession);
     try {

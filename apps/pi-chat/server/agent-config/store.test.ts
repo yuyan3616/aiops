@@ -14,16 +14,16 @@ import { createMainConfigExtension } from "./main-extension";
 import {
   AgentConfigStore,
   agentConfigStore,
-  readBundledFiles,
   validateBundle,
   renderMainConfig,
   type ConfigFiles,
 } from "./store";
+import { fixtureFiles } from "./test-fixture";
 
 const v1 = "1".repeat(40);
 const v2 = "2".repeat(40);
 function changedFiles(): ConfigFiles {
-  const files = readBundledFiles();
+  const files = fixtureFiles();
   files["agents/main/SYSTEM.md"] += "\n新版身份配置";
   const manifest = JSON.parse(files["manifest.json"]!);
   manifest.roles.push("agents/latency/agent.json");
@@ -63,7 +63,7 @@ function mockGithub(
 }
 
 test("configuration validation rejects unknown tools, paths, executable fields and missing discovery", () => {
-  const files = readBundledFiles();
+  const files = fixtureFiles();
   assert.ok(validateBundle(v1, files).roles.main);
   for (const change of [
     { tools: ["bash"] },
@@ -86,7 +86,7 @@ test("configuration validation rejects unknown tools, paths, executable fields a
 test("refresh validates complete commit bundle, retains last good on errors and restores offline cache", async () => {
   const cacheDir = await mkdtemp(join(tmpdir(), "config-cache-"));
   let version = v1;
-  let files = readBundledFiles();
+  let files = fixtureFiles();
   const observed: string[] = [];
   const store = new AgentConfigStore({
     cacheDir,
@@ -143,15 +143,16 @@ test("refresh is deduplicated and refuses redirects and oversized HTTP bodies", 
       return new Response("x".repeat(1024 * 1024 + 1));
     }) as typeof fetch,
   });
-  const before = store.current.version;
+  assert.equal(store.isReady, false);
   await Promise.all([store.refresh(), store.refresh()]);
   assert.equal(count, 1);
-  assert.equal(store.current.version, before);
+  assert.equal(store.isReady, false);
+  assert.throws(() => store.current, /agent_config_unavailable/);
 });
 
 test("investigations pin config; new registered role uses existing tools and budget, historical UI keeps label", async () => {
   const directory = await mkdtemp(join(tmpdir(), "config-investigation-"));
-  const original = readBundledFiles();
+  const original = fixtureFiles();
   const originalVersion = agentConfigStore.current.version;
   try {
     agentConfigStore.activate(v1, original);
@@ -242,13 +243,13 @@ test("investigations pin config; new registered role uses existing tools and bud
 });
 
 test("Main extension uses its selected version and tool allowlist despite a background refresh", async () => {
-  const original = readBundledFiles();
+  const original = fixtureFiles();
   const originalVersion = agentConfigStore.current.version;
   const version = "5".repeat(40);
   let handler: ((event: BeforeAgentStartEvent) => Promise<void>) | undefined;
   let activeTools: string[] = [];
   try {
-    const selected = readBundledFiles();
+    const selected = fixtureFiles();
     selected["agents/main/agent.json"] = JSON.stringify({
       ...JSON.parse(selected["agents/main/agent.json"]!),
       tools: ["utc_time", "get_investigation_state"],
@@ -275,5 +276,31 @@ test("Main extension uses its selected version and tool allowlist despite a back
     assert.match(event.systemPromptOptions.sections.rca_context!, /state: idle/);
   } finally {
     agentConfigStore.activate(originalVersion, original);
+  }
+});
+
+test("pre-versioning Live investigation pins current config once before continuing", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "config-legacy-live-"));
+  const originalVersion = agentConfigStore.current.version;
+  const original = fixtureFiles();
+  try {
+    agentConfigStore.activate(v1, original);
+    const repository = new InvestigationRepository(directory);
+    const service = new RcaService(repository);
+    const investigation = await service.beginAgentic({
+      symptom: "latency",
+      target: { service: "checkout" },
+      window: { lookbackMinutes: 10 },
+    });
+    delete investigation.agentConfigVersion;
+    await repository.save(investigation);
+    agentConfigStore.activate(v2, changedFiles());
+    assert.equal(await service.resolveAgentConfigVersion(investigation.id), v2);
+    assert.equal((await repository.get(investigation.id)).agentConfigVersion, v2);
+    agentConfigStore.activate(v1, original);
+    assert.equal(await service.resolveAgentConfigVersion(investigation.id), v2);
+  } finally {
+    agentConfigStore.activate(originalVersion, original);
+    await rm(directory, { recursive: true, force: true });
   }
 });

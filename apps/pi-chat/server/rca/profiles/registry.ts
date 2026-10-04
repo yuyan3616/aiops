@@ -2,17 +2,12 @@ import { agentConfigStore } from "../../agent-config/store";
 import type { ObservabilityToolName } from "../tools";
 import type { AgentExpertFinding, ExpertKind, InvestigationBrief } from "../types";
 import type { EvidenceModality } from "../types";
-import { eventTopologyProfile } from "./event-topology/profile";
 import type { ExpertProfile } from "./types";
-import { loadProfileText, briefSearchText, capFindingStrength } from "./utils";
-
-const commonContract = loadProfileText(import.meta.url, "./common/INVESTIGATION_CONTRACT.md");
+import { briefSearchText, capFindingStrength } from "./utils";
 
 export function getExpertProfile(role: ExpertKind, version?: string): ExpertProfile {
   const bundle = agentConfigStore.get(version);
   const configured = bundle.roles[role];
-  // Historical compatibility only; production dispatch never accepts this profile.
-  if (!configured && role === "event-topology" && !version) return eventTopologyProfile;
   if (!configured || configured.kind !== "expert") throw new Error("config_unknown_expert");
   const tools = configured.tools as ObservabilityToolName[];
   const modalities = [
@@ -116,7 +111,6 @@ export function buildExpertSystemPrompt(profile: ExpertProfile, brief: Investiga
     : "## 已加载专家技能\n\n当前 brief 未选择额外专家技能。";
 
   return [
-    commonContract,
     `# 当前激活的专家 Profile：${profile.label}`,
     profile.systemPrompt,
     skillSections,

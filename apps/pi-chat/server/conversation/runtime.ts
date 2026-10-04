@@ -26,7 +26,6 @@ export interface RuntimeOptions {
   globalConfig: GlobalConfig;
   modelRuntime: ModelRuntime;
   sessionManager: SessionManager;
-  selectedSkills?: string[];
   customTools?: ToolDefinition[];
   getAgentConfigVersion?: () => Promise<string>;
   getRcaContext?: () => ConversationRcaContext | Promise<ConversationRcaContext>;
@@ -57,12 +56,10 @@ export async function createRuntime(options: RuntimeOptions) {
     globalConfig,
     modelRuntime,
     sessionManager,
-    selectedSkills = [],
     customTools = [],
     getRcaContext,
     getAgentConfigVersion,
   } = options;
-  const selectedSkillsSet = new Set(selectedSkills);
   const rcaContextExtension = createMainConfigExtension({ getAgentConfigVersion, getRcaContext });
   let runtimeSessionManager = sessionManager;
   if (!runtimeSessionManager) {
@@ -91,11 +88,10 @@ export async function createRuntime(options: RuntimeOptions) {
           },
         ],
         noSkills: true,
-        additionalSkillPaths: [globalConfig.skillsDir],
-        skillsOverride: (base) => ({
-          ...base,
-          skills: base.skills.filter((skill) => selectedSkillsSet.has(skill.name)),
-        }),
+        noContextFiles: true,
+        noPromptTemplates: true,
+        noThemes: true,
+        appendSystemPromptOverride: () => [],
       },
     });
     const toolDefinitions = [utcTimeTool, ...customTools];

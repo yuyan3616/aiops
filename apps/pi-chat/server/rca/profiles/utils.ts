@@ -1,7 +1,4 @@
-import { readFileSync } from "node:fs";
-
 import type { AgentExpertFinding, FindingStrength, InvestigationBrief } from "../types";
-import type { ExpertSkill } from "./types";
 
 const strengthRank: Record<FindingStrength, number> = {
   inconclusive: 0,
@@ -9,14 +6,6 @@ const strengthRank: Record<FindingStrength, number> = {
   moderate: 2,
   strong: 3,
 };
-
-export function loadProfileText(importMetaUrl: string, relativePath: string): string {
-  return readFileSync(new URL(relativePath, importMetaUrl), "utf8").trim();
-}
-
-export function skill(id: string, title: string, content: string): ExpertSkill {
-  return { id, title, content };
-}
 
 export function briefSearchText(brief: InvestigationBrief): string {
   return [
@@ -30,10 +19,6 @@ export function briefSearchText(brief: InvestigationBrief): string {
   ]
     .join("\n")
     .toLowerCase();
-}
-
-export function containsAny(text: string, terms: readonly string[]): boolean {
-  return terms.some((term) => text.includes(term.toLowerCase()));
 }
 
 export function capFindingStrength(

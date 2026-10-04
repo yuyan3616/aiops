@@ -105,44 +105,6 @@ test("metrics and log profiles cap unsupported strong causal findings", () => {
   assert.equal(log.strength, "moderate");
 });
 
-test("event-topology strong finding requires event plus topology evidence", () => {
-  const profile = getExpertProfile("event-topology");
-  const oneSided = normalizeFindingForProfile(
-    profile,
-    finding({
-      evidenceClaims: [
-        {
-          toolCallId: "C01",
-          modality: "event",
-          summary: "deployment occurred",
-          supports: ["H01"],
-          contradicts: [],
-        },
-      ],
-    }),
-  );
-  assert.equal(oneSided.strength, "moderate");
-
-  const paired = normalizeFindingForProfile(
-    profile,
-    finding({
-      evidenceClaims: [
-        {
-          toolCallId: "C01",
-          modality: "event",
-          summary: "deployment occurred before onset",
-          supports: ["H01"],
-          contradicts: [],
-        },
-        {
-          toolCallId: "C02",
-          modality: "topology",
-          summary: "changed service is on the dependency path",
-          supports: ["H01"],
-          contradicts: [],
-        },
-      ],
-    }),
-  );
-  assert.equal(paired.strength, "strong");
+test("historical role labels do not require executable profiles", () => {
+  assert.throws(() => getExpertProfile("event-topology"), /config_unknown_expert/);
 });

@@ -6,6 +6,8 @@ import { Hono } from "hono";
 import { pinoLogger, type Env as HonoPinoEnv } from "hono-pino";
 import pino from "pino";
 
+import { AgentConfigUnavailableError } from "./agent-config/store";
+
 export function createApp(
   conversationService: ConversationService,
   rcaService: RcaService,
@@ -33,6 +35,8 @@ export function createApp(
   );
 
   app.onError((err, ctx) => {
+    if (err instanceof AgentConfigUnavailableError)
+      return ctx.json({ error: err.message, code: "agent_config_unavailable" }, 503);
     ctx.var.logger.error(
       {
         err,
@@ -45,10 +49,7 @@ export function createApp(
   });
 
   app.get("/", (c) => c.text("Hello, Hono!"));
-  app.route(
-    "/api/conversation",
-    createConversationRoutes(conversationService, rcaService),
-  );
+  app.route("/api/conversation", createConversationRoutes(conversationService, rcaService));
   app.route("/api/rca", createRcaRoutes(rcaService));
   app.route("/api/system", createSystemRoutes(conversationService));
 

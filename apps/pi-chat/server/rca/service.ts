@@ -316,6 +316,24 @@ export class RcaService {
     this.expertRunner = modelRuntime && tools ? new PiExpertRunner(modelRuntime, tools) : undefined;
   }
 
+  /** Pin pre-versioning Live records once; historical reading does not need config. */
+  async resolveAgentConfigVersion(id: string): Promise<string> {
+    return this.withInvestigationLock(id, async () => {
+      const investigation = await this.repository.get(id);
+      if (investigation.agentConfigVersion) {
+        agentConfigStore.get(investigation.agentConfigVersion);
+        return investigation.agentConfigVersion;
+      }
+      this.assertLiveWritable(investigation);
+      const version = agentConfigStore.current.version;
+      if (investigation.status === "running" || investigation.status === "interrupted") {
+        investigation.agentConfigVersion = version;
+        await this.saveInvestigation(investigation);
+      }
+      return version;
+    });
+  }
+
   async beginAgentic(
     input: LiveIncidentInput | string,
     options: AgenticBeginOptions = {},
@@ -453,6 +471,11 @@ export class RcaService {
       throw new Error(`Investigation ${investigationId} is already active in this process`);
     }
 
+    if (!investigation.agentConfigVersion) {
+      investigation.agentConfigVersion = agentConfigStore.current.version;
+      await this.saveInvestigation(investigation);
+    }
+    agentConfigStore.get(investigation.agentConfigVersion);
     await this.restoreQueryAuthorization(investigation);
 
     const bus = await this.busFor(investigationId);
@@ -798,9 +821,7 @@ export class RcaService {
     const investigation = await this.liveInvestigation(investigationId);
     this.assertLiveWritable(investigation);
     this.assertRunning(investigation);
-    const bundle = agentConfigStore.get(
-      investigation.agentConfigVersion ?? agentConfigStore.bundled.version,
-    );
+    const bundle = agentConfigStore.get(await this.resolveAgentConfigVersion(investigationId));
     if (briefs.some((brief) => bundle.roles[brief.role]?.kind !== "expert")) {
       throw new Error("unsupported: role is not registered in this Investigation configuration");
     }
@@ -976,10 +997,7 @@ export class RcaService {
         const task: ExpertTask = {
           id: taskId,
           expert: brief.role,
-          expertLabel: getExpertProfile(
-            brief.role,
-            draft.agentConfigVersion ?? agentConfigStore.bundled.version,
-          ).label,
+          expertLabel: getExpertProfile(brief.role, draft.agentConfigVersion).label,
           objective: brief.question.trim().slice(0, 1000),
           status: "pending",
           hypothesisIds: [...new Set(brief.hypothesisIds)],
