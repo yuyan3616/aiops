@@ -1902,6 +1902,9 @@ export class RcaService {
           arguments_: { ...query },
         };
       case "traces":
+        if (typeof query.traceId === "string") {
+          return { tool: "get_trace", arguments_: { ...query } };
+        }
         return {
           tool: "search_traces",
           arguments_: {

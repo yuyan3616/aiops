@@ -274,6 +274,71 @@ test("Resume restores Trace and Metric authorization from committed snapshots wi
   });
 });
 
+test("Main directly reads an authorized Trace and closes with persisted Evidence and zero experts", async () => {
+  await withService(async (repository, _registry, service) => {
+    const investigation = await service.beginAgentic({ symptom: "latency", target, window });
+    const tools = createRcaMainAgentTools({
+      rcaService: service,
+      conversationId: "main-only",
+      getModelRef: () => ({ provider: "test", id: "test" }),
+      onProjection: () => {},
+      onLinkInvestigation: () => {},
+    });
+    const read = tools.find((tool) => tool.name === "read_rca_trace")!;
+    const execute = read.execute as unknown as (
+      callId: string,
+      parameters: { investigationId: string; traceId: string },
+    ) => Promise<{ content: Array<{ text: string }> }>;
+    await assert.rejects(
+      execute("not-discovered", { investigationId: investigation.id, traceId: id }),
+      /must come from/,
+    );
+    const search = await service.queryOverview(investigation.id, "traces");
+    const response = await execute("read", { investigationId: investigation.id, traceId: id });
+    const detail = JSON.parse(response.content[0]!.text) as {
+      evidenceId: string;
+      toolCallId: string;
+      snapshotRef: string;
+      result: { data: { trace: { spans: unknown[] } } };
+    };
+    assert.equal(detail.result.data.trace.spans.length, 3);
+    assert.ok(detail.snapshotRef);
+    const before = await repository.get(investigation.id);
+    assert.equal(before.toolCalls.find((call) => call.id === detail.toolCallId)?.tool, "get_trace");
+    assert.ok(before.observations?.some((item) => item.toolCallId === detail.toolCallId));
+    assert.equal(before.expertTasks.length, 0);
+    assert.equal(service.getBudgetProjection(before).primary.used, 0);
+    const conclusion = await service.concludeAgentic(investigation.id, {
+      status: "inconclusive",
+      rootCauseEntities: [],
+      summary: "Trace has bounded timing evidence but no proven abnormal mechanism",
+      evidenceIds: [search.evidenceId, detail.evidenceId],
+      selectedHypothesisIds: [],
+      rejectedHypotheses: [],
+      unresolvedHypotheses: [],
+      confidence: 0.3,
+      causalAssessment: {
+        temporalFit: "uncertain",
+        temporalEvidenceIds: [],
+        transitionEvidenceIds: [],
+        propagationFit: "uncertain",
+        propagationEvidenceIds: [],
+        materialUnobservedGap: true,
+        gapBridgeEvidenceIds: [],
+        unresolvedContradictions: [],
+      },
+    });
+    await service.waitForVisualizationIdle(investigation.id);
+    assert.equal(conclusion.investigation.status, "inconclusive");
+    assert.equal(conclusion.investigation.expertTasks.length, 0);
+    assert.match(conclusion.report, new RegExp(detail.evidenceId));
+    await assert.rejects(
+      execute("terminal", { investigationId: investigation.id, traceId: id }),
+      /not running|running|terminal/i,
+    );
+  });
+});
+
 test("Uncommitted search does not authorize a Trace after snapshot storage failure", async () => {
   await withService(async (repository, registry, service) => {
     const investigation = await service.beginAgentic({ symptom: "latency", target, window });
