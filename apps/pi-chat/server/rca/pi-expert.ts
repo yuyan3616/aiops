@@ -349,18 +349,9 @@ export class PiExpertRunner {
         perToolCalls.set(name, currentToolCalls + 1);
         toolCallCount++;
         sampleProcessMemory();
-        const boundedParameters =
-          name === "query_metrics"
-            ? {
-                ...parameters,
-                topN: Math.min(typeof parameters.topN === "number" ? parameters.topN : 12, 12),
-              }
-            : name === "query_traces"
-              ? {
-                  ...parameters,
-                  topN: Math.min(typeof parameters.topN === "number" ? parameters.topN : 20, 20),
-                }
-              : parameters;
+        // Live tool schemas and Provider limits are the authority for query bounds.
+        // Do not mutate structured parameters here or re-introduce legacy topN semantics.
+        const boundedParameters = parameters;
         let recorded: RecordedAgentToolExecution;
         try {
           recorded = await context.invoke(name, boundedParameters);
