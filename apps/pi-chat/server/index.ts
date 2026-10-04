@@ -38,7 +38,19 @@ if (recoveredInvestigations.length > 0) {
     `Recovered interrupted RCA investigations: ${recoveredInvestigations.join(", ")}\n`,
   );
 }
+const repairedProjections = await investigationRepository.recoverProjections();
+if (repairedProjections.length > 0) {
+  process.stderr.write(
+    `Repaired RCA event projections: ${repairedProjections.join(", ")}\n`,
+  );
+}
 const rcaService = new RcaService(investigationRepository, modelRuntime, rcaTools);
+const recoveredReports = await rcaService.recoverReports();
+if (recoveredReports.length > 0) {
+  process.stderr.write(
+    `Recovered missing RCA reports: ${recoveredReports.join(", ")}\n`,
+  );
+}
 const recoveredVisualizations = await rcaService.recoverVisualizations();
 if (recoveredVisualizations.length > 0) {
   process.stderr.write(
