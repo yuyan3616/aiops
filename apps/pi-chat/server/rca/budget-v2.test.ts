@@ -18,6 +18,15 @@ function fixture(id: string): Investigation {
     budgetLedger: [],
     status: "running",
     symptom: "checkout latency",
+    context: {
+      symptom: "checkout latency",
+      trigger: { type: "manual" },
+      window: { from: "2026-09-28T00:00:00Z", to: "2026-09-28T00:10:00Z" },
+      target: { service: "checkout", operation: "PlaceOrder" },
+    },
+    formatVersion: 3,
+    source: { kind: "live", contractVersion: "1" },
+    creation: { requestHash: "budget-v2-fixture" },
     alertContext: {
       eventId: "evt",
       title: "checkout latency",
