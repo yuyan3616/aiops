@@ -2,8 +2,8 @@ import { Composer } from "@components/Composer";
 import { ConversationSidebar } from "@components/ConversationSidebar";
 import { EmptyConversation } from "@components/EmptyConversation";
 import { LoadingIndicator } from "@components/LoadingIndicator";
-import { InvestigationDetailDrawer } from "@components/rca/InvestigationDetailDrawer";
 import { MessageItem } from "@components/MessageItem";
+import { InvestigationDetailDrawer } from "@components/rca/InvestigationDetailDrawer";
 import { Button } from "@components/ui/button";
 import { Skeleton } from "@components/ui/skeleton";
 import { useConversationStream } from "@hooks/useConversationStream";
@@ -52,6 +52,7 @@ export default function App() {
     connectionError,
     runtimeError,
     status,
+    runStartedAt,
     send,
     abort,
     selectedSkills,
@@ -155,9 +156,7 @@ export default function App() {
     document.title = conversationId ? conversationTitle : "Pi Ops";
   }, [conversationId, conversationTitle]);
 
-  const latestReport = [...messageItems]
-    .reverse()
-    .find((item) => item.kind === "report");
+  const latestReport = [...messageItems].reverse().find((item) => item.kind === "report");
   const reportInvestigationId =
     latestReport?.kind === "report" ? latestReport.report.investigationId : undefined;
   const investigationId = investigation?.investigationId ?? reportInvestigationId;
@@ -270,7 +269,7 @@ export default function App() {
                   showMainAgentIdentity={shouldShowMainAgentIdentity(messageItems, index)}
                 />
               ))}
-              {(loading || busy) && <LoadingIndicator />}
+              {(loading || busy) && <LoadingIndicator runStartedAt={runStartedAt} />}
               {runtimeError && !runtimeErrorRepresented && (
                 <div className="runtime-error-card" role="alert">
                   <strong>本次回复失败</strong>

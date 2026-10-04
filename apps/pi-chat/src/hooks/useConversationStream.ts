@@ -36,17 +36,13 @@ export function useConversationStream(conversationId?: string) {
   const [messageState, setMessageState] = useState<ConversationItemsState>({
     items: [],
   });
-  const [historyState, setHistoryState] = useState<ConversationItemsState>({
-    items: [],
-  });
   const [errorState, setErrorState] = useState<{
     conversationId?: string;
     message: string;
   }>({ message: "" });
   const [loading, setLoading] = useState(false);
   const [visualizationRevision, setVisualizationRevision] = useState(0);
-  const [investigation, setInvestigation] =
-    useState<ConversationInvestigationSnapshot>();
+  const [investigation, setInvestigation] = useState<ConversationInvestigationSnapshot>();
   const [conversationMeta, setConversationMeta] = useState<{
     conversationId?: string;
     conversation?: ConversationSummary;
@@ -63,10 +59,7 @@ export function useConversationStream(conversationId?: string) {
     setInvestigation(undefined);
   }, [conversationId]);
 
-  const messageItems = [
-    ...(historyState.conversationId === conversationId ? historyState.items : []),
-    ...(messageState.conversationId === conversationId ? messageState.items : []),
-  ];
+  const messageItems = messageState.conversationId === conversationId ? messageState.items : [];
 
   useEffect(() => {
     if (!conversationId) return;
@@ -101,10 +94,13 @@ export function useConversationStream(conversationId?: string) {
       if (event.type === "investigation.updated") {
         const payload = event.payload as Partial<ConversationInvestigationSnapshot>;
         if (payload.investigationId && payload.state) {
-          setInvestigation((current) => ({
-            ...(current?.investigationId === payload.investigationId ? current : {}),
-            ...payload,
-          } as ConversationInvestigationSnapshot));
+          setInvestigation(
+            (current) =>
+              ({
+                ...(current?.investigationId === payload.investigationId ? current : {}),
+                ...payload,
+              }) as ConversationInvestigationSnapshot,
+          );
         }
       }
       setMessageState((current) => ({
@@ -132,11 +128,19 @@ export function useConversationStream(conversationId?: string) {
       try {
         const conversation = await getConversation(conversationId);
         if (disposed || version !== syncVersion) return;
-        if (cursor.id !== conversation.stream.id) {
-          setHistoryState({ conversationId, items: conversation.messageList });
-          setMessageState({ conversationId, items: [] });
-          cursor = conversation.stream;
-        }
+        // The snapshot and subsequent events update the same items, including
+        // cards that were already running when this conversation was opened.
+        setMessageState((current) => ({
+          conversationId,
+          items: conversationReducer(
+            current.conversationId === conversationId ? current.items : [],
+            {
+              type: "snapshot",
+              items: conversation.messageList,
+            },
+          ),
+        }));
+        cursor = conversation.stream;
         runtimeEventId = conversation.stream.lastEventId;
         dispatch({ type: "snapshot", conversationId, snapshot: conversation });
         setConversationMeta({
@@ -270,12 +274,10 @@ export function useConversationStream(conversationId?: string) {
     await send(conversationId, text, skills);
   }
   const status = runtime.conversationId === conversationId ? runtime.status : "cold";
-  const connectionError =
-    errorState.conversationId === conversationId ? errorState.message : "";
-  const runtimeError =
-    runtime.conversationId === conversationId ? runtime.error ?? "" : "";
+  const connectionError = errorState.conversationId === conversationId ? errorState.message : "";
+  const runtimeError = runtime.conversationId === conversationId ? (runtime.error ?? "") : "";
   const error = connectionError || runtimeError;
-  const historyLoading = Boolean(conversationId && historyState.conversationId !== conversationId);
+  const historyLoading = Boolean(conversationId && messageState.conversationId !== conversationId);
 
   const abort = async () => {
     if (!conversationId || actionInFlight.current.has(conversationId)) return;
@@ -306,6 +308,7 @@ export function useConversationStream(conversationId?: string) {
     runtimeError,
     send: submit,
     status,
+    runStartedAt: runtime.conversationId === conversationId ? runtime.runStartedAt : undefined,
     abort,
     selectedSkills,
     setSelectedSkills,

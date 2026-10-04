@@ -1,4 +1,3 @@
-import { appendAgentReasoning, upsertAgentTool } from "../shared/agent-timeline";
 import type {
   AgentThreadEvidence,
   AgentThreadRun,
@@ -14,7 +13,10 @@ import type {
   ToolRun,
 } from "@shared/types";
 
+import { appendAgentReasoning, upsertAgentTool } from "../shared/agent-timeline";
+
 export type ConversationAction =
+  | { type: "snapshot"; items: MessageListItem[] }
   | { type: "event"; event: StreamEvent }
   | { type: "optimistic-user"; message: ChatMessage };
 
@@ -27,6 +29,7 @@ function eventPayload(event: StreamEvent): EventPayload {
 export interface RuntimeState {
   conversationId?: string;
   status: RuntimeStatus;
+  runStartedAt?: number;
   error?: string;
   connected: boolean;
 }
@@ -56,6 +59,7 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
       return {
         ...state,
         status: action.snapshot.status,
+        runStartedAt: action.snapshot.runStartedAt,
         error: action.snapshot.error,
         connected: true,
       };
@@ -66,6 +70,7 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
         return {
           ...state,
           status,
+          runStartedAt: typeof payload.runStartedAt === "number" ? payload.runStartedAt : undefined,
           error: status === "error" ? state.error : undefined,
         };
       }
@@ -73,6 +78,7 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
         return {
           ...state,
           status: "error",
+          runStartedAt: undefined,
           error:
             typeof payload.error === "string" && payload.error.trim()
               ? payload.error
@@ -142,6 +148,20 @@ export function conversationReducer(
   items: MessageListItem[],
   action: ConversationAction,
 ): MessageListItem[] {
+  if (action.type === "snapshot") {
+    const pending = items.filter(
+      (item) =>
+        item.kind === "message" &&
+        item.message.pending &&
+        !action.items.some(
+          (saved) =>
+            saved.kind === "message" &&
+            saved.message.role === "user" &&
+            saved.message.text === item.message.text,
+        ),
+    );
+    return [...action.items, ...pending];
+  }
   if (action.type === "optimistic-user") return addUserMessage(items, action.message);
   const payload = eventPayload(action.event);
   const id = typeof payload.id === "string" ? payload.id : "";
@@ -315,9 +335,7 @@ export function conversationReducer(
       const delta = String(payload.delta ?? "");
       if (!agentId || !delta) return items;
       return updateItem(items, agentId, (item) =>
-        item.kind === "agent"
-          ? { ...item, agent: appendAgentReasoning(item.agent, delta) }
-          : item,
+        item.kind === "agent" ? { ...item, agent: appendAgentReasoning(item.agent, delta) } : item,
       );
     }
     case "agent.tool.started":
@@ -326,9 +344,7 @@ export function conversationReducer(
       const tool = payload.tool as ToolRun | undefined;
       if (!agentId || !tool?.id) return items;
       return updateItem(items, agentId, (item) =>
-        item.kind === "agent"
-          ? { ...item, agent: upsertAgentTool(item.agent, tool) }
-          : item,
+        item.kind === "agent" ? { ...item, agent: upsertAgentTool(item.agent, tool) } : item,
       );
     }
     case "agent.evidence.added": {
@@ -359,10 +375,15 @@ export function conversationReducer(
                     : "completed",
                 ...(typeof payload.summary === "string" ? { summary: payload.summary } : {}),
                 ...(payload.usage ? { usage: payload.usage as AgentThreadRun["usage"] } : {}),
-                ...(payload.diagnostics ? { diagnostics: payload.diagnostics as AgentThreadRun["diagnostics"] } : {}),
-                ...(payload.termination ? { termination: payload.termination as AgentThreadRun["termination"] } : {}),
+                ...(payload.diagnostics
+                  ? { diagnostics: payload.diagnostics as AgentThreadRun["diagnostics"] }
+                  : {}),
+                ...(payload.termination
+                  ? { termination: payload.termination as AgentThreadRun["termination"] }
+                  : {}),
                 ...(typeof payload.terminationReason === "string"
-                  ? { terminationReason: payload.terminationReason } : {}),
+                  ? { terminationReason: payload.terminationReason }
+                  : {}),
                 ...(payload.interruptedByRestart === true ? { interruptedByRestart: true } : {}),
               },
             }

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { ConversationSnapshot, StreamEvent } from "@shared/types";
+import type { ConversationSnapshot, MessageListItem, StreamEvent } from "@shared/types";
 
 import { conversationReducer, createRuntimeState, runtimeReducer } from "./state";
 
@@ -60,7 +60,6 @@ test("snapshot restores a persisted runtime error after page refresh", () => {
   assert.equal(restored.error, "模型未配置");
   assert.equal(restored.connected, true);
 });
-
 
 test("conversationReducer keeps expert tools nested in an agent thread", () => {
   let items = conversationReducer([], {
@@ -146,14 +145,12 @@ test("conversationReducer keeps expert tools nested in an agent thread", () => {
   if (items[0]?.kind !== "agent") return;
   assert.equal(items[0].agent.tools[0]?.name, "query_traces");
   assert.equal(items[0].agent.status, "completed");
-  assert.deepEqual(items[0].agent.steps?.map((step) => step.type), [
-    "reasoning",
-    "tool",
-    "reasoning",
-  ]);
+  assert.deepEqual(
+    items[0].agent.steps?.map((step) => step.type),
+    ["reasoning", "tool", "reasoning"],
+  );
   assert.equal(items[0].agent.summary, "shipping localized");
 });
-
 
 test("conversationReducer merges structured RCA hypothesis updates", () => {
   let items = conversationReducer([], {
@@ -223,8 +220,6 @@ test("conversationReducer adds a downloadable RCA report artifact", () => {
   assert.equal(items[0].report.confidence, 0.91);
 });
 
-
-
 test("conversationReducer keeps a completed assistant error message visible", () => {
   const items = conversationReducer([], {
     type: "event",
@@ -239,8 +234,7 @@ test("conversationReducer keeps a completed assistant error message visible", ()
           role: "assistant",
           text: "",
           images: [],
-          error:
-            "模型服务认证失败，当前 API Key 可能已失效或被禁用，请检查模型配置后重新发送。",
+          error: "模型服务认证失败，当前 API Key 可能已失效或被禁用，请检查模型配置后重新发送。",
         },
       },
     } as StreamEvent,
@@ -251,4 +245,100 @@ test("conversationReducer keeps a completed assistant error message visible", ()
   if (items[0]?.kind !== "message") return;
   assert.equal(items[0].message.text, "");
   assert.match(items[0].message.error ?? "", /API Key/);
+});
+
+test("events complete experts and dispatch tools loaded from a running snapshot", () => {
+  let items: MessageListItem[] = [
+    {
+      kind: "agent",
+      id: "expert",
+      agent: {
+        id: "expert",
+        taskId: "T01",
+        expert: "trace",
+        label: "Trace",
+        objective: "Find cause",
+        implementation: "pi-session",
+        status: "running",
+        tools: [],
+        evidence: [],
+      },
+    },
+    {
+      kind: "tool",
+      id: "dispatch",
+      tool: { id: "dispatch", name: "dispatch", args: {}, status: "running" },
+    },
+  ];
+  items = conversationReducer([], { type: "snapshot", items });
+  const events: StreamEvent[] = [
+    {
+      id: 11,
+      streamId: "s",
+      type: "agent.evidence.added",
+      payload: {
+        agentId: "expert",
+        evidence: { id: "E01", modality: "trace", summary: "Observation" },
+      },
+    },
+    {
+      id: 12,
+      streamId: "s",
+      type: "agent.completed",
+      payload: { agentId: "expert", status: "completed" },
+    },
+    {
+      id: 13,
+      streamId: "s",
+      type: "tool.completed",
+      payload: { id: "dispatch", name: "dispatch", status: "success" },
+    },
+  ];
+  for (const event of events) items = conversationReducer(items, { type: "event", event });
+  assert.equal(items.length, 2);
+  assert.ok(items[0].kind === "agent");
+  assert.equal(items[0].agent.status, "completed");
+  assert.equal(items[0].agent.evidence.length, 1);
+  assert.ok(items[1].kind === "tool");
+  assert.equal(items[1].tool.status, "success");
+});
+
+test("switching conversations and reconnecting restore the server execution start", () => {
+  const snapshot = { status: "running", runStartedAt: 1000 } as ConversationSnapshot;
+  const restore = () =>
+    runtimeReducer(createRuntimeState("c1"), { type: "snapshot", conversationId: "c1", snapshot });
+  let state = restore();
+  state = runtimeReducer(state, { type: "disconnect", conversationId: "c1" });
+  state = runtimeReducer(state, { type: "snapshot", conversationId: "c1", snapshot });
+  assert.equal(state.runStartedAt, 1000);
+  assert.equal(restore().runStartedAt, 1000);
+  assert.equal(
+    runtimeReducer(state, { type: "select", conversationId: "c2" }).runStartedAt,
+    undefined,
+  );
+  state = runtimeReducer(state, {
+    type: "event",
+    conversationId: "c1",
+    event: { id: 4, streamId: "s", type: "runtime.status", payload: { status: "ready" } },
+  });
+  assert.equal(state.runStartedAt, undefined);
+});
+
+test("same-stream snapshot replaces stale cards while preserving an unacknowledged send", () => {
+  const pending = {
+    id: "pending",
+    role: "user" as const,
+    text: "Investigate",
+    images: [],
+    pending: true,
+  };
+  let items = conversationReducer([], { type: "optimistic-user", message: pending });
+  items = conversationReducer(items, { type: "snapshot", items: [] });
+  assert.equal(items.length, 1);
+  items = conversationReducer(items, {
+    type: "snapshot",
+    items: [{ kind: "message", id: "saved", message: { ...pending, id: "saved", pending: false } }],
+  });
+  assert.equal(items.length, 1);
+  assert.equal(items[0].id, "saved");
 });

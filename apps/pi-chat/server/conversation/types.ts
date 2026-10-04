@@ -34,6 +34,7 @@ export interface ManagedSession {
   channel: EventChannel;
   unsubscribe?: () => void;
   status: RuntimeStatus;
+  runStartedAt?: number;
   error?: string;
   diagnostics: string[];
   streamMessageId?: string;

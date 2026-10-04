@@ -130,11 +130,7 @@ export interface ConversationInvestigationSnapshot {
   rootCauseStatus?: "confirmed" | "probable" | "inconclusive";
 }
 
-export type InvestigationVisualizationStatus =
-  | "pending"
-  | "generating"
-  | "ready"
-  | "failed";
+export type InvestigationVisualizationStatus = "pending" | "generating" | "ready" | "failed";
 
 export interface InvestigationVisualizationArtifact {
   schemaVersion: 1;
@@ -252,6 +248,8 @@ export interface ConversationSnapshot {
   thinkingLevel: ThinkingLevel;
   availableThinkingLevels: ThinkingLevel[];
   status: RuntimeStatus;
+  /** Server epoch milliseconds for the active Main Agent execution. */
+  runStartedAt?: number;
   error?: string;
   stream: { id: string; lastEventId: number };
   diagnostics: string[];

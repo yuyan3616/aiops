@@ -10,7 +10,7 @@
     "start:railway": "bash scripts/start-railway.sh",
     "build": "tsc -b && vite build",
     "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.app.json --noEmit",
-    "test": "TSX_TSCONFIG_PATH=tsconfig.node.json node --import tsx --test server/*.test.ts server/conversation/*.test.ts server/rca/*.test.ts",
+    "test": "TSX_TSCONFIG_PATH=tsconfig.node.json node --import tsx --test server/*.test.ts server/conversation/*.test.ts server/rca/*.test.ts src/state.test.ts",
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",
     "lint": "oxlint",

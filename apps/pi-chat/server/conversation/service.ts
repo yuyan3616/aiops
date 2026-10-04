@@ -34,7 +34,7 @@ import type {
 
 import { normalizePromptError, runDetached } from "./async-task";
 import { EventChannel } from "./channel";
-import { applyExternalStreamEvent, mergeMessageLists } from "./external-stream";
+import { activeStreamItems, applyExternalStreamEvent, mergeMessageLists } from "./external-stream";
 import { ConversationViewBuilder, extractImages, extractText, resultText } from "./helper";
 import { reconcileRcaExecutionItems, settleInterruptedRcaSessionTools } from "./recovery";
 import { ConversationRepository } from "./repository";
@@ -242,13 +242,23 @@ export class ConversationService {
       const session = managedSession.runtime.session;
       const channel = managedSession.channel;
 
-      const builder = new ConversationViewBuilder(session.sessionManager.getBranch());
       const investigations = await this.loadLinkedInvestigations(conversationRecord);
+      const rcaContext = await this.resolveRcaContext(id);
+      const builder = new ConversationViewBuilder(session.sessionManager.getBranch());
       const messageList = mergeMessageLists(
         settleInterruptedRcaSessionTools(builder.build(), investigations, session.isStreaming),
-        reconcileRcaExecutionItems(conversationRecord.externalMessageList ?? [], investigations),
+        [
+          ...reconcileRcaExecutionItems(
+            conversationRecord.externalMessageList ?? [],
+            investigations,
+          ),
+          ...activeStreamItems(
+            channel.replay(0).events,
+            managedSession.streamMessageId,
+            managedSession.streamThinkingId,
+          ),
+        ],
       );
-      const rcaContext = await this.resolveRcaContext(id);
 
       return {
         conversation: this.summary(conversationRecord, managedSession.status),
@@ -272,6 +282,7 @@ export class ConversationService {
         thinkingLevel: session.agent.state.thinkingLevel as ThinkingLevel,
         availableThinkingLevels: session.getAvailableThinkingLevels() as ThinkingLevel[],
         status: managedSession.status,
+        runStartedAt: managedSession.runStartedAt,
         error: managedSession.error,
         stream: {
           id: channel.streamId,
@@ -725,6 +736,8 @@ export class ConversationService {
             });
           }
 
+          managedSession.streamMessageId = undefined;
+          managedSession.streamThinkingId = undefined;
           if (error) {
             this.finishPromptPerformance(managedSession.id, "error", { error });
             managedSession.error = error;
@@ -779,11 +792,19 @@ export class ConversationService {
   }
 
   private setStatus(managedSession: ManagedSession, status: RuntimeStatus) {
+    if (status === "running" && managedSession.runStartedAt === undefined) {
+      managedSession.runStartedAt = Date.now();
+    } else if (status === "ready" || status === "error" || status === "cold") {
+      managedSession.runStartedAt = undefined;
+    }
     managedSession.status = status;
     if (status !== "error") {
       managedSession.error = undefined;
     }
-    managedSession.channel.publish("runtime.status", { status });
+    managedSession.channel.publish("runtime.status", {
+      status,
+      runStartedAt: managedSession.runStartedAt,
+    });
   }
 
   private async withSessionLock<T>(id: string, task: () => Promise<T>): Promise<T> {

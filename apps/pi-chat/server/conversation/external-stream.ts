@@ -1,4 +1,3 @@
-import { appendAgentReasoning, upsertAgentTool } from "../../shared/agent-timeline";
 import type {
   AgentThreadEvidence,
   AgentThreadRun,
@@ -9,7 +8,10 @@ import type {
   MessageListItem,
   ThinkingBlock,
   ToolRun,
+  StreamEvent,
 } from "@shared/types";
+
+import { appendAgentReasoning, upsertAgentTool } from "../../shared/agent-timeline";
 
 function nextSequence(current: number, at: number): number {
   return Math.max(current + 1, Math.trunc(at) * 100);
@@ -47,15 +49,32 @@ export function applyExternalStreamEvent(
     return { items, sequence };
   }
 
+  if (type === "message.delta") {
+    const id = String(data.id ?? "");
+    if (!id) return { items, sequence };
+    const previous = items.find((item) => item.kind === "message" && item.id === id);
+    const message: ChatMessage = {
+      id,
+      role: "assistant",
+      images: [],
+      streaming: true,
+      text: (previous?.kind === "message" ? previous.message.text : "") + String(data.delta ?? ""),
+      ...(typeof data.timestamp === "number" || typeof data.timestamp === "string"
+        ? { timestamp: data.timestamp }
+        : {}),
+    };
+    if (previous) items = updateItem(items, id, (item) => ({ ...item, kind: "message", message }));
+    else items.push({ kind: "message", id, message, seqId: allocate() });
+    return { items, sequence };
+  }
+
   if (type === "message.completed") {
     const message = data.message as ChatMessage | undefined;
     if (!message?.id) return { items, sequence };
     const existing = items.find((item) => item.kind === "message" && item.id === message.id);
     if (existing) {
       items = updateItem(items, message.id, (item) =>
-        item.kind === "message"
-          ? { ...item, message: { ...message, streaming: false } }
-          : item,
+        item.kind === "message" ? { ...item, message: { ...message, streaming: false } } : item,
       );
     } else {
       items.push({
@@ -199,9 +218,7 @@ export function applyExternalStreamEvent(
     const delta = String(data.delta ?? "");
     if (!agentId || !delta) return { items, sequence };
     items = updateItem(items, agentId, (item) =>
-      item.kind === "agent"
-        ? { ...item, agent: appendAgentReasoning(item.agent, delta) }
-        : item,
+      item.kind === "agent" ? { ...item, agent: appendAgentReasoning(item.agent, delta) } : item,
     );
     return { items, sequence };
   }
@@ -211,9 +228,7 @@ export function applyExternalStreamEvent(
     const tool = data.tool as ToolRun | undefined;
     if (!agentId || !tool?.id) return { items, sequence };
     items = updateItem(items, agentId, (item) =>
-      item.kind === "agent"
-        ? { ...item, agent: upsertAgentTool(item.agent, tool) }
-        : item,
+      item.kind === "agent" ? { ...item, agent: upsertAgentTool(item.agent, tool) } : item,
     );
     return { items, sequence };
   }
@@ -243,9 +258,7 @@ export function applyExternalStreamEvent(
             agent: {
               ...item.agent,
               status:
-                data.status === "failed" || data.status === "cancelled"
-                  ? data.status
-                  : "completed",
+                data.status === "failed" || data.status === "cancelled" ? data.status : "completed",
               ...(typeof data.summary === "string" ? { summary: data.summary } : {}),
             },
           }
@@ -279,11 +292,7 @@ export function applyExternalStreamEvent(
     const id = String(data.id ?? "");
     if (!id) return { items, sequence };
     const status: ToolRun["status"] =
-      type === "tool.completed"
-        ? data.status === "error"
-          ? "error"
-          : "success"
-        : "running";
+      type === "tool.completed" ? (data.status === "error" ? "error" : "success") : "running";
     const existing = items.find((item) => item.kind === "tool" && item.id === id);
     const tool: ToolRun = {
       id,
@@ -320,4 +329,22 @@ export function mergeMessageLists(
       return leftSeq === rightSeq ? left.index - right.index : leftSeq - rightSeq;
     })
     .map(({ item }) => item);
+}
+
+/** Restore fragments not yet appended to the Pi session file at the snapshot cursor. */
+export function activeStreamItems(
+  events: StreamEvent[],
+  messageId?: string,
+  thinkingId?: string,
+): MessageListItem[] {
+  let items: MessageListItem[] = [];
+  let sequence = 0;
+  for (const event of events) {
+    const payload = event.payload as { id?: string; timestamp?: number } | undefined;
+    if (!payload?.id || (payload.id !== messageId && payload.id !== thinkingId)) continue;
+    const next = applyExternalStreamEvent(items, sequence, event.type, payload, payload.timestamp);
+    items = next.items;
+    sequence = next.sequence;
+  }
+  return items;
 }
