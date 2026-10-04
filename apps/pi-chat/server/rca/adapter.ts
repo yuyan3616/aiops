@@ -307,7 +307,9 @@ export class RCA100Adapter {
   }
 
   async getAlertContext(caseId: string): Promise<AlertContext> {
-    return (await this.loadTask(caseId)).alert;
+    const alert = (await this.loadTask(caseId)).alert;
+    if (!alert) throw new Error(`Legacy RCA100 case ${caseId} has no alert context`);
+    return alert;
   }
 
   async inspectSchema(caseId: string, modality: EvidenceModality): Promise<ModalitySchema> {
