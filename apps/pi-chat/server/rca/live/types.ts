@@ -198,7 +198,7 @@ export function redactTelemetryText(value: string): string {
       /\bauthorization\b\s*[:=]\s*(?:Bearer|Basic)\s+[^\s,;]+/gi,
       "authorization=[REDACTED]",
     )
-    .replace(/\bBearer\s+[A-Za-z0-9._~+\/-]+=*/gi, "Bearer [REDACTED]")
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, "Bearer [REDACTED]")
     .replace(
       /\b(api[_-]?key|secret|password|passwd|authorization|token)\b\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,
       "$1=[REDACTED]",
