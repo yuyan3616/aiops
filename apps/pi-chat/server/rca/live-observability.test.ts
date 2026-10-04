@@ -361,7 +361,12 @@ test("MetricsProvider preserves Counter reset, Histogram quantile, Gauge and uni
     if (url.pathname.endsWith("/api/v1/series")) {
       return jsonResponse({
         data: [
-          { __name__: "http_requests_total", service: "checkout", method: "POST" },
+          {
+            __name__: "http_requests_total",
+            service: "checkout",
+            method: "POST",
+            api_key: "must-not-leak",
+          },
           { __name__: "http_server_duration", service: "checkout", le: "0.5" },
           { __name__: "process_cpu_usage", service: "checkout" },
         ],
@@ -406,6 +411,21 @@ test("MetricsProvider preserves Counter reset, Histogram quantile, Gauge and uni
   });
   assert.equal(discovered.status, "success");
   const descriptors = new Map(discovered.data.metrics.map((item) => [item.name, item]));
+  assert.equal(descriptors.get("http_requests_total")?.labels.includes("api_key"), false);
+
+  await assert.rejects(
+    provider.queryMetrics(
+      {
+        target: { service: "checkout" },
+        window,
+        metric: "http_requests_total",
+        operation: "rate",
+        labelFilters: [{ name: "api_key", value: "must-not-leak" }],
+      },
+      descriptors.get("http_requests_total") as MetricDescriptor,
+    ),
+    (error) => error instanceof LiveBackendError && error.code === "invalid_query",
+  );
 
   const counter = await provider.queryMetrics(
     {
