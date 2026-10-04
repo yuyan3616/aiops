@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  access,
   appendFile,
   mkdir,
   open,
@@ -234,6 +235,127 @@ export class InvestigationRepository {
     return JSON.parse(raw) as unknown;
   }
 
+  async hasReportArtifacts(investigationId: string): Promise<boolean> {
+    const directory = this.directory(investigationId);
+    return Promise.all([
+      access(join(directory, "final-report.json")).then(() => true, () => false),
+      access(join(directory, "final-report.md")).then(() => true, () => false),
+    ]).then(([json, markdown]) => json && markdown);
+  }
+
+  async recoverProjections(): Promise<string[]> {
+    const repaired: string[] = [];
+    for (const investigationId of await this.listInvestigationIds()) {
+      const investigation = await this.get(investigationId);
+      const events = await this.listEvents(investigationId);
+      let nextId = (events.at(-1)?.id ?? 0) + 1;
+      let changed = false;
+
+      const hasRef = (
+        type: InvestigationEvent["type"],
+        field: "toolCall" | "observation" | "evidence" | "expertTask",
+        id: string,
+      ) =>
+        events.some((event) => {
+          if (event.type !== type) return false;
+          const value = event.payload[field];
+          return (
+            value !== null &&
+            typeof value === "object" &&
+            !Array.isArray(value) &&
+            (value as { id?: unknown }).id === id
+          );
+        });
+
+      for (const call of investigation.toolCalls) {
+        if (!terminalToolCallStatuses.has(call.status) || hasRef("tool.completed", "toolCall", call.id)) {
+          continue;
+        }
+        await this.appendEvent({
+          id: nextId++,
+          investigationId,
+          type: "tool.completed",
+          at: call.completedAt ?? new Date().toISOString(),
+          summary: call.resultSummary ?? call.error ?? `${call.tool} ${call.status}`,
+          payload: { toolCall: call, recoveredProjection: true },
+        });
+        changed = true;
+      }
+
+      for (const observation of investigation.observations ?? []) {
+        if (hasRef("observation.created", "observation", observation.id)) continue;
+        await this.appendEvent({
+          id: nextId++,
+          investigationId,
+          type: "observation.created",
+          at: observation.createdAt,
+          summary: observation.summary,
+          payload: { observation, recoveredProjection: true },
+        });
+        changed = true;
+      }
+
+      for (const evidence of investigation.evidence) {
+        if (hasRef("evidence.created", "evidence", evidence.id)) continue;
+        await this.appendEvent({
+          id: nextId++,
+          investigationId,
+          type: "evidence.created",
+          at: evidence.createdAt,
+          summary: evidence.summary,
+          payload: { evidence, recoveredProjection: true },
+        });
+        changed = true;
+      }
+
+      for (const task of investigation.expertTasks) {
+        if (!terminalExpertTaskStatuses.has(task.status) || hasRef("expert.completed", "expertTask", task.id)) {
+          continue;
+        }
+        await this.appendEvent({
+          id: nextId++,
+          investigationId,
+          type: "expert.completed",
+          at: task.completedAt ?? new Date().toISOString(),
+          summary: task.finding?.summary ?? task.terminationReason ?? `${task.expert} ${task.status}`,
+          payload: { expertTask: task, recoveredProjection: true },
+        });
+        changed = true;
+      }
+
+      const lifecycleType =
+        investigation.status === "completed" || investigation.status === "inconclusive"
+          ? "investigation.completed"
+          : investigation.status === "failed"
+            ? "investigation.failed"
+            : investigation.status === "cancelled"
+              ? "investigation.cancelled"
+              : investigation.status === "interrupted"
+                ? "investigation.interrupted"
+                : undefined;
+      if (lifecycleType && !events.some((event) => event.type === lifecycleType)) {
+        await this.appendEvent({
+          id: nextId++,
+          investigationId,
+          type: lifecycleType,
+          at: investigation.completedAt ?? investigation.interruptions?.at(-1)?.at ?? new Date().toISOString(),
+          summary:
+            investigation.rootCause?.summary ??
+            investigation.error ??
+            `Investigation ${investigation.status}`,
+          payload: {
+            ...(investigation.rootCause ? { result: investigation.rootCause } : {}),
+            recoveredProjection: true,
+            resumable: lifecycleType === "investigation.interrupted" && investigation.source?.kind === "live",
+          },
+        });
+        changed = true;
+      }
+      if (changed) repaired.push(investigationId);
+    }
+    return repaired;
+  }
+
   async saveReport(investigationId: string, result: RCAResult, report: string): Promise<void> {
     const directory = this.directory(investigationId);
     await mkdir(directory, { recursive: true });
@@ -459,7 +581,10 @@ export class InvestigationRepository {
         type: "investigation.interrupted",
         at: interruptedAt,
         summary: errorMessage,
-        payload: { recoveredAfterRestart: true, resumable: true },
+        payload: {
+          recoveredAfterRestart: true,
+          resumable: investigation.source?.kind === "live",
+        },
       });
       recovered.push(investigation.id);
     }
