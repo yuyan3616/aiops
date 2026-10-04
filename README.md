@@ -1,50 +1,260 @@
-# AIOps RCA Investigation Workspace
+# AIOps Target Observability Baseline
 
-基于 Pi Agent 的多 Agent 根因分析工作台。用户通过对话发起调查；Main Agent 管理假设、决定取证方向并综合结论，Trace、Metrics、Log、Event / Topology 专家 Agent 分别执行专项取证。工具结果以 Observation 和 Evidence 持久化，支持在调查结束后继续追问。
+`target/production-baseline` 是 **被观测 Target 系统及其 OpenTelemetry 可观测性基线分支**。
 
-**在线演示：** [Pi Ops](https://pi-chat-rca-production.up.railway.app/)
+本分支的重点不是 RCA100 离线调查，也不是 Railway 上的 main RCA 消费端，而是让 Target 真实输出可供 RCA 系统消费的 Trace、Log 与 Metrics，并验证三信号在 Tempo、Loki、Prometheus 中的基础链路。
 
-> 当前是面向 RCA100 `t039` 案例的工程原型。数据适配器读取 RCA100 遥测文件；仓库尚未接入生产 Prometheus、Loki、Tempo 或 Kubernetes。运行调查需要可用的模型 Provider 和相应案例数据。
+> main 分支负责 RCA Investigation / Agent Runtime / Live Observability 消费端；本分支负责 Target 侧埋点、生命周期语义和采集链路。两者不要混为同一运行时。
 
-## 功能概览
+## 当前能力
 
-| 能力 | 当前实现 |
+Target 当前已实现：
+
+| 能力 | 当前状态 |
 | --- | --- |
-| 假设驱动调查 | Main Agent 创建、更新和检验候选假设，并在结案时交代支持、排除和未解决的解释。 |
-| 专项取证 | Trace、Metrics、Log、Event / Topology 专家运行于独立 Pi Session，调用受限的可观测性工具。 |
-| 可追溯证据 | 工具调用、Observation、Evidence 和 `rawRef` 持久化；大结果在进入模型上下文前压缩。 |
-| 调查生命周期 | 支持取消、用户补充信息、服务重启后的中断恢复、历史会话和后续追问。 |
-| 对话工作台 | 通过 SSE 展示消息、工具调用、专家任务、假设、调查详情和 Markdown 报告。 |
-| 独立评估 | 评分 CLI 在调查结束后读取 Ground Truth；Agent 运行时不读取答案文件。 |
+| Agent / Model Turn / Provider / Tool Trace | 已实现 |
+| 生命周期结构化日志 | 已实现 |
+| Agent / Model / Provider / Tool 应用指标 | 已实现 |
+| Host / Docker 基础设施指标 | 已接入 Collector |
+| OTLP Trace 导出 | 已实现 |
+| OTLP Metrics 导出 | 已实现 |
+| Loki 日志采集 | 已接入 |
+| Tempo Trace 存储 | 已接入 |
+| Prometheus Metrics 存储 | 已接入 |
+| Provider generation lifecycle | 可用 |
+| Provider SDK 内部 attempt lifecycle | 不可用 |
+| Exemplar | 不可用 |
 
-Main Agent 的调查步骤由模型依据当前状态和证据决定；服务端负责工具权限、预算、状态校验与持久化。专家提供发现和证据，最终 RCA 结论由 Main Agent 形成并经服务端校验。
+Provider 生命周期必须区分：
+
+- `pi.provider.generation` 表示一次顶层 Pi provider generation；
+- response-header latency 与完整 generation duration 分开记录；
+- generation 可能包含 Provider SDK 内部 retry，**不能把 generation 当成 attempt**；
+- 当前 Pi 扩展层没有稳定的 provider-internal attempt identity，因此不伪造 attempt 指标；
+- 当前锁定 OTel Metrics 路径真实 probe 为 `exemplars=false`。
+
+公共语义见 [Telemetry Contract v1](docs/telemetry-contract-v1.md)。
 
 ## 架构
 
 ```mermaid
-flowchart TD
-    U["用户对话"] --> M["Pi Main Agent"]
-    M --> I["Investigation / Hypotheses"]
-    M --> E["Pi 专家 Sessions"]
-    E --> T["受限可观测性工具"]
-    T --> D["RCA100Adapter / t039 数据"]
-    T --> O["Observation / Evidence / rawRef"]
-    O --> I
-    I --> R["结论与报告"]
+flowchart LR
+    T["aiops-rca-target"]
+
+    T -->|"OTLP Traces"| C["OpenTelemetry Collector"]
+    T -->|"OTLP Metrics"| C
+    T -->|"stdout Logs"| C
+
+    C --> TP["Tempo"]
+    C --> LK["Loki"]
+    C --> PM["Prometheus"]
+
+    H["ECS Host / Docker"] -->|"host_metrics / docker_stats"| C
 ```
 
-独立评分进程在报告完成后读取答案文件；答案目录不传给 Agent Runtime。具体的工具、证据和调查约束见 [t039 调查说明](docs/rca-t039.md)。
+当前 Collector 的职责：
 
-## 快速开始
+- 接收 Target OTLP Trace；
+- 接收 Target OTLP Application Metrics；
+- 采集 Target Docker stdout/stderr；
+- 采集 ECS Host Metrics；
+- 采集 Docker Container Metrics；
+- 将 Trace 发送到 Tempo；
+- 将 Log 发送到 Loki；
+- 通过 Prometheus exporter 暴露 Metrics。
 
-### 环境要求
+## 应用可观测性
 
-- Node.js 22.19 或兼容的 22.x 版本；
-- Corepack 与 pnpm 11.22.0（仓库 `packageManager` 指定版本）；
-- 下载 t039 数据时需要 Git 和 Git LFS；
-- 至少一个可用的 Pi 模型 Provider 及其凭据。
+### Trace
 
-在仓库根目录执行：
+主要生命周期包括：
+
+- Agent Run；
+- Model Turn；
+- Provider Generation；
+- Tool Call。
+
+Provider generation Span 使用：
+
+```text
+pi.provider.generation
+```
+
+不要将其解释为 Provider SDK 内部某一次 retry attempt。
+
+### Metrics
+
+Target 当前应用指标覆盖：
+
+```text
+pi_agent_*
+pi_model_*
+pi_provider_*
+pi_tool_*
+```
+
+其中 Provider 重点包括：
+
+- generation count；
+- generation duration；
+- response-header duration。
+
+Metric labels 使用 allowlist 控制基数，未知值归入 `other`。
+
+### Logs
+
+应用继续输出结构化日志到 stdout/stderr，由 Collector 只读取 Target 容器对应的 Docker log directory，再发送到 Loki。
+
+日志可携带 Trace / Span 关联信息，用于 Log ↔ Trace 查询。
+
+## 当前部署形态
+
+当前验证环境采用单台阿里云 ECS：
+
+```text
+Alibaba Cloud ECS
+├─ aiops-rca-target
+├─ otel-collector
+├─ tempo
+├─ loki
+└─ prometheus
+```
+
+当前查询后端仅绑定 ECS 本机：
+
+```text
+Tempo       127.0.0.1:3200
+Loki        127.0.0.1:3100
+Prometheus  127.0.0.1:9090
+```
+
+这些端口不是给公网直接暴露的接口。
+
+Railway 上的 main RCA Runtime 与该 ECS 不在同一网络，因此不能使用：
+
+```text
+http://tempo:3200
+http://loki:3100
+http://prometheus:9090
+```
+
+也不能把 ECS 的 `127.0.0.1` 当作 Railway 可访问地址。
+
+后续 main 消费端应通过受控的 HTTPS / Auth 网络入口访问 Observability Backend，而不是直接裸开放 `3100 / 3200 / 9090`。
+
+## 当前验证边界
+
+目前已经完成的真实运行验证包括：
+
+- Target OpenTelemetry tracing 启动；
+- Target OpenTelemetry metrics 启动；
+- Tempo Trace 写入与查询；
+- Loki Target 日志写入与查询；
+- Log ↔ Trace 的 traceId 关联；
+- Host / Docker Metrics 暴露；
+- Target 应用 Metrics 已通过 Collector 暴露；
+- `pi_agent_*` / `pi_model_*` / `pi_provider_*` / `pi_tool_*` 已产生真实数据；
+- `exemplars=false` 已通过真实 OTLP payload probe 确认。
+
+仍需严格区分：
+
+```text
+CI success
+!=
+production runtime verified
+```
+
+以及：
+
+```text
+Collector 可以看到某项 Metric
+!=
+跨云 RCA Runtime 已经可以查询该 Metric
+```
+
+具体代码验证和能力边界见：
+
+- [Target Observability 三信号关联与应用指标规格](docs/target-observability-correlation-spec.md)
+- [Target Observability 验证记录](docs/target-observability-validation.md)
+
+## OpenTelemetry 配置
+
+示例配置见 [`apps/pi-chat/.env.example`](apps/pi-chat/.env.example)。
+
+核心变量：
+
+```dotenv
+OTEL_SERVICE_NAME=aiops-rca-target
+OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+
+OTEL_METRIC_EXPORT_INTERVAL_MS=15000
+OTEL_METRIC_EXPORT_TIMEOUT_MS=5000
+
+# 可选：多实例稳定标识
+# OTEL_SERVICE_INSTANCE_ID=target-replica-1
+
+# 可选：限制 Metric label 基数
+# OTEL_METRIC_PROVIDER_ALLOWLIST=packy
+# OTEL_METRIC_MODEL_ALLOWLIST=deepseek-flash
+# OTEL_METRIC_TOOL_ALLOWLIST=utc_time
+
+PI_CHAT_SHUTDOWN_TIMEOUT_MS=10000
+```
+
+共享 `OTEL_EXPORTER_OTLP_ENDPOINT` 会用于 Trace 与 Metrics；也可以分别配置：
+
+```dotenv
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://otel-collector:4318/v1/traces
+OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=http://otel-collector:4318/v1/metrics
+```
+
+不要将 API Key、模型凭据或其他 Secret 提交到仓库。
+
+## Collector / Backend 配置
+
+相关部署配置：
+
+| 路径 | 用途 |
+| --- | --- |
+| [`deploy/observability/otel-collector.yaml`](deploy/observability/otel-collector.yaml) | OTLP、Target 日志、Host / Docker Metrics 采集与导出 |
+| [`deploy/observability/tempo.yaml`](deploy/observability/tempo.yaml) | Tempo 单机 Trace 存储 |
+| [`deploy/observability/loki.yaml`](deploy/observability/loki.yaml) | Loki 单机日志存储 |
+| [`deploy/observability/prometheus.yaml`](deploy/observability/prometheus.yaml) | Prometheus 抓取 Collector Metrics |
+
+当前 Collector Metrics pipeline 包含：
+
+```text
+otlp
+host_metrics
+docker_stats
+```
+
+因此应用指标与基础设施指标走同一个 Collector → Prometheus 暴露链路。
+
+### Target 容器重建后的日志采集
+
+Collector 当前只挂载 **Target 容器实际 Docker log directory**，避免递归采集 Collector / Loki 自身日志。
+
+因此每次重新创建 Target 容器后，都需要重新获取：
+
+```bash
+TARGET_LOG_PATH=$(docker inspect -f '{{.LogPath}}' aiops-rca-target)
+TARGET_LOG_DIR=$(dirname "$TARGET_LOG_PATH")
+```
+
+然后使用新的 `TARGET_LOG_DIR` 重新创建 Collector。
+
+这是当前单机实验部署的已知运维约束，不要假设 Target container ID 永久不变。
+
+## 本地开发
+
+环境要求：
+
+- Node.js 22.19 或兼容的 22.x；
+- Corepack；
+- pnpm 11.22.0。
+
+安装依赖：
 
 ```bash
 corepack enable
@@ -52,54 +262,23 @@ pnpm install --frozen-lockfile
 cp apps/pi-chat/.env.example apps/pi-chat/.env
 ```
 
-Windows PowerShell 可用 `Copy-Item apps/pi-chat/.env.example apps/pi-chat/.env`；下载脚本和下文的环境变量示例使用 Bash，Windows 上可在 Git Bash 或 WSL 中运行。
-
-按需编辑 `apps/pi-chat/.env`。如果使用项目内置的 PackyAPI 配置入口，可设置 `PACKY_API_KEY`，并按需指定 `PACKY_BASE_URL`、`PACKY_MODEL_ID`；也可以使用现有的 Pi 模型配置。不要将凭据提交到 Git。
-
-本地开发启动：
+启动：
 
 ```bash
 pnpm dev:pi-chat
 ```
 
-打开 Vite 输出的前端地址（默认 [http://localhost:5173](http://localhost:5173)）。Hono API 默认监听 `127.0.0.1:4328`，前端通过 Vite 代理访问 `/api`。健康检查为 `GET /api/system/health`。
+默认：
 
-默认会话数据写入 Pi Agent 目录下的 `pi-chat` 子目录；可用 `PI_CHAT_ROOT_DIR` 覆盖。调查目录可单独用 `RCA_INVESTIGATIONS_DIR` 指定，路径配置以 [`server/config.ts`](apps/pi-chat/server/config.ts) 为准。
+- Web：Vite 输出地址；
+- Pi Chat API：`127.0.0.1:4328`；
+- 健康检查：`GET /api/system/health`。
 
-### 准备 t039 演示数据
+本分支仍保留项目原有 RCA 工作台代码用于兼容和验证，但 **Target Observability 是该分支的职责主线**。RCA100 离线调查不是本分支 README 的主要运行路径。
 
-在仓库根目录执行：
+## 开发验证
 
-```bash
-pnpm --filter pi-chat rca:fetch:t039
-```
-
-脚本只下载 RCA100 `t039` 的 Agent 可见案例文件，保存到 `apps/pi-chat/.rca-data/cases/t039/`，并保留上游许可文件；不会下载答案目录。然后在 `apps/pi-chat/.env` 中设置：
-
-```dotenv
-RCA100_CASES_DIR=.rca-data/cases
-```
-
-启动后可在对话中输入“帮我排查 t039 的根因”。数据来源、文件结构与隔离规则见 [`docs/rca-t039.md`](docs/rca-t039.md)。
-
-## 数据与评估边界
-
-Conversation Record、Pi Session 文件和 Investigation 状态分别持久化。调查目录包含 `investigation.json`、`tool-calls.jsonl`、`events.jsonl`；完成调查后生成 `final-report.json` 和 `final-report.md`，执行评分后才生成 `evaluation.json`。进程重启时，未完成的调查会被标记为 `interrupted`，可利用已有证据继续处理。
-
-Ground Truth 仅供独立评分命令使用。请将 `RCA100_ANSWER_KEY_DIR` 只提供给该命令，不要配置到运行 Agent 的服务进程：
-
-```bash
-cd apps/pi-chat
-RCA100_ANSWER_KEY_DIR=/absolute/path/to/RCA100/answer_key \
-RCA_INVESTIGATIONS_DIR=/absolute/path/to/investigations \
-pnpm rca:evaluate INV-...
-```
-
-评分结果输出到终端，并写入对应 Investigation 的 `evaluation.json`。
-
-## 开发与部署
-
-在仓库根目录运行：
+根据修改范围执行：
 
 ```bash
 pnpm --filter pi-chat typecheck
@@ -108,23 +287,36 @@ pnpm --filter pi-chat test
 pnpm --filter pi-chat build
 ```
 
-GitHub Actions 对应用代码的 Pull Request 及 `main` 分支执行上述检查。Railway 从 `main` 分支使用根目录 [`Dockerfile`](Dockerfile) 构建；容器构建期间下载 t039 数据。生产环境应将 `PI_CHAT_ROOT_DIR` 和 `RCA_INVESTIGATIONS_DIR` 指向持久化卷，以保留会话与调查记录。部署配置见 [`railway.json`](railway.json) 和 [启动脚本](apps/pi-chat/scripts/start-railway.sh)。
+生命周期、Telemetry 或 shutdown 修改还应覆盖：
+
+- success / error / cancelled / incomplete；
+- duplicate / late callback；
+- dangling lifecycle；
+- concurrent conversation；
+- shutdown / abort；
+- Metric completion exactly once；
+- label cardinality；
+- OTLP payload。
+
+不要用 CI success 代替真实运行验证。
 
 ## 仓库结构
 
 | 路径 | 内容 |
 | --- | --- |
-| [`apps/pi-chat/src/`](apps/pi-chat/src/) | React 对话工作台与 SSE 会话状态 |
-| [`apps/pi-chat/server/conversation/`](apps/pi-chat/server/conversation/) | Pi 会话、历史记录和 Runtime 生命周期 |
-| [`apps/pi-chat/server/rca/`](apps/pi-chat/server/rca/) | 调查服务、专家 Profile、工具、数据适配与评分 |
-| [`apps/pi-chat/server/routes/`](apps/pi-chat/server/routes/) | 对话、系统与 RCA HTTP 路由 |
-| [`docs/`](docs/) | 设计规格及 t039 案例说明 |
+| [`apps/pi-chat/server/observability/`](apps/pi-chat/server/observability/) | Pi 生命周期 Trace / Metrics / shutdown |
+| [`apps/pi-chat/server/telemetry.ts`](apps/pi-chat/server/telemetry.ts) | OTel Provider 初始化与 Resource |
+| [`apps/pi-chat/server/conversation/`](apps/pi-chat/server/conversation/) | Pi Session 与 Runtime 生命周期 |
+| [`deploy/observability/`](deploy/observability/) | Collector / Tempo / Loki / Prometheus 配置 |
+| [`docs/`](docs/) | Contract、Target Spec 与验证记录 |
 
 ## 设计文档
 
-- [RCA100 t039 调查与数据隔离](docs/rca-t039.md)
-- [调查预算规格](docs/rca-budget-spec.md)
-- [专家 Runtime 可观测性](docs/rca-expert-runtime-observability.md)
+- [Telemetry Contract v1](docs/telemetry-contract-v1.md)
+- [Target Observability 三信号关联与应用指标规格](docs/target-observability-correlation-spec.md)
+- [Target Observability 验证记录](docs/target-observability-validation.md)
 - [会话生命周期规格](docs/conversation-session-lifecycle-spec.md)
 
-项目的包元数据声明 ISC 许可证，见 [`package.json`](package.json)。
+main RCA Runtime、Live Investigation 消费端和历史 RCA100 调查能力请以 `main` 分支及其对应文档为准。
+
+项目包元数据声明 ISC 许可证，见 [`package.json`](package.json)。
