@@ -372,3 +372,34 @@ test("restart report recovery rebuilds missing Live report artifacts idempotentl
   assert.match(await repository.getReport(investigation.id), /not enough evidence/);
   assert.deepEqual(await service.recoverReports(), []);
 });
+
+test("startup recovery skips orphan directories without deleting historical artifacts", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-chat-orphan-recovery-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const orphan = join(directory, "INV-20260927101809-044a2fcb");
+  await mkdir(orphan, { recursive: true });
+  await writeFile(join(orphan, "final-report.md"), "historical report", "utf8");
+  const repository = new InvestigationRepository(directory);
+  assert.deepEqual(await repository.listInvestigationIds(), []);
+  assert.deepEqual(await repository.recoverInterrupted(), []);
+  assert.deepEqual(await repository.recoverProjections(), []);
+  const service = new RcaService(repository);
+  assert.deepEqual(await service.recoverReports(), []);
+  assert.deepEqual(await service.recoverVisualizations(), []);
+  assert.equal(await readFile(join(orphan, "final-report.md"), "utf8"), "historical report");
+});
+
+test("projection repair leaves archived legacy investigations untouched", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-chat-legacy-projection-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const legacy = join(directory, "INV-legacy");
+  await mkdir(legacy);
+  const authority = JSON.stringify({ id: "INV-legacy", caseId: "t039", status: "completed" });
+  await writeFile(join(legacy, "investigation.json"), authority);
+  await writeFile(join(legacy, "tool-calls.jsonl"), "historical journal\n");
+  const repository = new InvestigationRepository(directory);
+  assert.deepEqual(await repository.listInvestigationIds(), ["INV-legacy"]);
+  assert.deepEqual(await repository.recoverProjections(), []);
+  assert.equal(await readFile(join(legacy, "investigation.json"), "utf8"), authority);
+  assert.equal(await readFile(join(legacy, "tool-calls.jsonl"), "utf8"), "historical journal\n");
+});

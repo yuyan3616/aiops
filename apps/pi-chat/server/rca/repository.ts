@@ -8,6 +8,7 @@ import {
   readFile,
   readdir,
   rename,
+  stat,
   unlink,
   writeFile,
 } from "node:fs/promises";
@@ -261,6 +262,8 @@ export class InvestigationRepository {
     const repaired: string[] = [];
     for (const investigationId of await this.listInvestigationIds()) {
       const investigation = await this.get(investigationId);
+      // Projection recovery belongs to the Live format; old records remain read-only.
+      if (investigation.source?.kind !== "live") continue;
       const events = await this.listEvents(investigationId);
       let nextId = (events.at(-1)?.id ?? 0) + 1;
       let changed = false;
@@ -441,10 +444,20 @@ export class InvestigationRepository {
   async listInvestigationIds(): Promise<string[]> {
     try {
       const entries = await readdir(this.investigationsDir, { withFileTypes: true });
-      return entries
-        .filter((entry) => entry.isDirectory() && /^INV-[A-Za-z0-9-]+$/.test(entry.name))
-        .map((entry) => entry.name)
-        .sort();
+      const ids: string[] = [];
+      for (const entry of entries) {
+        if (!entry.isDirectory() || !/^INV-[A-Za-z0-9-]+$/.test(entry.name)) continue;
+        // A directory can outlive a failed initial save or deleted authority file.
+        // It is not a recoverable Investigation; leave its historical artifacts intact.
+        try {
+          const authority = await stat(join(this.directory(entry.name), "investigation.json"));
+          if (authority.isFile()) ids.push(entry.name);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+          console.warn(`Skipping incomplete investigation directory: ${entry.name}`);
+        }
+      }
+      return ids.sort();
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
       throw error;
