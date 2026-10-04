@@ -227,6 +227,50 @@ function observationSummary(_tool: ObservabilityToolName, execution: ToolExecuti
     : execution.summary;
 }
 
+function freezeIncidentContext(input: LiveIncidentInput): IncidentContext {
+  const symptom = input.symptom.trim().slice(0, 1500);
+  if (!symptom) throw new Error("Incident symptom is required");
+
+  const target = Object.fromEntries(
+    Object.entries(input.target ?? {})
+      .filter(([, value]) => typeof value === "string" && value.trim())
+      .map(([key, value]) => [key, String(value).trim().slice(0, 256)]),
+  ) as IncidentContext["target"];
+  if (!target.service && !target.entity && !target.container) {
+    throw new Error("Incident target requires service, entity, or container");
+  }
+
+  let window: TimeRange;
+  if ("lookbackMinutes" in input.window) {
+    const lookbackMinutes = Math.floor(input.window.lookbackMinutes);
+    if (!Number.isFinite(lookbackMinutes) || lookbackMinutes < 1 || lookbackMinutes > 1440) {
+      throw new Error("lookbackMinutes must be between 1 and 1440");
+    }
+    const to = new Date();
+    const from = new Date(to.getTime() - lookbackMinutes * 60_000);
+    window = { from: from.toISOString(), to: to.toISOString() };
+  } else {
+    const from = new Date(input.window.from);
+    const to = new Date(input.window.to);
+    if (!Number.isFinite(from.getTime()) || !Number.isFinite(to.getTime())) {
+      throw new Error("Incident window must contain valid RFC3339 timestamps");
+    }
+    window = { from: from.toISOString(), to: to.toISOString() };
+  }
+  validateTimeRange(window);
+
+  return {
+    symptom,
+    trigger: structuredClone(input.trigger ?? { type: "manual" }),
+    window,
+    target,
+  };
+}
+
+function liveRequestHash(input: LiveIncidentInput): string {
+  return createHash("sha256").update(JSON.stringify(input)).digest("hex");
+}
+
 export class RcaServiceError extends Error {
   readonly code: "legacy_read_only" | "operation_conflict";
 
