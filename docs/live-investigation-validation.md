@@ -90,6 +90,8 @@ Legacy RCA100 Investigation：
 覆盖：
 
 - `search_traces` 结构化参数 → Server TraceQL
+- Tempo search 返回 hex traceId；trace-by-id JSON 的 protobuf bytes/base64 traceId/spanId 兼容归一到 canonical hex
+- `get_trace` 使用冻结 query window 的 `start/end` 约束
 - <= 50 trace sample
 - partial / truncation 显式返回
 - `get_trace` 只接受本 Investigation 已由 `search_traces` 返回的 traceId
