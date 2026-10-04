@@ -252,8 +252,9 @@ test("TraceProvider returns bounded partial search results and Registry authoriz
             {
               spans: [
                 {
-                  traceId: "00000000000000000000000000000001",
-                  spanId: "0000000000000001",
+                  // Tempo JSON has historically emitted protobuf byte fields as base64.
+                  traceId: "AAAAAAAAAAAAAAAAAAAAAQ==",
+                  spanId: "AAAAAAAAAAE=",
                   name: "PlaceOrder",
                   startTimeUnixNano: "1791072000000000000",
                   endTimeUnixNano: "1791072001000000000",
@@ -298,16 +299,26 @@ test("TraceProvider returns bounded partial search results and Registry authoriz
   );
   const fetched = await registry.executePrepared(investigation.id, get);
   assert.equal(fetched.result.status, "success");
-  assert.equal((fetched.result.data as { trace: { spans: unknown[] } }).trace.spans.length, 1);
+  const normalizedTrace = fetched.result.data as {
+    trace: { spans: Array<{ traceId: string; spanId: string }> };
+  };
+  assert.equal(normalizedTrace.trace.spans.length, 1);
+  assert.equal(normalizedTrace.trace.spans[0]?.traceId, "00000000000000000000000000000001");
+  assert.equal(normalizedTrace.trace.spans[0]?.spanId, "0000000000000001");
   assert.ok(seen[0]?.searchParams.get("q")?.includes("resource.service.name"));
+  const traceByIdUrl = seen.find((url) => url.pathname.includes("/api/v2/traces/"));
+  assert.equal(traceByIdUrl?.searchParams.get("start"), "1791072000");
+  assert.equal(traceByIdUrl?.searchParams.get("end"), "1791072600");
 });
 
-test("LogProvider returns no_data honestly and redacts secrets in untrusted telemetry", async () => {
+test("LogProvider returns no_data honestly, prefilters correlation ids and redacts untrusted telemetry", async () => {
   let mode: "empty" | "record" = "empty";
+  const seenQueries: string[] = [];
   const provider = new LogProvider({
     baseUrl: "http://loki.test",
     backendAlias: "loki",
-    fetchImpl: (async () => {
+    fetchImpl: (async (input: FetchInput) => {
+      seenQueries.push(new URL(String(input)).searchParams.get("query") ?? "");
       if (mode === "empty") return jsonResponse({ data: { result: [] } });
       return jsonResponse({
         data: {
@@ -346,12 +357,18 @@ test("LogProvider returns no_data honestly and redacts secrets in untrusted tele
   assert.equal(empty.data.matched, "unknown");
 
   mode = "record";
-  const found = await provider.searchLogs(base);
+  const found = await provider.searchLogs({
+    ...base,
+    traceId: "00000000000000000000000000000001",
+    spanId: "0000000000000001",
+  });
   assert.equal(found.status, "success");
   assert.equal(found.data.logs.length, 1);
   assert.match(found.data.logs[0]!.message, /ignore previous instructions/);
   assert.match(found.data.logs[0]!.message, /\[REDACTED\]/);
   assert.doesNotMatch(found.data.logs[0]!.message, /supersecret/);
+  assert.match(seenQueries.at(-1) ?? "", /00000000000000000000000000000001/);
+  assert.match(seenQueries.at(-1) ?? "", /0000000000000001/);
 });
 
 test("MetricsProvider preserves Counter reset, Histogram quantile, Gauge and unit semantics", async () => {
@@ -507,6 +524,25 @@ test("Live creation freezes lookback once and operation replay survives service 
   });
   assert.equal(replayAfterRestart.id, first.id);
   assert.deepEqual(replayAfterRestart.context?.window, frozen);
+  assert.equal(await restarted.cancel(replayAfterRestart.id), true);
+  assert.equal((await repository.get(replayAfterRestart.id)).status, "cancelled");
+});
+
+test("Live creation rejects timezone-less absolute windows instead of guessing local time", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "live-create-timezone-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const service = new RcaService(new InvestigationRepository(directory));
+  await assert.rejects(
+    service.beginAgentic({
+      symptom: "checkout latency",
+      target: { service: "checkout" },
+      window: {
+        from: "2026-10-04T00:00:00",
+        to: "2026-10-04T00:10:00",
+      },
+    }),
+    /explicit timezone/,
+  );
 });
 
 test("legacy RCA100 investigations reject all Service write paths with legacy_read_only", async (t) => {
