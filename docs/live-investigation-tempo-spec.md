@@ -1,8 +1,30 @@
 # Live Observability RCA 迁移规格 v2
 
-状态：根据源码审查修订；开发按关卡推进，生产切换前完成全部 P0 验收。
-目标分支：main。审查代码基线：b81c1bfe94ee13843e1cdc933d60a3fc6b00357a。
-Target 代码基线：f2c9746c7211fbc6b4ab9bf756a03f89c40965a4；Target Spec 提交：5955790345ae10396bdcf6d21af86a25b67b3a14。
+状态：main 消费端迁移已在开发分支实现并通过 mock/fixture CI；真实跨云只读 smoke 因网络不可达 blocked，尚未部署生产。
+目标分支：main。实际开发基线：8ae4b77a4845b17902e48d3ea5b4af69d13e8516。
+Target 当前已部署基线：f3fa1516b21a11023ee91cf12995844ced20826e；公共合同以 [Telemetry Contract v1](telemetry-contract-v1.md) 为准。
+
+## 0. 本次实现状态（2026-10-04）
+
+开发分支：`feat/live-observability-main`。
+
+已完成：
+
+- 新 Investigation 使用冻结的 `IncidentContext`，保留 `schemaVersion: 2`，新增 `formatVersion: 3` 与 `source.kind=live`；
+- 生产 Registry 切换为 Tempo / Loki / Prometheus 三个小 Provider，模型不接触 URL / DSL / tenant / credential；
+- HTTP Client 覆盖可取消排队、fetch、body、retry/backoff、15s deadline、最多一次 transient retry、4 MiB 流式 body 上限；
+- Live ToolCall 成功后先写不可变 Evidence snapshot，再在一次 Budget v2 状态提交中完成 ToolCall completion + Observation；
+- legacy RCA100 Investigation 由 Service 层统一拒绝写入并返回 `legacy_read_only`；
+- Trace / Log / Metrics Expert、Main Agent、Conversation context、visualization 和生产启动路径已切换；
+- Docker / Railway 生产启动不再下载 t039，不再配置 `RCA100_CASES_DIR`；
+- 启动恢复会补齐 interrupted 状态、缺失 JSONL/UI event projection、Live report 与 visualization；
+- Target 当前 `exemplars=false`、provider attempt lifecycle 不可用，main capability 明确返回 false，不把 provider generation 映射成 attempt。
+
+仍 blocked：
+
+- Railway → 阿里云 ECS 的真实只读 smoke。Tempo/Loki/Prometheus 查询端口目前只绑定 ECS `127.0.0.1`，没有可供 Railway 使用的安全跨云入口。本次实现未修改安全组、未裸开放公网端口。
+
+验证记录见 [Live Investigation Validation](live-investigation-validation.md)。
 
 ## 1. 目标、前提与职责
 
@@ -85,7 +107,7 @@ Server 覆盖默认目标与窗口，验证允许的范围扩展；不能靠 Pro
 
 ## 6. 网络、安全与部署
 
-在实际 Production RCA Runtime 环境先验证三个 endpoint 的受控查询、认证、tenant、timeout、cancel。Server 配置 TEMPO_URL/LOKI_URL/PROMETHEUS_URL 与可选 tenant/auth，模型不能修改或看到 credential。
+在实际 Production RCA Runtime 环境先验证三个 endpoint 的受控查询、认证、tenant、timeout、cancel。Server 配置 `TEMPO_BASE_URL` / `LOKI_BASE_URL` / `PROMETHEUS_BASE_URL` 与可选 tenant/auth，模型不能修改或看到 credential。
 
 跨 Railway/ECS 使用私网、VPN、受认证代理或 Tunnel 等访问边界。禁止裸暴露当前无认证后端。redirect 不能逃出受控 endpoint；查询/错误脱敏。tenant/backend identity 由 Server 固定，记录别名而非 Secret。
 
@@ -127,13 +149,13 @@ Log Expert 仅 search_logs。结构化参数包含 scope/window、severity、lif
 
 Metrics Expert 仅 discover_metrics / query_metrics。discovery 限定目标和窗口，返回真实名称、type、unit、允许 labels、支持操作；不全量枚举 catalog。
 
-query 使用结构化 operation(raw/rate/increase/quantile)、metric、labelFilters、aggregation/groupBy、window、stepSeconds、可选 baseline、includeExemplars。各操作必须匹配类型，quantile 验证 0～1；限定标签名/数量/长度与聚合维度，拒绝任意 PromQL。
+query 使用结构化 operation(raw/rate/increase/quantile)、metric、labelFilters、aggregation/groupBy、window、stepSeconds、可选 baseline。各操作必须匹配类型，quantile 验证 0～1；限定标签名/数量/长度与聚合维度，拒绝任意 PromQL。当前 Target 已确认 `exemplars=false`，因此首版工具 Schema 不暴露 includeExemplars。
 
 Counter 处理 reset；Histogram 计算 rate(bucket) 和 quantile；Gauge 用峰值/持续时间等适用摘要。不把累计 Counter 或 bucket count 当普通温度式序列比较。step 由 Server 根据 points 上限调整并回显，不隐藏改变分辨率。
 
 CPU 正常只能削弱 CPU 饱和假设，不能证明应用健康；service 与 host/container 的归属需有元数据映射。
 
-includeExemplars 触发独立的有界 /api/v1/query_exemplars，关联原始 series/value/time；不将聚合 P99 点绑定成单一 Trace。允许 unsupported/no exemplar/trace expired，并区分这些状态与 no_data。
+Exemplar 能力当前明确为 unsupported/capability=false；只有 Target 后续合同和真实数据链路明确启用后，才增加独立的有界 `/api/v1/query_exemplars`，且不得把聚合 P99 点绑定成单一 Trace。
 
 ## 11. 工具、Profile 与 Main Overview
 
@@ -143,7 +165,7 @@ Registry 注入三个 Provider；显式定义每个工具的 modality、schema�
 
 新 dispatch 仅 trace/log/metrics；没有真实 Provider 的 event-topology 不进入新 Session，历史类型仍可读。删除生产 get_alert_context/schema/parquet/events/alerts/topology 工具路径。
 
-query_rca_overview 仅 traces/logs/metrics，使用同一 Provider 和更小结果上限。Main 不需要知道具体后端产品。screen_rca_candidates 改为真实 capability 驱动的有界检查；无结构/应用指标能力时明确 unsupported，不能偷偷读取 RCA100 或用 host CPU 冒充各服务请求指标。
+query_rca_overview 仅 traces/logs/metrics，使用同一 Provider 和更小结果上限。Main 不需要知道具体后端产品。旧 `screen_rca_candidates` 已从 Main Agent 工具面删除；候选覆盖通过 `discover_metrics/query_metrics` 的显式 scoped target 完成。无结构/应用指标能力时明确 unsupported，不能偷偷读取 RCA100 或用 host CPU 冒充各服务请求指标。
 
 专家仍不能决定最终 RCA，Evidence/Finding/Hypothesis/Conclusion 因果门槛保留。精确关联也只证明执行归属，不能自动升级为因果。
 
@@ -159,7 +181,7 @@ cancel/intervention 必须独立于存储成功发出 abort：持久化失败路
 
 Cancel 是不可恢复终态；首版不新增用户 Pause。restart interrupted 的 Live 调查可恢复，旧调查只读。恢复保留已完成证据，不自动全量重查。
 
-transport retry 最多一次，仅对明确 transient reset/502/503/504 或 deadline 尚允许的超时；取消不 retry，400/401/403/非法参数不 retry。429 只在有限 Retry-After/deadline 内允许。每次 attempt 记录，但一次逻辑 ToolCall 只消费一次 tool-execution safety budget。
+transport retry 最多一次，仅对明确 transient reset/502/503/504 或 deadline 尚允许的超时；取消不 retry，400/401/403/非法参数不 retry。429 只在有限 Retry-After/deadline 内允许。一次逻辑 ToolCall 只消费一次 tool-execution safety budget。当前 Target/provider 没有可靠 attempt lifecycle，因此不伪造 attempt telemetry；transport retry 仅保留在 Client 内部的有限控制。
 
 Expert Recovery 与 transport retry 分开：延续现有 Primary/Recovery policy，仅明确 transient、无已完成取证工作的专家失败按既有规则申请恢复；不要因为后端失败就把所有 failed task 当免费重试。
 
@@ -167,11 +189,11 @@ Expert Recovery 与 transport retry 分开：延续现有 Primary/Recovery polic
 
 investigation.json 是调查/Budget 的权威状态。ToolCall completion 与 Observation 在同一次 updateV2 快照提交；Finding、Evidence 与 reservation disposition 保持同一提交。
 
-JSONL 与 UI event 是可重建投影，不宣称与快照跨文件事务。实施持久化 outbox/revision 或等价补齐机制：状态快照中记录待发布投影，提交后按稳定 projection key 幂等发布，重启补齐完成/失败/取消事件；事件 ID 连续，缺失不能静默永久存在。UI append 失败不回滚已经接受的证据，但必须记录待修复状态。终态快照继续不可变；投影 payload/稳定 key 在终态提交时固定，发布进度使用独立 sidecar，不为确认发布而修改终态 Investigation。
+JSONL 与 UI event 是可重建投影，不宣称与快照跨文件事务。实施持久化 outbox/revision 或等价补齐机制：当前实现采用“权威快照 + 重启扫描补齐”的等价机制：提交后正常发布 JSONL/UI event；启动时从 `investigation.json` 扫描并按实体 ID 幂等补齐缺失的 Tool / Observation / Evidence / Expert / lifecycle event，继续使用连续 event ID。UI append 失败不回滚已经接受的证据。终态快照继续不可变。
 
 报告也是投影，最终状态提交后可幂等补齐 JSON/Markdown；失败不产生第二次不同结论。
 
-每次成功查询保存有界、不可变的证据快照，内容覆盖实际发给 Agent 的结果及分析所需事实，包含 query/window/retrievedAt/backendAlias/tenant scope alias/contractVersion/normalizationVersion/warnings/truncation/content hash。先落快照再提交 Observation 引用；孤立快照可清理，不能接受指向不存在快照的 Evidence。
+每次成功查询保存有界、不可变的证据快照，内容覆盖实际发给 Agent 的结果及分析所需事实，包含 query/window/retrievedAt/backendAlias/contractVersion/warnings/truncation 与实际 Agent bounded result。当前实现不持久化 credential/tenant secret；normalizationVersion/content hash 可在后续格式升级时补充。先落快照再提交 Observation 引用；孤立快照可清理，不能接受指向不存在快照的 Evidence。
 
 rawRef 仅定位：tempo://trace/<id> 等不等于快照。增加 snapshotRef 和 evidence source item refs（span/log/series）。去重相同内容不能覆盖不同查询时间的审计记录。后端 retention 后仍能读取当时证据；无需保存全部原始 dump。
 
@@ -218,7 +240,7 @@ claim 必须引用当前任务完成的 ToolCall，modality 与该 ToolCall 一�
 - intervention/cancel 发生于排队、fetch、body、retry、commit 前后；没有晚到 Evidence，没有泄漏 slot；存储失败仍 abort。
 - 进程在快照、journal、event、report 之间退出，重启可修复投影而不重复消费预算。
 - 旧 v2 RCA100 调查只读，不可 resume/dispatch/conclude；报告和追问可用。
-- Counter reset、Histogram quantile、Gauge、series映射与单位正确；Exemplar独立查询且降级诚实。
+- Counter reset、Histogram quantile、Gauge、series映射与单位正确；当前 Exemplar capability=false 且不伪造关联。
 - headers-only、截断Trace、未知采样/最新未到数据不被当完整证据；gap/时间重叠/CPU正常不升级为因果。
 - Secret 与恶意 telemetry 指令不进入执行路径；response与累积上下文上限有效。
 - 新格式仍走 Budget v2、终态保护、generation 检查；单写者部署约束被确认。
