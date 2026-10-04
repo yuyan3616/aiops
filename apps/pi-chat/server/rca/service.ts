@@ -1648,6 +1648,28 @@ export class RcaService {
     return this.visualizationService.subscribe(listener);
   }
 
+  async recoverReports(): Promise<string[]> {
+    const recovered: string[] = [];
+    for (const investigationId of await this.repository.listInvestigationIds()) {
+      const investigation = await this.repository.get(investigationId);
+      if (
+        investigation.source?.kind !== "live" ||
+        !investigation.rootCause ||
+        (investigation.status !== "completed" && investigation.status !== "inconclusive")
+      ) {
+        continue;
+      }
+      if (await this.repository.hasReportArtifacts(investigationId)) continue;
+      await this.repository.saveReport(
+        investigationId,
+        investigation.rootCause,
+        this.renderReport(investigation),
+      );
+      recovered.push(investigationId);
+    }
+    return recovered;
+  }
+
   recoverVisualizations(): Promise<string[]> {
     return this.visualizationService.recoverPending();
   }
