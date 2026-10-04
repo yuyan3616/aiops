@@ -20,6 +20,8 @@ export interface LiveHttpRequest {
   headers?: Record<string, string>;
   body?: string;
   signal?: AbortSignal;
+  /** Shared absolute deadline for a multi-request logical Provider query. */
+  deadlineAt?: number;
 }
 
 function abortError(message: string): DOMException {
@@ -39,7 +41,7 @@ function sleepAbortable(ms: number, signal: AbortSignal): Promise<void> {
       resolve();
     }, ms);
     const onAbort = () => {
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       signal.removeEventListener("abort", onAbort);
       reject(abortError("Request cancelled during retry backoff"));
     };
@@ -118,7 +120,16 @@ export class LiveHttpClient {
     }
 
     const deadline = new AbortController();
-    const timer = setTimeout(() => deadline.abort("deadline"), this.deadlineMs);
+    const remainingMs =
+      request.deadlineAt === undefined
+        ? this.deadlineMs
+        : Math.min(this.deadlineMs, Math.max(0, request.deadlineAt - Date.now()));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    if (remainingMs <= 0) {
+      deadline.abort("deadline");
+    } else {
+      timer = setTimeout(() => deadline.abort("deadline"), remainingMs);
+    }
     const signal = externalSignal
       ? AbortSignal.any([externalSignal, deadline.signal])
       : deadline.signal;
