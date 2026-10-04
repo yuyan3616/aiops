@@ -1,105 +1,146 @@
-# AIOps RCA Investigation Workspace
+# AIOps Live RCA Investigation Workspace
 
-基于 Pi Agent 的多 Agent 根因分析工作台。用户通过对话发起调查；Main Agent 管理假设、决定取证方向并综合结论，Trace、Metrics、Log、Event / Topology 专家 Agent 分别执行专项取证。工具结果以 Observation 和 Evidence 持久化，支持在调查结束后继续追问。
+基于 Pi Agent 的多 Agent AIOps / RCA 工作台。新 Investigation 的生产查询路径使用 **Tempo + Loki + Prometheus**；Main Agent 负责假设、取证计划、反证与最终综合，Trace / Log / Metrics 专家在独立 Pi Session 中执行受限查询。
 
-**在线演示：** [Pi Ops](https://pi-chat-rca-production.up.railway.app/)
+> Live Observability 迁移基线：`main@8ae4b77a4845b17902e48d3ea5b4af69d13e8516`。  
+> 历史 RCA100 Investigation 继续可读，但所有调查写操作由 Service 层返回 `legacy_read_only`。RCA100 adapter / parquet / t039 下载脚本仅保留给离线评测与历史开发资产，不进入生产服务启动或新调查查询链路。
 
-> 当前是面向 RCA100 `t039` 案例的工程原型。数据适配器读取 RCA100 遥测文件；仓库尚未接入生产 Prometheus、Loki、Tempo 或 Kubernetes。运行调查需要可用的模型 Provider 和相应案例数据。
-
-## 功能概览
-
-| 能力 | 当前实现 |
-| --- | --- |
-| 假设驱动调查 | Main Agent 创建、更新和检验候选假设，并在结案时交代支持、排除和未解决的解释。 |
-| 专项取证 | Trace、Metrics、Log、Event / Topology 专家运行于独立 Pi Session，调用受限的可观测性工具。 |
-| 可追溯证据 | 工具调用、Observation、Evidence 和 `rawRef` 持久化；大结果在进入模型上下文前压缩。 |
-| 调查生命周期 | 支持取消、用户补充信息、服务重启后的中断恢复、历史会话和后续追问。 |
-| 对话工作台 | 通过 SSE 展示消息、工具调用、专家任务、假设、调查详情和 Markdown 报告。 |
-| 独立评估 | 评分 CLI 在调查结束后读取 Ground Truth；Agent 运行时不读取答案文件。 |
-
-Main Agent 的调查步骤由模型依据当前状态和证据决定；服务端负责工具权限、预算、状态校验与持久化。专家提供发现和证据，最终 RCA 结论由 Main Agent 形成并经服务端校验。
-
-## 架构
+## 当前架构
 
 ```mermaid
 flowchart TD
-    U["用户对话"] --> M["Pi Main Agent"]
-    M --> I["Investigation / Hypotheses"]
-    M --> E["Pi 专家 Sessions"]
-    E --> T["受限可观测性工具"]
-    T --> D["RCA100Adapter / t039 数据"]
-    T --> O["Observation / Evidence / rawRef"]
+    U["用户 / 外部 RCA API"] --> M["Pi Main Agent"]
+    M --> I["Live Investigation<br/>IncidentContext + Budget v2"]
+    M --> E["Trace / Log / Metrics Pi 专家"]
+    E --> R["ObservabilityToolRegistry"]
+    R --> TP["TraceProvider"]
+    R --> LP["LogProvider"]
+    R --> MP["MetricsProvider"]
+    TP --> T["Tempo"]
+    LP --> L["Loki"]
+    MP --> P["Prometheus"]
+    R --> S["Immutable Evidence Snapshot"]
+    S --> O["Observation / Evidence"]
     O --> I
-    I --> R["结论与报告"]
+    I --> F["RCA Result / Markdown Report"]
 ```
 
-独立评分进程在报告完成后读取答案文件；答案目录不传给 Agent Runtime。具体的工具、证据和调查约束见 [t039 调查说明](docs/rca-t039.md)。
+Provider 只负责后端协议编译与归一化；HTTP Client 统一处理认证、15 秒总 deadline、真实 AbortSignal、有限重试、每后端并发限制和 4 MiB body 上限；Service / Registry 负责范围授权、Budget、审计、不可变 Evidence 快照与一致提交。
 
-## 快速开始
+模型不能提供 TraceQL / LogQL / PromQL、任意 backend URL、tenant 或 credential。Telemetry 文本按不可信输入处理，日志中的提示词、URL 或 token 不会获得执行权限。
 
-### 环境要求
+## Live Investigation
 
-- Node.js 22.19 或兼容的 22.x 版本；
-- Corepack 与 pnpm 11.22.0（仓库 `packageManager` 指定版本）；
-- 下载 t039 数据时需要 Git 和 Git LFS；
-- 至少一个可用的 Pi 模型 Provider 及其凭据。
+新调查以冻结的 `IncidentContext` 为权威输入：
 
-在仓库根目录执行：
+- `symptom`
+- `trigger`
+- `target`：service / operation / entity / environment / region / container
+- `window`：绝对 UTC 时间窗，或创建时一次性冻结的 lookback
+
+持久化继续使用 `schemaVersion: 2` 的 Budget / generation / terminal protection 语义，同时增加：
+
+```json
+{
+  "formatVersion": 3,
+  "source": {
+    "kind": "live",
+    "contractVersion": "1"
+  }
+}
+```
+
+不要把 `formatVersion` 当成 Budget capability；现有 Budget v2 的 reservation ledger、Primary / Recovery、每调查并发 3、全局并发 9、Cancel、generation fence 与终态保护继续保留。
+
+## Live 工具
+
+| 模态 | 工具 | 后端 |
+| --- | --- | --- |
+| Trace | `search_traces`, `get_trace` | Tempo |
+| Log | `search_logs` | Loki |
+| Metrics | `discover_metrics`, `query_metrics` | Prometheus |
+
+当前 Target 已确认：
+
+- Trace / Logs / Metrics 基础链路存在；
+- provider generation 与 response-header latency 是不同概念；
+- `exemplars=false`；
+- provider attempt lifecycle 不可用；
+- 不得把 generation 映射成 attempt。
+
+因此当前 Main Runtime 不声明 Exemplar 或 Provider Attempt 能力。
+
+## 查询边界
+
+服务端强制以下首版上限：
+
+| 项目 | 上限 |
+| --- | ---: |
+| 查询窗口 | 24h |
+| Trace search | 50 traces |
+| 单 Trace | 1000 spans |
+| Logs | 200 条 |
+| 单条日志 | 2048 字符 |
+| Metrics | 20 series / 2000 datapoints |
+| 单次 Agent Tool 文本 | 32 KiB |
+| 单次后端响应 | 4 MiB |
+| 单次查询总 deadline | 15s |
+| 专家累计结果 | 128 KiB |
+
+任何 partial / truncation / unsupported 都必须显式返回。Live 查询的 `no_data`、timeout 或 unavailable **不会回退 RCA100**。
+
+## 配置
+
+复制环境变量示例：
+
+```bash
+cp apps/pi-chat/.env.example apps/pi-chat/.env
+```
+
+生产查询 endpoint 必须外部配置，不能写死 Docker service name：
+
+```dotenv
+TEMPO_BASE_URL=https://tempo.example.internal
+LOKI_BASE_URL=https://loki.example.internal
+PROMETHEUS_BASE_URL=https://prometheus.example.internal
+```
+
+支持可选 Bearer / Basic Auth / tenant，以及 Loki / Prometheus label mapping，完整字段见 [`apps/pi-chat/.env.example`](apps/pi-chat/.env.example)。
+
+**部署边界：** 当前 Target / OTel Collector / Tempo / Loki / Prometheus 位于阿里云 ECS，而 main RCA 系统位于 Railway。已知三个查询端口目前只绑定 ECS `127.0.0.1`，所以 Railway 尚无安全可达路径。不要为了验收裸开放 Tempo/Loki/Prometheus 公网端口；应后续配置私网、VPN、受认证反向代理或 Tunnel 后再执行真实只读 smoke。
+
+## 持久化与恢复
+
+`investigation.json` 是 Investigation / Budget 的权威状态。成功 Live 查询先保存有界不可变 Evidence snapshot，再在一次 Budget v2 状态提交中完成 ToolCall 终态与 Observation。
+
+JSONL / UI event、Markdown report 和 visualization 是可重建投影：
+
+- 启动时修复 running Investigation 为 `interrupted`；
+- 从权威快照幂等补齐缺失 Tool / Observation / Evidence / Expert / lifecycle event；
+- 补齐缺失的 Live `final-report.json` / `final-report.md`；
+- 补齐待生成 visualization。
+
+旧 RCA100 Investigation 可以读取报告和历史状态，但不能 resume / dispatch / mutate hypothesis / conclude / cancel / regenerate visualization。
+
+## 开发
+
+环境要求：
+
+- Node.js 22.x；
+- Corepack；
+- pnpm 11.22.0；
+- 至少一个可用的 Pi 模型 Provider。
+
+安装与运行：
 
 ```bash
 corepack enable
 pnpm install --frozen-lockfile
 cp apps/pi-chat/.env.example apps/pi-chat/.env
-```
-
-Windows PowerShell 可用 `Copy-Item apps/pi-chat/.env.example apps/pi-chat/.env`；下载脚本和下文的环境变量示例使用 Bash，Windows 上可在 Git Bash 或 WSL 中运行。
-
-按需编辑 `apps/pi-chat/.env`。如果使用项目内置的 PackyAPI 配置入口，可设置 `PACKY_API_KEY`，并按需指定 `PACKY_BASE_URL`、`PACKY_MODEL_ID`；也可以使用现有的 Pi 模型配置。不要将凭据提交到 Git。
-
-本地开发启动：
-
-```bash
 pnpm dev:pi-chat
 ```
 
-打开 Vite 输出的前端地址（默认 [http://localhost:5173](http://localhost:5173)）。Hono API 默认监听 `127.0.0.1:4328`，前端通过 Vite 代理访问 `/api`。健康检查为 `GET /api/system/health`。
-
-默认会话数据写入 Pi Agent 目录下的 `pi-chat` 子目录；可用 `PI_CHAT_ROOT_DIR` 覆盖。调查目录可单独用 `RCA_INVESTIGATIONS_DIR` 指定，路径配置以 [`server/config.ts`](apps/pi-chat/server/config.ts) 为准。
-
-### 准备 t039 演示数据
-
-在仓库根目录执行：
-
-```bash
-pnpm --filter pi-chat rca:fetch:t039
-```
-
-脚本只下载 RCA100 `t039` 的 Agent 可见案例文件，保存到 `apps/pi-chat/.rca-data/cases/t039/`，并保留上游许可文件；不会下载答案目录。然后在 `apps/pi-chat/.env` 中设置：
-
-```dotenv
-RCA100_CASES_DIR=.rca-data/cases
-```
-
-启动后可在对话中输入“帮我排查 t039 的根因”。数据来源、文件结构与隔离规则见 [`docs/rca-t039.md`](docs/rca-t039.md)。
-
-## 数据与评估边界
-
-Conversation Record、Pi Session 文件和 Investigation 状态分别持久化。调查目录包含 `investigation.json`、`tool-calls.jsonl`、`events.jsonl`；完成调查后生成 `final-report.json` 和 `final-report.md`，执行评分后才生成 `evaluation.json`。进程重启时，未完成的调查会被标记为 `interrupted`，可利用已有证据继续处理。
-
-Ground Truth 仅供独立评分命令使用。请将 `RCA100_ANSWER_KEY_DIR` 只提供给该命令，不要配置到运行 Agent 的服务进程：
-
-```bash
-cd apps/pi-chat
-RCA100_ANSWER_KEY_DIR=/absolute/path/to/RCA100/answer_key \
-RCA_INVESTIGATIONS_DIR=/absolute/path/to/investigations \
-pnpm rca:evaluate INV-...
-```
-
-评分结果输出到终端，并写入对应 Investigation 的 `evaluation.json`。
-
-## 开发与部署
-
-在仓库根目录运行：
+验证：
 
 ```bash
 pnpm --filter pi-chat typecheck
@@ -108,23 +149,35 @@ pnpm --filter pi-chat test
 pnpm --filter pi-chat build
 ```
 
-GitHub Actions 对应用代码的 Pull Request 及 `main` 分支执行上述检查。Railway 从 `main` 分支使用根目录 [`Dockerfile`](Dockerfile) 构建；容器构建期间下载 t039 数据。生产环境应将 `PI_CHAT_ROOT_DIR` 和 `RCA_INVESTIGATIONS_DIR` 指向持久化卷，以保留会话与调查记录。部署配置见 [`railway.json`](railway.json) 和 [启动脚本](apps/pi-chat/scripts/start-railway.sh)。
+GitHub Actions 对 Pull Request 与 `main` 执行同一套检查。Railway 使用根目录 [`Dockerfile`](Dockerfile) 构建，生产镜像**不再下载 t039 / RCA100 数据集**。
 
-## 仓库结构
+## 离线 RCA100 评测
+
+RCA100 只保留为隔离的离线 benchmark / evaluator，不是生产数据源。需要本地 benchmark 时仍可显式执行：
+
+```bash
+pnpm --filter pi-chat rca:fetch:t039
+```
+
+评分器只接受带 legacy `caseId` 的历史/离线 Investigation，Ground Truth 不进入 Agent Runtime：
+
+```bash
+cd apps/pi-chat
+RCA100_ANSWER_KEY_DIR=/absolute/path/to/RCA100/answer_key \
+RCA_INVESTIGATIONS_DIR=/absolute/path/to/investigations \
+pnpm rca:evaluate INV-...
+```
+
+## 主要目录
 
 | 路径 | 内容 |
 | --- | --- |
-| [`apps/pi-chat/src/`](apps/pi-chat/src/) | React 对话工作台与 SSE 会话状态 |
-| [`apps/pi-chat/server/conversation/`](apps/pi-chat/server/conversation/) | Pi 会话、历史记录和 Runtime 生命周期 |
-| [`apps/pi-chat/server/rca/`](apps/pi-chat/server/rca/) | 调查服务、专家 Profile、工具、数据适配与评分 |
-| [`apps/pi-chat/server/routes/`](apps/pi-chat/server/routes/) | 对话、系统与 RCA HTTP 路由 |
-| [`docs/`](docs/) | 设计规格及 t039 案例说明 |
+| `apps/pi-chat/server/rca/live/` | Live HTTP Client 与 Tempo/Loki/Prometheus Provider |
+| `apps/pi-chat/server/rca/` | Investigation Service、Budget v2、专家 Runtime、历史兼容与离线评估 |
+| `apps/pi-chat/server/conversation/` | Pi 会话、历史记录、RCA Conversation context |
+| `apps/pi-chat/server/routes/` | 对话、系统与 RCA HTTP 边界 |
+| `docs/live-investigation-tempo-spec.md` | Live Observability 迁移规格 |
+| `docs/telemetry-contract-v1.md` | 公共 telemetry contract |
+| `docs/live-investigation-validation.md` | 本次迁移验证记录 |
 
-## 设计文档
-
-- [RCA100 t039 调查与数据隔离](docs/rca-t039.md)
-- [调查预算规格](docs/rca-budget-spec.md)
-- [专家 Runtime 可观测性](docs/rca-expert-runtime-observability.md)
-- [会话生命周期规格](docs/conversation-session-lifecycle-spec.md)
-
-项目的包元数据声明 ISC 许可证，见 [`package.json`](package.json)。
+项目包元数据声明 ISC 许可证，见 [`package.json`](package.json)。
