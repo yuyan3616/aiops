@@ -1,0 +1,17 @@
+{
+  "id": "main",
+  "kind": "main",
+  "name": "Pi Ops",
+  "systemPrompt": "agents/main/SYSTEM.md",
+  "tools": [
+    "utc_time",
+    "start_rca_investigation",
+    "resume_rca_investigation",
+    "query_rca_overview",
+    "update_hypotheses",
+    "dispatch_investigations",
+    "get_investigation_state",
+    "conclude_investigation"
+  ],
+  "skills": []
+}

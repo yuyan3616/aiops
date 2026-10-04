@@ -32,6 +32,7 @@ import type {
   SkillOption,
 } from "@shared/types";
 
+import { agentConfigStore } from "../agent-config/store";
 import { normalizePromptError, runDetached } from "./async-task";
 import { EventChannel } from "./channel";
 import { activeStreamItems, applyExternalStreamEvent, mergeMessageLists } from "./external-stream";
@@ -569,8 +570,24 @@ export class ConversationService {
   ) {
     console.log("createManagedSession", selectedSkills);
     const getRcaContext = () => this.resolveRcaContext(conversationRecord.id);
+    let turnConfigVersion = agentConfigStore.current.version;
+    const getAgentConfigVersion = async () => {
+      const context = await getRcaContext();
+      const investigation =
+        context.investigationId && context.state !== "unavailable"
+          ? await this.rcaService.get(context.investigationId)
+          : undefined;
+      turnConfigVersion =
+        investigation &&
+        (investigation.status === "running" || investigation.status === "interrupted")
+          ? (investigation.agentConfigVersion ?? agentConfigStore.bundled.version)
+          : agentConfigStore.current.version;
+      agentConfigStore.get(turnConfigVersion);
+      return turnConfigVersion;
+    };
     const rcaMainTools = createRcaMainAgentTools({
       rcaService: this.rcaService,
+      getAgentConfigVersion: () => turnConfigVersion,
       conversationId: conversationRecord.id,
       getModelRef: () => {
         const managed = this.managedSessions.get(conversationRecord.id);
@@ -617,6 +634,7 @@ export class ConversationService {
       modelRuntime: this.modelRuntime,
       selectedSkills,
       customTools: rcaMainTools,
+      getAgentConfigVersion,
       getRcaContext,
     });
 

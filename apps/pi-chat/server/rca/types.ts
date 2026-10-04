@@ -17,7 +17,7 @@ export type HypothesisStatus =
 
 export type EvidenceModality = "metric" | "log" | "trace" | "event" | "alert" | "topology";
 
-export type ExpertKind = "trace" | "metrics" | "log" | "event-topology";
+export type ExpertKind = string;
 
 export interface TimeRange {
   from: string;
@@ -216,6 +216,7 @@ export interface AgentExpertFinding {
 export interface ExpertTask {
   id: string;
   expert: ExpertKind;
+  expertLabel?: string;
   objective: string;
   status: "pending" | "running" | "completed" | "failed" | "cancelled";
   hypothesisIds: string[];
@@ -333,6 +334,7 @@ export interface InvestigationUserIntervention {
 }
 
 export interface Investigation {
+  agentConfigVersion?: string;
   id: string;
   caseId?: string;
   status: InvestigationStatus;

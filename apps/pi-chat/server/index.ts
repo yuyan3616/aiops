@@ -1,14 +1,16 @@
 import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 
 import { getAgentDir, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { serve } from "@hono/node-server";
 import { createApp } from "@server/app";
 import { ConversationService } from "@server/conversation/service";
-import { InvestigationRepository } from "@server/rca/repository";
 import { createLiveProvidersFromEnv } from "@server/rca/live/config";
+import { InvestigationRepository } from "@server/rca/repository";
 import { RcaService } from "@server/rca/service";
 import { ObservabilityToolRegistry } from "@server/rca/tools";
 
+import { agentConfigStore } from "./agent-config/store";
 import { ensureDir, getGlobalConfig } from "./config";
 import { ensurePackyModelsConfig } from "./model-provider";
 
@@ -19,6 +21,13 @@ await writeFile(globalConfig.mcpConfigPath, JSON.stringify({ mcpServers: {} }, n
 }).catch((error: NodeJS.ErrnoException) => {
   if (error.code !== "EEXIST") throw error;
 });
+await agentConfigStore.start({
+  cacheDir: join(globalConfig.rootDir, "agent-config"),
+  repository: process.env.AGENT_CONFIG_REPOSITORY,
+  ref: process.env.AGENT_CONFIG_REF ?? "main",
+  token: process.env.AGENT_CONFIG_GITHUB_TOKEN,
+});
+process.stdout.write(`Agent configuration version: ${agentConfigStore.current.version}\n`);
 const packyProvider = await ensurePackyModelsConfig(getAgentDir());
 if (packyProvider) {
   process.stdout.write(
@@ -40,16 +49,12 @@ if (recoveredInvestigations.length > 0) {
 }
 const repairedProjections = await investigationRepository.recoverProjections();
 if (repairedProjections.length > 0) {
-  process.stderr.write(
-    `Repaired RCA event projections: ${repairedProjections.join(", ")}\n`,
-  );
+  process.stderr.write(`Repaired RCA event projections: ${repairedProjections.join(", ")}\n`);
 }
 const rcaService = new RcaService(investigationRepository, modelRuntime, rcaTools);
 const recoveredReports = await rcaService.recoverReports();
 if (recoveredReports.length > 0) {
-  process.stderr.write(
-    `Recovered missing RCA reports: ${recoveredReports.join(", ")}\n`,
-  );
+  process.stderr.write(`Recovered missing RCA reports: ${recoveredReports.join(", ")}\n`);
 }
 const recoveredVisualizations = await rcaService.recoverVisualizations();
 if (recoveredVisualizations.length > 0) {
@@ -77,6 +82,7 @@ let closing = false;
 async function shutdown() {
   if (closing) return;
   closing = true;
+  agentConfigStore.stop();
   service.close();
   server.close(() => process.exit(0));
 }

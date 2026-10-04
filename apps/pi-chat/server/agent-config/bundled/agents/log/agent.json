@@ -1,0 +1,20 @@
+{
+  "id": "log",
+  "kind": "expert",
+  "name": "Log 调查员",
+  "systemPrompt": "agents/log/SYSTEM.md",
+  "tools": ["search_logs"],
+  "skills": [
+    {
+      "id": "error-signature"
+    },
+    {
+      "id": "first-occurrence",
+      "keywords": ["first", "onset", "when", "timeline", "首次", "最早", "何时", "时间", "开始"]
+    },
+    {
+      "id": "exception-chain",
+      "keywords": ["exception", "stack", "caused by", "error chain", "异常", "堆栈", "错误栈"]
+    }
+  ]
+}

@@ -49,7 +49,7 @@ test("expert profile registry owns tools, modalities, and budgets", () => {
   const profiles = listExpertProfiles();
   assert.deepEqual(
     profiles.map((profile) => profile.role),
-    ["trace", "metrics", "log", "event-topology"],
+    ["trace", "metrics", "log"],
   );
   assert.deepEqual(getExpertProfile("trace").tools, ["search_traces", "get_trace"]);
   assert.deepEqual(getExpertProfile("metrics").modalities, ["metric"]);

@@ -24,6 +24,7 @@ export interface RcaMainAgentToolsOptions {
   getModelRef: () => { provider: string; id: string };
   onProjection: (projection: ChatStreamProjection) => void | Promise<void>;
   onLinkInvestigation: (investigationId: string) => void | Promise<void>;
+  getAgentConfigVersion?: () => string;
   getRcaContext?: () => ConversationRcaContext | Promise<ConversationRcaContext>;
   onConcluded?: (investigation: Investigation, report: string) => void | Promise<void>;
 }
@@ -64,6 +65,7 @@ function compactInvestigation(
   const hypotheses = tail(investigation.hypotheses, limit, offset);
   return {
     investigationId: investigation.id,
+    agentConfigVersion: investigation.agentConfigVersion,
     ...(investigation.caseId ? { caseId: investigation.caseId } : {}),
     status: investigation.status,
     symptom: investigation.symptom,
@@ -264,6 +266,7 @@ export function createRcaMainAgentTools(options: RcaMainAgentToolsOptions): Tool
           trigger: { type: "manual" },
         };
         const investigation = await rcaService.beginAgentic(input, {
+          agentConfigVersion: options.getAgentConfigVersion?.(),
           operationId: `${conversationId}:${_toolCallId}`,
           conversationId,
           onEvent: project,
@@ -413,7 +416,11 @@ export function createRcaMainAgentTools(options: RcaMainAgentToolsOptions): Tool
       investigationId: Type.String(),
       briefs: Type.Array(
         Type.Object({
-          role: Type.Union([Type.Literal("trace"), Type.Literal("metrics"), Type.Literal("log")]),
+          role: Type.String({
+            minLength: 1,
+            maxLength: 48,
+            description: "当前配置角色注册表中的 expert ID；服务端按调查固定版本校验",
+          }),
           recoveryOfTaskId: Type.Optional(Type.String()),
           question: Type.String({ minLength: 1 }),
           hypothesisIds: Type.Array(Type.String(), { minItems: 1, maxItems: 8 }),

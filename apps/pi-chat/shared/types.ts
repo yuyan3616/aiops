@@ -179,7 +179,7 @@ export type AgentStep = AgentReasoningStep | AgentToolStep;
 export interface AgentThreadRun {
   id: string;
   taskId: string;
-  expert: "trace" | "metrics" | "log" | "event-topology";
+  expert: string;
   label: string;
   objective: string;
   status: "running" | "completed" | "failed" | "cancelled";
