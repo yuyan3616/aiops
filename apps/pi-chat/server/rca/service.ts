@@ -250,6 +250,14 @@ function freezeIncidentContext(input: LiveIncidentInput): IncidentContext {
     const from = new Date(to.getTime() - lookbackMinutes * 60_000);
     window = { from: from.toISOString(), to: to.toISOString() };
   } else {
+    const rfc3339Instant =
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+    if (
+      !rfc3339Instant.test(input.window.from) ||
+      !rfc3339Instant.test(input.window.to)
+    ) {
+      throw new Error("Incident window must use RFC3339 timestamps with an explicit timezone");
+    }
     const from = new Date(input.window.from);
     const to = new Date(input.window.to);
     if (!Number.isFinite(from.getTime()) || !Number.isFinite(to.getTime())) {
@@ -341,6 +349,18 @@ export class RcaService {
             "operation_conflict",
             `operation_conflict: start operation ${operationId} has different input`,
           );
+        }
+        if (existing.status === "running" && !this.agenticRunning.has(id)) {
+          const bus = await this.busFor(id);
+          const controller = new AbortController();
+          const unsubscribe = options.onEvent ? bus.subscribe(options.onEvent) : undefined;
+          this.agenticRunning.set(id, {
+            conversationId: options.conversationId,
+            controller,
+            unsubscribe,
+            investigation: existing,
+            activeOperations: 0,
+          });
         }
         return existing;
       } catch (error) {
