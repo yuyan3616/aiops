@@ -1171,7 +1171,15 @@ export class RcaService {
         brief: task.brief!,
         model: options.model,
         signal,
-        invoke: (tool, args) => this.invokeRecordedToolV2(id, taskId, bus, tool, args, signal),
+        invoke: (tool, args, executionSignal) =>
+          this.invokeRecordedToolV2(
+            id,
+            taskId,
+            bus,
+            tool,
+            args,
+            executionSignal ? AbortSignal.any([signal, executionSignal]) : signal,
+          ),
         onThinking: (delta) =>
           bus
             .publish("expert.thinking.delta", "", { expertTaskId: taskId, delta })

@@ -272,6 +272,7 @@ export class AgentConfigUnavailableError extends Error {
   }
 }
 export class AgentConfigStore {
+  private readonly legacyBindings = new Map<string, string>();
   private readonly bundles = new Map<string, ConfigBundle>();
   private active?: ConfigBundle;
   private pending?: Promise<boolean>;
@@ -332,9 +333,24 @@ export class AgentConfigStore {
       : undefined;
     if (directory && !existsSync(join(directory, "complete.json")))
       throw new Error("config_pinned_version_missing");
-    return collectExtensionTools(selected, roleId, host, code.sourceFiles, directory);
+    const allowed = new Set([
+      ...profile.roles[roleId]!.tools,
+      ...(profile.roles[roleId]!.kind === "expert" ? ["submit_finding"] : []),
+    ]);
+    const scopedHost = new Proxy(host, {
+      get(target, name) {
+        if (typeof name === "string" && !allowed.has(name))
+          return () => {
+            throw new Error("config_host_capability_not_allowed");
+          };
+        return Reflect.get(target, name);
+      },
+    });
+    return collectExtensionTools(selected, roleId, scopedHost, code.sourceFiles, directory);
   }
   legacyExtensionVersion(version: string): string {
+    const memory = this.legacyBindings.get(version);
+    if (memory) return memory;
     if (!this.options.cacheDir) throw new Error("config_legacy_extension_binding_missing");
     const path = join(this.options.cacheDir, "legacy-bindings.json");
     const bindings = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : {};
@@ -344,18 +360,20 @@ export class AgentConfigStore {
     return code;
   }
   bindLegacy(version: string, extensionVersion: string) {
-    if (
-      !this.options.cacheDir ||
-      this.get(version).schemaVersion !== 1 ||
-      this.get(extensionVersion).schemaVersion !== 2
-    )
+    if (this.get(version).schemaVersion !== 1 || this.get(extensionVersion).schemaVersion !== 2)
       throw new Error("config_invalid_legacy_binding");
-    const path = join(this.options.cacheDir, "legacy-bindings.json");
-    const bindings = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : {};
+    const path = this.options.cacheDir
+      ? join(this.options.cacheDir, "legacy-bindings.json")
+      : undefined;
+    const bindings =
+      path && existsSync(path)
+        ? JSON.parse(readFileSync(path, "utf8"))
+        : Object.fromEntries(this.legacyBindings);
     if (bindings[version] && bindings[version] !== extensionVersion)
       throw new Error("config_immutable_binding_conflict");
     bindings[version] = extensionVersion;
-    this.atomicWrite(path, JSON.stringify(bindings));
+    if (path) this.atomicWrite(path, JSON.stringify(bindings));
+    this.legacyBindings.set(version, extensionVersion);
   }
   private atomicWrite(path: string, content: string) {
     mkdirSync(dirname(path), { recursive: true });

@@ -21,7 +21,11 @@ test("专家累计结果达到128KiB预算前停止新取证，单条最终文�
   let calls = 0;
   let totalBytes = 0;
   const createSession = (async (options: SessionFactoryOptions) => {
-    const tools = options.customTools as unknown as FakeTool[];
+    const tools = options
+      .resourceLoader!.getExtensions()
+      .extensions.flatMap((extension) =>
+        [...extension.tools.values()].map((tool) => tool.definition),
+      ) as unknown as FakeTool[];
     const search = tools.find((tool) => tool.name === "search_traces")!;
     const submit = tools.find((tool) => tool.name === "submit_finding")!;
     return {
@@ -186,7 +190,11 @@ test("Trace 工具调用满 12 次后在同一 Session 切换到 submit_finding"
   const createSession = (async (options: SessionFactoryOptions): Promise<CreatedSession> => {
     sessionOptions.push(options);
     const listeners = new Set<FakeEventListener>();
-    const tools = (options.customTools ?? []) as unknown as FakeTool[];
+    const tools = options
+      .resourceLoader!.getExtensions()
+      .extensions.flatMap((extension) =>
+        [...extension.tools.values()].map((tool) => tool.definition),
+      ) as unknown as FakeTool[];
     const queryEvents = tools.find((item) => item.name === "search_traces");
     const submitFinding = tools.find((item) => item.name === "submit_finding");
     assert.ok(queryEvents, "session should register search_traces");
@@ -289,7 +297,11 @@ test("专家提前结束取证时仍在同一 Session 进入 Finalize Phase", as
   const createSession = (async (options: SessionFactoryOptions): Promise<CreatedSession> => {
     sessionOptions.push(options);
     const listeners = new Set<FakeEventListener>();
-    const tools = (options.customTools ?? []) as unknown as FakeTool[];
+    const tools = options
+      .resourceLoader!.getExtensions()
+      .extensions.flatMap((extension) =>
+        [...extension.tools.values()].map((tool) => tool.definition),
+      ) as unknown as FakeTool[];
     const submitFinding = tools.find((item) => item.name === "submit_finding");
     assert.ok(submitFinding);
 
