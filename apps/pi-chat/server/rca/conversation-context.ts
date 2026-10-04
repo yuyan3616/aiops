@@ -33,9 +33,7 @@ export function idleConversationRcaContext(): ConversationRcaContext {
   return { state: "idle" };
 }
 
-export function unavailableConversationRcaContext(
-  investigationId: string,
-): ConversationRcaContext {
+export function unavailableConversationRcaContext(investigationId: string): ConversationRcaContext {
   return { state: "unavailable", investigationId };
 }
 
@@ -50,9 +48,7 @@ export function conversationRcaContextFromInvestigation(
     ...(investigation.context ? { incident: investigation.context } : {}),
     symptom: investigation.symptom,
     rounds: investigation.rounds,
-    ...(investigation.rootCause?.status
-      ? { rootCauseStatus: investigation.rootCause.status }
-      : {}),
+    ...(investigation.rootCause?.status ? { rootCauseStatus: investigation.rootCause.status } : {}),
     ...(investigation.userInterventions?.length
       ? { userInterventions: investigation.userInterventions.slice(-12) }
       : {}),
@@ -67,9 +63,7 @@ function investigationLabel(context: ConversationRcaContext): string {
   return context.symptom ?? "current incident";
 }
 
-export function renderConversationRcaContext(
-  context: ConversationRcaContext,
-): string {
+export function renderConversationRcaContext(context: ConversationRcaContext): string {
   if (context.state === "idle") {
     return [
       "## 当前 RCA 上下文（服务端权威状态 / server-authoritative）",
@@ -119,13 +113,24 @@ export function renderConversationRcaContext(
     `- state: ${context.state}`,
     `- active investigation: ${context.investigationId}`,
     ...liveLines,
-    ...(context.rounds !== undefined ? [`- completed investigation rounds: ${context.rounds}`] : []),
+    ...(context.rounds !== undefined
+      ? [`- completed investigation rounds: ${context.rounds}`]
+      : []),
     ...(context.rootCauseStatus ? [`- RCA result status: ${context.rootCauseStatus}`] : []),
     "",
-    "本段是当前调查状态的唯一可信来源。Live IncidentContext 的原始 window/target 已冻结；后续查询只能通过服务端受控 scope 扩展。",
+    "本段与成功工具返回均来自服务端；本轮执行中以最新服务端状态为准。Live IncidentContext 的原始 window/target 已冻结；后续查询只能通过服务端受控 scope 扩展。",
     ...(context.sourceKind === "legacy"
       ? [
           "这是历史 RCA100 调查，数据源已停用，仅允许读取和展示已有记录。追问应提示无法继续调查；不得 resume、修改 hypothesis、dispatch、cancel、重新结案或写入 evidence。",
+        ]
+      : []),
+    ...(context.sourceKind === "live" &&
+    ["completed", "inconclusive", "failed", "cancelled"].includes(context.state)
+      ? [
+          "该 Live 调查已进入终态。追问只允许读取和解释已有记录，不再取证、修改假设、resume、dispatch 或 conclude。需要新取证时，只有用户明确要求新建/重跑才创建新调查。",
+          ...(context.state === "cancelled"
+            ? ["取消不等于成功结案；没有已持久化的 rootCause 时，不得声称已有正式 RCA 报告。"]
+            : []),
         ]
       : []),
     ...interventionLines,
@@ -146,8 +151,7 @@ export function decideStartRcaInvestigation(
     return {
       allowed: false,
       recommendedAction: "continue_active_investigation",
-      reason:
-        `调查 ${context.investigationId ?? "unknown"}（${investigationLabel(context)}）仍在运行。继续当前调查，不要隐式替换。`,
+      reason: `调查 ${context.investigationId ?? "unknown"}（${investigationLabel(context)}）仍在运行。继续当前调查，不要隐式替换。`,
     };
   }
 
@@ -157,8 +161,7 @@ export function decideStartRcaInvestigation(
     return {
       allowed: false,
       recommendedAction: "resume_active_investigation",
-      reason:
-        `调查 ${context.investigationId ?? "unknown"} 处于 interrupted。优先恢复或读取；只有用户明确要求新调查时才设置 forceNew=true。`,
+      reason: `调查 ${context.investigationId ?? "unknown"} 处于 interrupted。优先恢复或读取；只有用户明确要求新调查时才设置 forceNew=true。`,
     };
   }
 
@@ -166,15 +169,13 @@ export function decideStartRcaInvestigation(
     return {
       allowed: false,
       recommendedAction: "explicit_new_investigation_required",
-      reason:
-        `关联调查 ${context.investigationId ?? "unknown"} 当前不可用。若用户明确要求为 ${requestedIncident.slice(0, 120)} 新建调查，再设置 forceNew=true。`,
+      reason: `关联调查 ${context.investigationId ?? "unknown"} 当前不可用。若用户明确要求为 ${requestedIncident.slice(0, 120)} 新建调查，再设置 forceNew=true。`,
     };
   }
 
   return {
     allowed: false,
     recommendedAction: "read_active_investigation",
-    reason:
-      `调查 ${context.investigationId ?? "unknown"}（${investigationLabel(context)}）已关联，状态为 ${context.state}。后续追问继续读取该调查；只有用户明确要求新建/重跑时才设置 forceNew=true。`,
+    reason: `调查 ${context.investigationId ?? "unknown"}（${investigationLabel(context)}）已关联，状态为 ${context.state}。后续追问继续读取该调查；只有用户明确要求新建/重跑时才设置 forceNew=true。`,
   };
 }

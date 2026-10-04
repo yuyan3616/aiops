@@ -47,17 +47,11 @@ function finding(overrides: Partial<AgentExpertFinding> = {}): AgentExpertFindin
 
 test("expert profile registry owns tools, modalities, and budgets", () => {
   const profiles = listExpertProfiles();
-  assert.deepEqual(profiles.map((profile) => profile.role), [
-    "trace",
-    "metrics",
-    "log",
-    "event-topology",
-  ]);
-  assert.deepEqual(getExpertProfile("trace").tools, [
-    "get_trace_fields",
-    "get_service_dependencies",
-    "query_traces",
-  ]);
+  assert.deepEqual(
+    profiles.map((profile) => profile.role),
+    ["trace", "metrics", "log", "event-topology"],
+  );
+  assert.deepEqual(getExpertProfile("trace").tools, ["search_traces", "get_trace"]);
   assert.deepEqual(getExpertProfile("metrics").modalities, ["metric"]);
   assert.equal(getExpertProfile("metrics").toolBudgets?.query_metrics, 6);
   assert.ok(profiles.every((profile) => profile.maxToolCalls === 12));
@@ -68,27 +62,28 @@ test("trace profile injects latency-gap skill only when relevant", () => {
     getExpertProfile("trace"),
     brief("trace", "Locate the unexplained 8s latency gap between frontend and checkout"),
   );
-  assert.match(withGap, /unobserved interval/i);
-  assert.match(withGap, /Unobserved Latency Gap/);
-  assert.match(withGap, /critical path/i);
+  assert.match(withGap, /\[latency-gap\]/);
+  assert.match(withGap, /\[critical-path\]/);
 
   const ordinaryBrief = brief("trace", "Inspect checkout trace structure");
   ordinaryBrief.context.baselineWindow = undefined;
   const ordinary = buildExpertSystemPrompt(getExpertProfile("trace"), ordinaryBrief);
-  assert.doesNotMatch(ordinary, /Loaded specialist skill: Unobserved Latency Gap/);
+  assert.doesNotMatch(ordinary, /\[latency-gap\]/);
 });
 
 test("metrics and log profiles cap unsupported strong causal findings", () => {
   const metrics = normalizeFindingForProfile(
     getExpertProfile("metrics"),
     finding({
-      evidenceClaims: [{
-        toolCallId: "C01",
-        modality: "metric",
-        summary: "cpu increased",
-        supports: ["H01"],
-        contradicts: [],
-      }],
+      evidenceClaims: [
+        {
+          toolCallId: "C01",
+          modality: "metric",
+          summary: "cpu increased",
+          supports: ["H01"],
+          contradicts: [],
+        },
+      ],
     }),
   );
   assert.equal(metrics.strength, "moderate");
@@ -96,13 +91,15 @@ test("metrics and log profiles cap unsupported strong causal findings", () => {
   const log = normalizeFindingForProfile(
     getExpertProfile("log"),
     finding({
-      evidenceClaims: [{
-        toolCallId: "C02",
-        modality: "log",
-        summary: "timeout signature increased",
-        supports: ["H01"],
-        contradicts: [],
-      }],
+      evidenceClaims: [
+        {
+          toolCallId: "C02",
+          modality: "log",
+          summary: "timeout signature increased",
+          supports: ["H01"],
+          contradicts: [],
+        },
+      ],
     }),
   );
   assert.equal(log.strength, "moderate");
@@ -113,13 +110,15 @@ test("event-topology strong finding requires event plus topology evidence", () =
   const oneSided = normalizeFindingForProfile(
     profile,
     finding({
-      evidenceClaims: [{
-        toolCallId: "C01",
-        modality: "event",
-        summary: "deployment occurred",
-        supports: ["H01"],
-        contradicts: [],
-      }],
+      evidenceClaims: [
+        {
+          toolCallId: "C01",
+          modality: "event",
+          summary: "deployment occurred",
+          supports: ["H01"],
+          contradicts: [],
+        },
+      ],
     }),
   );
   assert.equal(oneSided.strength, "moderate");

@@ -15,7 +15,7 @@
 - 明确区分已观察事实和推断。当 instrumentation 无法区分多种解释时，要显式说明不确定性。
 - 工具报错、超时、字段不可用或解析失败，不等于某个 hypothesis 为假。
 - 只有成功查询直接检验了 hypothesis 且没有返回支持信号时，negative evidence 才有意义。
-- 当 expected outputs 已回答、路径被证伪、证据预算耗尽或调查被阻塞时停止。
+- 当 expected outputs 已回答、路径被证伪、证据预算耗尽或调查被阻塞时停止。只有补查可能实质区分候选解释时才继续；baseline 不可用时明确覆盖缺口，不反复扩大窗口寻找结论。
 - 遵守 notInScope。超出当前范围的线索只能通过 suggestedFollowUps 提出。
 - 只能引用当前专家 Session 内真实工具调用返回的 toolCallId。
 

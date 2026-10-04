@@ -31,6 +31,7 @@ function findingContract(profile: ExpertProfile): string {
 
 调查阶段只负责有边界地取证。Runtime 进入 Finalize Phase 后，会把 active tools 切换为唯一的协议工具 submit_finding。
 
+以下是字段说明，不是可直接提交的示例；枚举中只选择一个值，引用必须替换为真实工具返回，未知的可选字段省略。
 submit_finding 的参数结构：
 {
   "status": "succeeded|failed|inconclusive|blocked",
@@ -41,6 +42,7 @@ submit_finding 的参数结构：
   "evidenceClaims": [
     {
       "toolCallId": "当前 Session 内真实工具调用返回的 Cxx",
+      "sourceItems": ["从该 toolCallId 返回的 sourceItems 中选择的原值"],
       "modality": "一个允许的 modality",
       "entity": "可选 entity",
       "summary": "该工具结果能够建立什么事实",
@@ -54,13 +56,17 @@ submit_finding 的参数结构：
   "blockedOn": "仅当 status=blocked 时填写"
 }
 
+有返回事实的 claim 必须填写对应查询快照的 sourceItems；不能从另一调用复制，也不能自行构造引用。查询无数据时不得伪造 sourceItems；无法建立任何事实时 evidenceClaims 可以为空。
+候选实体与机制只在有证据时填写；succeeded 表示完成了 brief，不代表发现故障。无信号、数据不足和工具不可用应分别说明，不能统一写为“健康”。建议后续调查时说明它能解决哪个关键缺口，不要求 Main 执行所有建议。
 不要用普通 assistant 文本代替 submit_finding。`;
 }
 
 export function buildExpertSystemPrompt(profile: ExpertProfile, brief: InvestigationBrief): string {
   const skills = profile.selectSkills(brief);
   const skillSections = skills.length
-    ? skills.map((entry) => `## 已加载专家技能：${entry.title} [${entry.id}]\n\n${entry.content}`).join("\n\n")
+    ? skills
+        .map((entry) => `## 已加载专家技能：${entry.title} [${entry.id}]\n\n${entry.content}`)
+        .join("\n\n")
     : "## 已加载专家技能\n\n当前 brief 未选择额外专家技能。";
 
   return [

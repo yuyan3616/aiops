@@ -506,7 +506,7 @@ export function createRcaMainAgentTools(options: RcaMainAgentToolsOptions): Tool
     name: "conclude_investigation",
     label: "收敛 RCA 调查",
     description:
-      "持久化 Main Agent 最终的 evidence-backed RCA 结论。必须处理所有 hypothesis，并满足 temporal/propagation/gap evidence 门槛。",
+      "仅对 running/interrupted 且专家任务已结束的调查持久化 RCA 结论。必须处理所有 hypothesis 并满足因果证据门槛；成功返回才代表已结案和报告已保存，终态追问不得重复调用。",
     parameters: Type.Object({
       investigationId: Type.String(),
       status: Type.Union([
@@ -514,12 +514,19 @@ export function createRcaMainAgentTools(options: RcaMainAgentToolsOptions): Tool
         Type.Literal("probable"),
         Type.Literal("inconclusive"),
       ]),
-      rootCauseEntities: Type.Array(Type.String(), { maxItems: 20 }),
+      rootCauseEntities: Type.Array(Type.String(), {
+        maxItems: 20,
+        description:
+          "证据支持的真实责任实体；未定位根因时为空，不填 provider generation/model turn 等观测阶段名。",
+      }),
       mechanism: Type.Optional(Type.String()),
       summary: Type.String(),
       evidenceIds: Type.Array(Type.String(), { maxItems: 50 }),
       selectedHypothesisIds: Type.Array(Type.String(), { maxItems: 10 }),
-      rejectedHypotheses: Type.Array(Type.String(), { maxItems: 20 }),
+      rejectedHypotheses: Type.Array(Type.String(), {
+        maxItems: 20,
+        description: '已标记 rejected 的 hypothesis ID 字符串数组，例如 ["H02"]；不要传对象。',
+      }),
       unresolvedHypotheses: Type.Array(
         Type.Object({
           id: Type.String(),
