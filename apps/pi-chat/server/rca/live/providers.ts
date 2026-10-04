@@ -13,6 +13,7 @@ import {
   type MetricSeries,
   redactTelemetryText,
   safeAttributeValue,
+  sensitiveTelemetryKey,
   validSpanId,
   validTraceId,
   validateTimeRange,
@@ -74,7 +75,7 @@ function otlpAttributes(value: unknown): Record<string, string | number | boolea
   for (const entry of value.slice(0, LIVE_LIMITS.maxSpanAttributes)) {
     const row = object(entry);
     if (!row || typeof row.key !== "string") continue;
-    if (/secret|token|password|passwd|authorization|api[_-]?key/i.test(row.key)) continue;
+    if (sensitiveTelemetryKey(row.key)) continue;
     const raw = object(row.value);
     const candidate =
       raw?.stringValue ??
@@ -627,6 +628,11 @@ function metricName(value: string): string {
 }
 
 function metricLabel(value: string): string {
+  if (sensitiveTelemetryKey(value)) {
+    throw new LiveBackendError("invalid_query", "Sensitive metric labels cannot be queried", {
+      backendAlias: "prometheus",
+    });
+  }
   if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(value)) {
     throw new LiveBackendError("invalid_query", "Invalid metric label", {
       backendAlias: "prometheus",
@@ -760,7 +766,7 @@ export class MetricsProvider {
         series
           .filter((entry) => object(entry)?.__name__ === name)
           .flatMap((entry) => Object.keys(object(entry) ?? {}))
-          .filter((label) => label !== "__name__"),
+          .filter((label) => label !== "__name__" && !sensitiveTelemetryKey(label)),
       )].slice(0, 32);
       descriptors.push({
         name,
@@ -896,7 +902,12 @@ export class MetricsProvider {
       if (!row) continue;
       const labels = Object.fromEntries(
         Object.entries(object(row.metric) ?? {})
-          .filter(([key, value]) => key !== "__name__" && typeof value === "string")
+          .filter(
+            ([key, value]) =>
+              key !== "__name__" &&
+              !sensitiveTelemetryKey(key) &&
+              typeof value === "string",
+          )
           .slice(0, 32)
           .map(([key, value]) => [key, redactTelemetryText(String(value)).slice(0, 256)]),
       );
