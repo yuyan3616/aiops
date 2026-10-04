@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
+import { agentConfigStore } from "../agent-config/store";
 import {
   appendLedgerEvent,
   foldBudget,
@@ -12,6 +13,7 @@ import {
 import { InvestigationEventBus, type InvestigationEventListener } from "./events";
 import { LIVE_CONTRACT_VERSION, LIVE_FORMAT_VERSION, validateTimeRange } from "./live/types";
 import { PiExpertRunError, PiExpertRunner, type RecordedAgentToolExecution } from "./pi-expert";
+import { getExpertProfile } from "./profiles/registry";
 import { InvestigationRepository } from "./repository";
 import { safeRuntimeDetail } from "./runtime-accounting";
 import { AbortableSemaphore } from "./semaphore";
@@ -115,6 +117,7 @@ export interface HypothesisMutationBatchResult {
 }
 
 export interface AgenticBeginOptions {
+  agentConfigVersion?: string;
   investigationId?: string;
   operationId?: string;
   conversationId?: string;
@@ -368,12 +371,14 @@ export class RcaService {
       }
     }
 
+    const bundle = agentConfigStore.get(options.agentConfigVersion);
     const context = freezeIncidentContext(input);
     const bus = await this.busFor(id);
     const controller = new AbortController();
     const unsubscribe = options.onEvent ? bus.subscribe(options.onEvent) : undefined;
     const investigation: Investigation = {
       id,
+      agentConfigVersion: bundle.version,
       status: "running",
       symptom: context.symptom,
       context,
@@ -793,8 +798,11 @@ export class RcaService {
     const investigation = await this.liveInvestigation(investigationId);
     this.assertLiveWritable(investigation);
     this.assertRunning(investigation);
-    if (briefs.some((brief) => brief.role === "event-topology")) {
-      throw new Error("unsupported: Live Investigation only supports trace/log/metrics experts");
+    const bundle = agentConfigStore.get(
+      investigation.agentConfigVersion ?? agentConfigStore.bundled.version,
+    );
+    if (briefs.some((brief) => bundle.roles[brief.role]?.kind !== "expert")) {
+      throw new Error("unsupported: role is not registered in this Investigation configuration");
     }
     return this.dispatchAgenticV2(investigationId, briefs, options);
   }
@@ -968,6 +976,10 @@ export class RcaService {
         const task: ExpertTask = {
           id: taskId,
           expert: brief.role,
+          expertLabel: getExpertProfile(
+            brief.role,
+            draft.agentConfigVersion ?? agentConfigStore.bundled.version,
+          ).label,
           objective: brief.question.trim().slice(0, 1000),
           status: "pending",
           hypothesisIds: [...new Set(brief.hypothesisIds)],

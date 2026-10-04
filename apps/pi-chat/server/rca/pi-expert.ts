@@ -9,6 +9,7 @@ import {
   type ModelRuntime,
 } from "@earendil-works/pi-coding-agent";
 
+import { agentConfigStore } from "../agent-config/store";
 import { LIVE_LIMITS } from "./live/types";
 import {
   buildExpertSystemPrompt,
@@ -262,7 +263,10 @@ export class PiExpertRunner {
     }
 
     const role = context.brief.role;
-    const profile = getExpertProfile(role);
+    const profile = getExpertProfile(
+      role,
+      context.investigation.agentConfigVersion ?? agentConfigStore.bundled.version,
+    );
     const settingsManager = SettingsManager.inMemory({
       compaction: { enabled: false },
       retry: { enabled: true, maxRetries: 1 },

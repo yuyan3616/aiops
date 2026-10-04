@@ -107,12 +107,13 @@ function groupTasks(tasks: ExpertTask[]): ExpertTask[][] {
 }
 
 function expertName(task: ExpertTask): string {
-  return {
+  if (task.expertLabel) return task.expertLabel;
+  return ({
     trace: "Trace",
     metrics: "Metrics",
     log: "Log",
     "event-topology": "Event / Topology",
-  }[task.expert];
+  } as Record<string, string>)[task.expert] ?? task.expert;
 }
 
 function failureReason(task: ExpertTask, toolCalls: ToolCallRecord[]): string {

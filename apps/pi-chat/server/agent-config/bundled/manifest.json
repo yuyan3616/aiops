@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "roles": [
+    "agents/main/agent.json",
+    "agents/trace/agent.json",
+    "agents/metrics/agent.json",
+    "agents/log/agent.json"
+  ],
+  "skills": {
+    "critical-path": {
+      "title": "关键路径分析",
+      "path": "skills/critical-path/SKILL.md"
+    },
+    "latency-gap": {
+      "title": "未观测延迟缺口",
+      "path": "skills/latency-gap/SKILL.md"
+    },
+    "trace-comparison": {
+      "title": "Trace 对比分析",
+      "path": "skills/trace-comparison/SKILL.md"
+    },
+    "baseline-validation": {
+      "title": "Baseline 有效性验证",
+      "path": "skills/baseline-validation/SKILL.md"
+    },
+    "peer-comparison": {
+      "title": "Peer 对比",
+      "path": "skills/peer-comparison/SKILL.md"
+    },
+    "saturation-analysis": {
+      "title": "资源饱和分析",
+      "path": "skills/saturation-analysis/SKILL.md"
+    },
+    "error-signature": {
+      "title": "错误特征分析",
+      "path": "skills/error-signature/SKILL.md"
+    },
+    "first-occurrence": {
+      "title": "首次出现时间分析",
+      "path": "skills/first-occurrence/SKILL.md"
+    },
+    "exception-chain": {
+      "title": "异常链分析",
+      "path": "skills/exception-chain/SKILL.md"
+    }
+  }
+}

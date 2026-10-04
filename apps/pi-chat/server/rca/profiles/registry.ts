@@ -1,26 +1,72 @@
+import { agentConfigStore } from "../../agent-config/store";
+import type { ObservabilityToolName } from "../tools";
 import type { AgentExpertFinding, ExpertKind, InvestigationBrief } from "../types";
+import type { EvidenceModality } from "../types";
 import { eventTopologyProfile } from "./event-topology/profile";
-import { logProfile } from "./log/profile";
-import { metricsProfile } from "./metrics/profile";
-import { traceProfile } from "./trace/profile";
 import type { ExpertProfile } from "./types";
-import { loadProfileText } from "./utils";
+import { loadProfileText, briefSearchText, capFindingStrength } from "./utils";
 
 const commonContract = loadProfileText(import.meta.url, "./common/INVESTIGATION_CONTRACT.md");
 
-const profiles: Record<ExpertKind, ExpertProfile> = {
-  trace: traceProfile,
-  metrics: metricsProfile,
-  log: logProfile,
-  "event-topology": eventTopologyProfile,
-};
-
-export function getExpertProfile(role: ExpertKind): ExpertProfile {
-  return profiles[role];
+export function getExpertProfile(role: ExpertKind, version?: string): ExpertProfile {
+  const bundle = agentConfigStore.get(version);
+  const configured = bundle.roles[role];
+  // Historical compatibility only; production dispatch never accepts this profile.
+  if (!configured && role === "event-topology" && !version) return eventTopologyProfile;
+  if (!configured || configured.kind !== "expert") throw new Error("config_unknown_expert");
+  const tools = configured.tools as ObservabilityToolName[];
+  const modalities = [
+    ...new Set(
+      tools.map((tool): EvidenceModality =>
+        tool === "search_logs"
+          ? "log"
+          : tool === "discover_metrics" || tool === "query_metrics"
+            ? "metric"
+            : "trace",
+      ),
+    ),
+  ];
+  return {
+    role,
+    label: configured.name,
+    systemPrompt: configured.systemPrompt,
+    tools,
+    modalities,
+    maxToolCalls: 12,
+    ...(tools.includes("query_metrics") ? { toolBudgets: { query_metrics: 6 } } : {}),
+    selectSkills: (brief) =>
+      configured.skills
+        .filter((entry) => {
+          if (!entry.keywords && !entry.baseline) return true;
+          return (
+            Boolean(entry.baseline && brief.context.baselineWindow) ||
+            Boolean(
+              entry.keywords?.some((term) => briefSearchText(brief).includes(term.toLowerCase())),
+            )
+          );
+        })
+        .map((entry) => bundle.skills[entry.id]!),
+    normalizeFinding: (finding) => {
+      if (modalities.length === 1 && modalities[0] === "trace") {
+        return finding.candidateMechanism && finding.evidenceClaims.length < 2
+          ? capFindingStrength(finding, "moderate")
+          : finding;
+      }
+      if (modalities.length === 1 && modalities[0] === "log") {
+        return finding.verdict === "supports" || finding.verdict === "contradicts"
+          ? capFindingStrength(finding, "moderate")
+          : finding;
+      }
+      return finding.evidenceClaims.length < 2 ? capFindingStrength(finding, "moderate") : finding;
+    },
+  };
 }
 
-export function listExpertProfiles(): ExpertProfile[] {
-  return Object.values(profiles);
+export function listExpertProfiles(version?: string): ExpertProfile[] {
+  const bundle = agentConfigStore.get(version);
+  return Object.values(bundle.roles)
+    .filter((role) => role.kind === "expert")
+    .map((role) => getExpertProfile(role.id, bundle.version));
 }
 
 function findingContract(profile: ExpertProfile): string {

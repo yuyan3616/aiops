@@ -126,7 +126,7 @@ export function AgentThreadCard({ agent }: { agent: AgentThreadRun }) {
         <span className="agent-thread-avatar">{agent.expert.slice(0, 1).toUpperCase()}</span>
         <span className="agent-thread-copy">
           <span className="agent-thread-title">
-            {agent.label || labels[agent.expert]}
+            {agent.label || (labels[agent.expert] ?? agent.expert)}
             <small className={"agent-thread-status " + agent.status}>{stateLabel(agent)}</small>
           </span>
           <span className="agent-thread-objective">{agent.objective}</span>
@@ -150,14 +150,14 @@ export function AgentThreadCard({ agent }: { agent: AgentThreadRun }) {
             className="agent-thread-drawer"
             role="dialog"
             aria-modal="true"
-            aria-label={agent.label || labels[agent.expert]}
+            aria-label={agent.label || (labels[agent.expert] ?? agent.expert)}
             onMouseDown={(event) => event.stopPropagation()}
           >
             <header className="agent-thread-drawer-header">
               <div>
                 <div className="agent-thread-drawer-title">
                   <Network size={16} />
-                  <strong>{agent.label || labels[agent.expert]}</strong>
+                  <strong>{agent.label || (labels[agent.expert] ?? agent.expert)}</strong>
                 </div>
                 <small>
                   {agent.taskId} · 专业调查线程

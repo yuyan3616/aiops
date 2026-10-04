@@ -15,7 +15,7 @@ const expertLabels: Record<ExpertKind, string> = {
 };
 
 function expertLabel(task?: ExpertTask): string {
-  return task ? expertLabels[task.expert] : "专业调查员";
+  return task ? task.expertLabel ?? expertLabels[task.expert] ?? task.expert : "专业调查员";
 }
 
 /**

@@ -1,0 +1,1 @@
+当已观测 span 无法解释 total duration 时，定位 uncovered interval 位于 observed children 之前、之间还是之后。把 missing instrumentation、proxy/client wait、queueing、network delay、runtime pause、local computation 都作为替代解释。除非 evidence 能区分 mechanism，否则把结果表述为观测边界，不要直接下机制结论。

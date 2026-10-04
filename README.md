@@ -168,3 +168,7 @@ GitHub Actions 对 Pull Request 与 `main` 执行同一套检查。Railway 使�
 | `docs/live-investigation-validation.md` | 本次迁移验证记录 |
 
 项目包元数据声明 ISC 许可证，见 [`package.json`](package.json)。
+
+### Agent 角色配置
+
+角色身份、提示词、技能和已有工具的允许列表可独立维护在 [aiops-agent-config](https://github.com/yuyan3616/aiops-agent-config)。服务端按 commit SHA 加载，后台刷新仅影响新调查；正在执行的调查固定原版本。完整接入说明见 [Agent 配置加载](docs/agent-config.md)。
