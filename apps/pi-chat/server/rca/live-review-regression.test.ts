@@ -9,7 +9,7 @@ import test from "node:test";
 import { LiveHttpClient } from "./live/http-client";
 import { LogProvider, MetricsProvider, TraceProvider } from "./live/providers";
 import { LIVE_LIMITS, LiveBackendError } from "./live/types";
-import { createRcaMainAgentTools } from "./main-agent-tools";
+import { createRcaMainAgentTools } from "./main-host-test-helper";
 import type { PiExpertRunContext } from "./pi-expert";
 import { InvestigationRepository } from "./repository";
 import { RcaService } from "./service";

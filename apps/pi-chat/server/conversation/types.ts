@@ -27,6 +27,7 @@ export interface ConversationRecord {
 }
 
 export interface ManagedSession {
+  executionVersion?: string;
   id: string;
   lastAccessAt: number;
   activeUses: number;

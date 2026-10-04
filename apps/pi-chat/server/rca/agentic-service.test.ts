@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { createRcaMainAgentTools } from "./main-agent-tools";
+import { createRcaMainAgentTools } from "./main-host-test-helper";
 import { InvestigationRepository } from "./repository";
 import { RcaService } from "./service";
 import type { Investigation } from "./types";

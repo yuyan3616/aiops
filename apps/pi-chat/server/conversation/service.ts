@@ -17,7 +17,7 @@ import {
   type ConversationRcaContext,
   unavailableConversationRcaContext,
 } from "@server/rca/conversation-context";
-import { createRcaMainAgentTools } from "@server/rca/main-agent-tools";
+import { createRcaMainHost } from "@server/rca/main-host";
 import { RcaServiceError, type RcaService } from "@server/rca/service";
 import type { Investigation } from "@server/rca/types";
 import { hasSameStringItems } from "@server/utils";
@@ -592,6 +592,15 @@ export class ConversationService {
     };
   }
 
+  private async selectAgentConfigVersion(conversationId: string): Promise<string> {
+    const context = await this.resolveRcaContext(conversationId);
+    const investigation = context.investigationId && context.state !== "unavailable" ? await this.rcaService.get(context.investigationId) : undefined;
+    const version = investigation && (investigation.status === "running" || investigation.status === "interrupted")
+      ? await this.rcaService.resolveAgentConfigVersion(investigation.id) : agentConfigStore.current.version;
+    agentConfigStore.get(version);
+    return version;
+  }
+
   private async createManagedSession(
     conversationRecord: ConversationRecord,
     sessionManager: SessionManager,
@@ -599,22 +608,9 @@ export class ConversationService {
   ) {
     console.log("createManagedSession", selectedSkills);
     const getRcaContext = () => this.resolveRcaContext(conversationRecord.id);
-    let turnConfigVersion = agentConfigStore.current.version;
-    const getAgentConfigVersion = async () => {
-      const context = await getRcaContext();
-      const investigation =
-        context.investigationId && context.state !== "unavailable"
-          ? await this.rcaService.get(context.investigationId)
-          : undefined;
-      turnConfigVersion =
-        investigation &&
-        (investigation.status === "running" || investigation.status === "interrupted")
-          ? await this.rcaService.resolveAgentConfigVersion(investigation.id)
-          : agentConfigStore.current.version;
-      agentConfigStore.get(turnConfigVersion);
-      return turnConfigVersion;
-    };
-    const rcaMainTools = createRcaMainAgentTools({
+    const turnConfigVersion = await this.selectAgentConfigVersion(conversationRecord.id);
+    const getAgentConfigVersion = async () => turnConfigVersion;
+    const rcaMainHost = createRcaMainHost({
       rcaService: this.rcaService,
       getAgentConfigVersion: () => turnConfigVersion,
       conversationId: conversationRecord.id,
@@ -656,18 +652,21 @@ export class ConversationService {
       },
     });
 
+    const configTools = await agentConfigStore.toolsFor(turnConfigVersion, "main", rcaMainHost);
     const runtime = await createRuntime({
       globalConfig: this.globalConfig,
       conversationRecord,
       sessionManager,
       modelRuntime: this.modelRuntime,
-      customTools: rcaMainTools,
+      configTools,
+      agentConfigVersion: turnConfigVersion,
       getAgentConfigVersion,
       getRcaContext,
     });
 
     const managedSession: ManagedSession = {
       id: conversationRecord.id,
+      executionVersion: turnConfigVersion,
       lastAccessAt: Date.now(),
       activeUses: 0,
       runtime,
