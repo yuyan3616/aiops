@@ -15,7 +15,8 @@
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",
     "lint": "oxlint",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "agent-config:migrate": "TSX_TSCONFIG_PATH=tsconfig.node.json node --import tsx server/agent-config/migrate.ts"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "^0.86.1",

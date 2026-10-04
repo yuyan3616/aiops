@@ -173,7 +173,7 @@ export class ConversationService {
     }
 
     agentConfigStore.get();
-    const managedSession = await this.ensureManagedSession(conversationId, []);
+    const managedSession = await this.ensureManagedSession(conversationId, [], true);
     const session = managedSession.runtime.session;
     let handedOff = false;
     try {
@@ -594,9 +594,15 @@ export class ConversationService {
 
   private async selectAgentConfigVersion(conversationId: string): Promise<string> {
     const context = await this.resolveRcaContext(conversationId);
-    const investigation = context.investigationId && context.state !== "unavailable" ? await this.rcaService.get(context.investigationId) : undefined;
-    const version = investigation && (investigation.status === "running" || investigation.status === "interrupted")
-      ? await this.rcaService.resolveAgentConfigVersion(investigation.id) : agentConfigStore.current.version;
+    const investigation =
+      context.investigationId && context.state !== "unavailable"
+        ? await this.rcaService.get(context.investigationId)
+        : undefined;
+    const version =
+      investigation &&
+      (investigation.status === "running" || investigation.status === "interrupted")
+        ? await this.rcaService.resolveAgentConfigVersion(investigation.id)
+        : agentConfigStore.current.version;
     agentConfigStore.get(version);
     return version;
   }
@@ -604,11 +610,13 @@ export class ConversationService {
   private async createManagedSession(
     conversationRecord: ConversationRecord,
     sessionManager: SessionManager,
-    selectedSkills: string[] = [],
+    _selectedSkills: string[] = [],
+    selectedVersion?: string,
+    publish = true,
   ) {
-    console.log("createManagedSession", selectedSkills);
     const getRcaContext = () => this.resolveRcaContext(conversationRecord.id);
-    const turnConfigVersion = await this.selectAgentConfigVersion(conversationRecord.id);
+    const turnConfigVersion =
+      selectedVersion ?? (await this.selectAgentConfigVersion(conversationRecord.id));
     const getAgentConfigVersion = async () => turnConfigVersion;
     const rcaMainHost = createRcaMainHost({
       rcaService: this.rcaService,
@@ -675,6 +683,7 @@ export class ConversationService {
       diagnostics: runtime.diagnostics.map((item) => item.message),
       activeSkillNames: [],
     };
+    if (!publish) return managedSession;
     this.managedSessions.set(managedSession.id, managedSession);
     try {
       this.bind(managedSession);
@@ -879,13 +888,64 @@ export class ConversationService {
     managedSession.lastAccessAt = Date.now();
   }
 
-  private async ensureManagedSession(conversationId: string, selectedSkills?: string[]) {
-    return this.withSessionLock(conversationId, async () =>
-      this.acquire(await this.loadManagedSession(conversationId, selectedSkills)),
-    );
+  private async ensureManagedSession(
+    conversationId: string,
+    selectedSkills?: string[],
+    refreshVersion = false,
+  ) {
+    return this.withSessionLock(conversationId, async () => {
+      const existing = this.managedSessions.get(conversationId);
+      const version =
+        refreshVersion && (!existing || !this.isBusy(existing))
+          ? await this.selectAgentConfigVersion(conversationId)
+          : undefined;
+      let managed = await this.loadManagedSession(conversationId, selectedSkills, version);
+      if (version && managed.executionVersion !== version && !this.isBusy(managed))
+        managed = await this.replaceManagedRuntime(managed, version);
+      return this.acquire(managed);
+    });
   }
 
-  private async loadManagedSession(conversationId: string, selectedSkills?: string[]) {
+  private async replaceManagedRuntime(
+    previous: ManagedSession,
+    version: string,
+  ): Promise<ManagedSession> {
+    if (this.isBusy(previous)) throw new Error("config_session_busy");
+    await this.waitForRecordWrites(previous.id);
+    const record = await this.conversationRepository.get(previous.id);
+    if (!record) throw new Error("Conversation not found");
+    const candidate = await this.createManagedSession(
+      record,
+      previous.runtime.session.sessionManager,
+      previous.activeSkillNames,
+      version,
+      false,
+    );
+    try {
+      if (previous.runtime.session.model)
+        await candidate.runtime.session.setModel(previous.runtime.session.model, {
+          persist: false,
+        });
+      candidate.runtime.session.setThinkingLevel(previous.runtime.session.thinkingLevel, {
+        persist: false,
+      });
+      this.bind(candidate);
+    } catch (error) {
+      candidate.unsubscribe?.();
+      candidate.runtime.session.dispose();
+      throw error;
+    }
+    previous.unsubscribe?.();
+    this.managedSessions.set(previous.id, candidate);
+    previous.runtime.session.dispose();
+    return candidate;
+  }
+
+  private async loadManagedSession(
+    conversationId: string,
+    selectedSkills?: string[],
+    selectedVersion?: string,
+  ) {
     let managedSession = this.managedSessions.get(conversationId);
     if (managedSession) {
       if (!selectedSkills || hasSameStringItems(managedSession.activeSkillNames, selectedSkills)) {
@@ -909,6 +969,7 @@ export class ConversationService {
         { ...conversationRecord, selectedSkills },
         sessionManager,
         selectedSkills,
+        selectedVersion,
       );
     }
     const conversationRecord = await this.conversationRepository.get(conversationId);
@@ -937,6 +998,7 @@ export class ConversationService {
       conversationRecord,
       sessionManager,
       conversationRecord.selectedSkills,
+      selectedVersion,
     );
   }
 
@@ -1169,6 +1231,7 @@ export class ConversationService {
 
   private isRuntimeBusy(managedSession: ManagedSession): boolean {
     return (
+      managedSession.runtime.session.isIdle === false ||
       managedSession.runtime.session.isStreaming ||
       managedSession.runtime.session.agent.state.isStreaming ||
       managedSession.status === "running" ||

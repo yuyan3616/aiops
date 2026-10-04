@@ -114,9 +114,24 @@ export async function collectExtensionTools(
     throw new Error("config_allowed_tool_missing");
   if (role.kind === "main" && definitions.has("submit_finding"))
     throw new Error("config_invalid_protocol_role");
-  return [...definitions.values()].filter(
-    (tool) => role.tools.includes(tool.name) || tool.name === "submit_finding",
-  );
+  return [...definitions.values()]
+    .filter((tool) => role.tools.includes(tool.name) || tool.name === "submit_finding")
+    .map((tool) => ({
+      ...tool,
+      async execute(...args: Parameters<ToolDefinition["execute"]>) {
+        args[2]?.throwIfAborted();
+        const result = await tool.execute(...args);
+        args[2]?.throwIfAborted();
+        if (
+          !result ||
+          !Array.isArray(result.content) ||
+          Buffer.byteLength(JSON.stringify(result.content), "utf8") >
+            LIVE_LIMITS.maxAgentToolBytes + 1024
+        )
+          throw new Error("config_tool_result_too_large");
+        return result;
+      },
+    }));
 }
 
 export async function preflightExtensions(bundle: ConfigBundle, files: ConfigFiles) {

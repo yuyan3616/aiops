@@ -61,12 +61,14 @@ test("fixed executable versions survive offline restart and a missing module fai
     await restarted.start();
     restarted.stop();
     assert.equal(restarted.current.version, b);
-    const tools = await restarted.toolsFor(a, "main", { utc_time: async () => "old" });
-    assert.equal(
+    const tools = await restarted.toolsFor(a, "main", {
+      utc_time: async () => ({ content: [{ type: "text", text: "old" }], details: {} }),
+    });
+    assert.deepEqual(
       await tools
         .find((x) => x.name === "utc_time")!
         .execute("id", {}, undefined, undefined, {} as never),
-      "old",
+      { content: [{ type: "text", text: "old" }], details: {} },
     );
     await unlink(join(cacheDir, "versions", a, "dist/main.mjs"));
     await assert.rejects(restarted.toolsFor(a, "main", {}), /ENOENT/);

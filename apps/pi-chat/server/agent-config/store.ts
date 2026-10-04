@@ -359,6 +359,38 @@ export class AgentConfigStore {
       throw new Error("config_legacy_extension_binding_missing");
     return code;
   }
+  async validateLegacyBinding(version: string, extensionVersion: string) {
+    const profile = this.get(version),
+      code = this.get(extensionVersion);
+    if (profile.schemaVersion !== 1 || code.schemaVersion !== 2)
+      throw new Error("config_invalid_legacy_binding");
+    const noIO = new Proxy(
+      {},
+      {
+        get: () => () => {
+          throw new Error("config_factory_host_io_forbidden");
+        },
+      },
+    );
+    const directory = this.options.cacheDir
+      ? join(this.options.cacheDir, "versions", code.version)
+      : undefined;
+    for (const role of Object.values(profile.roles)) {
+      const compatible = code.roles[role.id];
+      if (!compatible || compatible.kind !== role.kind)
+        throw new Error("config_legacy_role_incompatible");
+      await collectExtensionTools(
+        {
+          ...code,
+          roles: { ...code.roles, [role.id]: { ...role, extensions: compatible.extensions } },
+        },
+        role.id,
+        noIO,
+        code.sourceFiles,
+        directory,
+      );
+    }
+  }
   bindLegacy(version: string, extensionVersion: string) {
     if (this.get(version).schemaVersion !== 1 || this.get(extensionVersion).schemaVersion !== 2)
       throw new Error("config_invalid_legacy_binding");
@@ -386,12 +418,12 @@ export class AgentConfigStore {
     if (bundle.schemaVersion === 2) throw new Error("config_requires_extension_install");
     return this.commitBundle(bundle, files);
   }
-  async install(version: string, files: ConfigFiles): Promise<ConfigBundle> {
+  async install(version: string, files: ConfigFiles, activate = true): Promise<ConfigBundle> {
     const bundle = validateBundle(version, files);
     if (bundle.schemaVersion === 2) await preflightExtensions(bundle, files);
-    return this.commitBundle(bundle, files);
+    return this.commitBundle(bundle, files, activate);
   }
-  private commitBundle(bundle: ConfigBundle, files: ConfigFiles): ConfigBundle {
+  private commitBundle(bundle: ConfigBundle, files: ConfigFiles, activate = true): ConfigBundle {
     const version = bundle.version;
     const existing = this.bundles.get(version);
     if (existing && JSON.stringify(existing) !== JSON.stringify(bundle))
@@ -419,10 +451,11 @@ export class AgentConfigStore {
           if (readFileSync(join(final, path), "utf8") !== content)
             throw new Error("config_immutable_version_conflict");
       }
-      this.atomicWrite(join(this.options.cacheDir, "active.json"), JSON.stringify({ version }));
+      if (activate)
+        this.atomicWrite(join(this.options.cacheDir, "active.json"), JSON.stringify({ version }));
     }
     this.bundles.set(version, bundle);
-    this.active = bundle;
+    if (activate) this.active = bundle;
     return bundle;
   }
   async start(options?: ConfigStoreOptions): Promise<void> {
@@ -432,7 +465,20 @@ export class AgentConfigStore {
       try {
         if (existsSync(pointer))
           this.active = this.get(JSON.parse(readFileSync(pointer, "utf8")).version);
+        if (this.active?.schemaVersion === 2) {
+          const noIO = new Proxy(
+            {},
+            {
+              get: () => () => {
+                throw new Error("config_factory_host_io_forbidden");
+              },
+            },
+          );
+          for (const role of Object.keys(this.active.roles))
+            await this.toolsFor(this.active.version, role, noIO);
+        }
       } catch {
+        this.active = undefined;
         this.lastRefreshError = "config_cache_invalid";
         process.stderr.write(
           "Agent configuration: config_cache_invalid; no active configuration\n",
