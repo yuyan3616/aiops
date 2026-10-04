@@ -1,6 +1,6 @@
 import { normalizeConversationIds } from "@server/conversation/batch-delete";
 import type { ConversationService } from "@server/conversation/service";
-import type { RcaService } from "@server/rca/service";
+import { RcaServiceError, type RcaService } from "@server/rca/service";
 import { jsonBody } from "@server/utils";
 import type { ConversationConfigUpdate, StreamEvent } from "@shared/types";
 import { Hono } from "hono";
@@ -23,9 +23,7 @@ export function createConversationRoutes(
 
   conversationApp.post("/batch-delete", async (ctx) => {
     const body = await jsonBody<{ ids?: unknown }>(ctx.req.raw);
-    const deletedIds = await conversationService.deleteMany(
-      normalizeConversationIds(body.ids),
-    );
+    const deletedIds = await conversationService.deleteMany(normalizeConversationIds(body.ids));
     return ctx.json({ deletedIds });
   });
 
@@ -96,7 +94,14 @@ export function createConversationRoutes(
       }
     }
 
-    await conversationService.send(conversationId, userInput, skills);
+    try {
+      await conversationService.send(conversationId, userInput, skills);
+    } catch (error) {
+      if (error instanceof RcaServiceError && error.code === "legacy_read_only") {
+        return ctx.json({ error: error.message, code: error.code }, 409);
+      }
+      throw error;
+    }
     return ctx.json({ accepted: true }, 202);
   });
 

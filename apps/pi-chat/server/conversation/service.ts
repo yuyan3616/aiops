@@ -18,7 +18,7 @@ import {
   unavailableConversationRcaContext,
 } from "@server/rca/conversation-context";
 import { createRcaMainAgentTools } from "@server/rca/main-agent-tools";
-import type { RcaService } from "@server/rca/service";
+import { RcaServiceError, type RcaService } from "@server/rca/service";
 import type { Investigation } from "@server/rca/types";
 import { hasSameStringItems } from "@server/utils";
 import type {
@@ -162,6 +162,14 @@ export class ConversationService {
       throw new Error("User input cannot be empty.");
     }
 
+    const context = await this.resolveRcaContext(conversationId);
+    if (context.sourceKind === "legacy") {
+      throw new RcaServiceError(
+        "legacy_read_only",
+        "这条历史调查使用的 RCA100 数据源已停用，目前仅支持查看已有记录，无法继续调查。需要排查真实系统时，请新建 Live 会话。",
+      );
+    }
+
     const loadSkillsResult = loadSkillsFromDir({
       dir: this.globalConfig.skillsDir,
       source: "project",
@@ -248,6 +256,9 @@ export class ConversationService {
           state: rcaContext.state,
           ...(rcaContext.investigationId ? { investigationId: rcaContext.investigationId } : {}),
           ...(rcaContext.caseId ? { caseId: rcaContext.caseId } : {}),
+          ...(rcaContext.sourceKind ? { sourceKind: rcaContext.sourceKind } : {}),
+          ...(rcaContext.incident?.target ? { target: rcaContext.incident.target } : {}),
+          ...(rcaContext.incident?.window ? { window: rcaContext.incident.window } : {}),
           ...(rcaContext.symptom ? { symptom: rcaContext.symptom } : {}),
           ...(rcaContext.rounds !== undefined ? { rounds: rcaContext.rounds } : {}),
           ...(rcaContext.rootCauseStatus ? { rootCauseStatus: rcaContext.rootCauseStatus } : {}),
@@ -572,7 +583,11 @@ export class ConversationService {
         if (!managed || !investigation.rootCause) return;
         this.pendingTitleRefinements.set(conversationRecord.id, {
           input: {
-            caseId: investigation.caseId,
+            caseId:
+              investigation.caseId ??
+              investigation.context?.target.service ??
+              investigation.context?.target.entity ??
+              investigation.id,
             summary: investigation.rootCause.summary ?? report,
             rootCauseEntities: investigation.rootCause.rootCauseEntities ?? [],
           },

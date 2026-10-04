@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { InvestigationRepository } from "./repository";
+import { RcaService } from "./service";
 import type { Investigation, RCAResult } from "./types";
 
 test("restart recovery closes running RCA work and is idempotent", async (t) => {
@@ -36,25 +37,29 @@ test("restart recovery closes running RCA work and is idempotent", async (t) => 
     hypotheses: [],
     observations: [],
     evidence: [],
-    expertTasks: [{
-      id: "T01",
-      expert: "trace",
-      objective: "locate latency",
-      status: "running",
-      hypothesisIds: [],
-      toolCallIds: ["C01"],
-      evidenceIds: [],
-      implementation: "pi-session",
-      createdAt: "2026-09-28T00:00:00.000Z",
-    }],
-    toolCalls: [{
-      id: "C01",
-      expertTaskId: "T01",
-      tool: "query_traces",
-      query: { service: "checkout" },
-      status: "running",
-      startedAt: "2026-09-28T00:00:00.000Z",
-    }],
+    expertTasks: [
+      {
+        id: "T01",
+        expert: "trace",
+        objective: "locate latency",
+        status: "running",
+        hypothesisIds: [],
+        toolCallIds: ["C01"],
+        evidenceIds: [],
+        implementation: "pi-session",
+        createdAt: "2026-09-28T00:00:00.000Z",
+      },
+    ],
+    toolCalls: [
+      {
+        id: "C01",
+        expertTaskId: "T01",
+        tool: "query_traces",
+        query: { service: "checkout" },
+        status: "running",
+        startedAt: "2026-09-28T00:00:00.000Z",
+      },
+    ],
     rounds: 1,
     startedAt: "2026-09-28T00:00:00.000Z",
   };
@@ -97,12 +102,14 @@ test("restart recovery closes running RCA work and is idempotent", async (t) => 
       "investigation.interrupted",
     ],
   );
-  assert.deepEqual(events.map((event) => event.id), [1, 2, 3, 4, 5]);
+  assert.deepEqual(
+    events.map((event) => event.id),
+    [1, 2, 3, 4, 5],
+  );
 
   assert.deepEqual(await repository.recoverInterrupted(), []);
   assert.equal((await repository.listEvents("INV-test")).length, 5);
 });
-
 
 test("terminal RCA state cannot be regressed by a stale whole-document save", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "pi-chat-rca-terminal-"));
@@ -133,25 +140,29 @@ test("terminal RCA state cannot be regressed by a stale whole-document save", as
     hypotheses: [],
     observations: [],
     evidence: [],
-    expertTasks: [{
-      id: "T01",
-      expert: "trace",
-      objective: "locate latency",
-      status: "running",
-      hypothesisIds: [],
-      toolCallIds: ["C01"],
-      evidenceIds: [],
-      implementation: "pi-session",
-      createdAt: "2026-09-28T00:00:00.000Z",
-    }],
-    toolCalls: [{
-      id: "C01",
-      expertTaskId: "T01",
-      tool: "query_traces",
-      query: { service: "checkout" },
-      status: "running",
-      startedAt: "2026-09-28T00:00:00.000Z",
-    }],
+    expertTasks: [
+      {
+        id: "T01",
+        expert: "trace",
+        objective: "locate latency",
+        status: "running",
+        hypothesisIds: [],
+        toolCallIds: ["C01"],
+        evidenceIds: [],
+        implementation: "pi-session",
+        createdAt: "2026-09-28T00:00:00.000Z",
+      },
+    ],
+    toolCalls: [
+      {
+        id: "C01",
+        expertTaskId: "T01",
+        tool: "query_traces",
+        query: { service: "checkout" },
+        status: "running",
+        startedAt: "2026-09-28T00:00:00.000Z",
+      },
+    ],
     rounds: 1,
     startedAt: "2026-09-28T00:00:00.000Z",
   };
@@ -214,3 +225,150 @@ test("persists Markdown report artifacts and reads legacy JSON reports", async (
   assert.equal(await repository.getReport(legacyId), report + "\n");
 });
 
+test("restart projection repair reconstructs missing Live events idempotently", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-chat-rca-projection-repair-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const repository = new InvestigationRepository(directory);
+  const investigation: Investigation = {
+    id: "INV-projection-repair",
+    status: "completed",
+    symptom: "checkout latency",
+    context: {
+      symptom: "checkout latency",
+      trigger: { type: "manual" },
+      window: {
+        from: "2026-10-04T00:00:00.000Z",
+        to: "2026-10-04T00:10:00.000Z",
+      },
+      target: { service: "checkout" },
+    },
+    formatVersion: 3,
+    source: { kind: "live", contractVersion: "1" },
+    creation: { requestHash: "projection" },
+    scope: { candidateEntities: ["checkout"] },
+    hypotheses: [],
+    observations: [
+      {
+        id: "O01",
+        investigationId: "INV-projection-repair",
+        modality: "trace",
+        toolCallId: "C01",
+        summary: "trace sample returned",
+        snapshotRef: "investigation://INV-projection-repair/evidence-snapshots/C01.json",
+        facts: { resultStatus: "success" },
+        createdAt: "2026-10-04T00:10:01.000Z",
+      },
+    ],
+    evidence: [
+      {
+        id: "E01",
+        investigationId: "INV-projection-repair",
+        modality: "trace",
+        timeRange: {
+          from: "2026-10-04T00:00:00.000Z",
+          to: "2026-10-04T00:10:00.000Z",
+        },
+        summary: "trace supports the conclusion",
+        rawRef: "tempo://query/search_traces",
+        snapshotRef: "investigation://INV-projection-repair/evidence-snapshots/C01.json",
+        supports: [],
+        contradicts: [],
+        sourceQuery: { target: { service: "checkout" } },
+        toolCallId: "C01",
+        facts: {},
+        createdAt: "2026-10-04T00:10:02.000Z",
+      },
+    ],
+    expertTasks: [],
+    toolCalls: [
+      {
+        id: "C01",
+        tool: "search_traces",
+        query: { target: { service: "checkout" } },
+        status: "completed",
+        resultSummary: "search_traces: success, returned 1",
+        resultStatus: "success",
+        snapshotRef: "investigation://INV-projection-repair/evidence-snapshots/C01.json",
+        startedAt: "2026-10-04T00:10:00.000Z",
+        completedAt: "2026-10-04T00:10:01.000Z",
+      },
+    ],
+    rootCause: {
+      investigationId: "INV-projection-repair",
+      status: "probable",
+      rootCauseEntities: ["checkout"],
+      summary: "checkout is the best-supported source",
+      evidenceIds: ["E01"],
+      rejectedHypotheses: [],
+      confidence: 0.7,
+    },
+    rounds: 1,
+    startedAt: "2026-10-04T00:00:00.000Z",
+    completedAt: "2026-10-04T00:11:00.000Z",
+  };
+  await repository.save(investigation);
+
+  assert.deepEqual(await repository.recoverProjections(), [investigation.id]);
+  const repairedJournal = await readFile(
+    join(repository.directory(investigation.id), "tool-calls.jsonl"),
+    "utf8",
+  );
+  assert.equal(repairedJournal.trim().split("\n").length, 1);
+  assert.equal(JSON.parse(repairedJournal).id, "C01");
+  assert.deepEqual(
+    (await repository.listEvents(investigation.id)).map((event) => event.type),
+    ["tool.completed", "observation.created", "evidence.created", "investigation.completed"],
+  );
+  assert.deepEqual(await repository.recoverProjections(), []);
+});
+
+test("restart report recovery rebuilds missing Live report artifacts idempotently", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-chat-rca-report-recovery-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const repository = new InvestigationRepository(directory);
+  const investigation: Investigation = {
+    id: "INV-report-recovery",
+    status: "completed",
+    symptom: "checkout latency",
+    context: {
+      symptom: "checkout latency",
+      trigger: { type: "manual" },
+      window: {
+        from: "2026-10-04T00:00:00.000Z",
+        to: "2026-10-04T00:10:00.000Z",
+      },
+      target: { service: "checkout" },
+    },
+    formatVersion: 3,
+    source: { kind: "live", contractVersion: "1" },
+    creation: { requestHash: "report" },
+    scope: { candidateEntities: ["checkout"] },
+    hypotheses: [],
+    observations: [],
+    evidence: [],
+    expertTasks: [],
+    toolCalls: [],
+    rootCause: {
+      investigationId: "INV-report-recovery",
+      status: "inconclusive",
+      rootCauseEntities: [],
+      summary: "not enough evidence",
+      evidenceIds: [],
+      rejectedHypotheses: [],
+      confidence: 0.2,
+    },
+    rounds: 0,
+    startedAt: "2026-10-04T00:00:00.000Z",
+    completedAt: "2026-10-04T00:11:00.000Z",
+    schemaVersion: 2,
+    budgetLedger: [],
+  };
+  await repository.save(investigation);
+  assert.equal(await repository.hasReportArtifacts(investigation.id), false);
+
+  const service = new RcaService(repository);
+  assert.deepEqual(await service.recoverReports(), [investigation.id]);
+  assert.equal(await repository.hasReportArtifacts(investigation.id), true);
+  assert.match(await repository.getReport(investigation.id), /not enough evidence/);
+  assert.deepEqual(await service.recoverReports(), []);
+});

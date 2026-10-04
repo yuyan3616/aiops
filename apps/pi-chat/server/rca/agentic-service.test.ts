@@ -12,9 +12,23 @@ import type { Investigation } from "./types";
 function investigation(id: string): Investigation {
   return {
     id,
-    caseId: "t999",
     status: "running",
     symptom: "checkout latency",
+    context: {
+      symptom: "checkout latency",
+      trigger: { type: "manual" },
+      window: {
+        from: "2026-01-01T00:00:00.000Z",
+        to: "2026-01-01T00:10:00.000Z",
+      },
+      target: {
+        service: "checkout",
+        operation: "PlaceOrder",
+      },
+    },
+    formatVersion: 3,
+    source: { kind: "live", contractVersion: "1" },
+    creation: { requestHash: "fixture" },
     alertContext: {
       eventId: "evt",
       title: "checkout latency",
@@ -45,7 +59,7 @@ function investigation(id: string): Investigation {
     evidence: [
       {
         id: "E01",
-        caseId: "t999",
+        investigationId: id,
         modality: "trace",
         entity: "shipping",
         timeRange: {
@@ -53,7 +67,7 @@ function investigation(id: string): Investigation {
           to: "2026-01-01T00:10:00.000Z",
         },
         summary: "shipping latency rises in the incident window",
-        rawRef: "rca100://t999/traces",
+        rawRef: "tempo://query/search_traces",
         supports: [],
         contradicts: [],
         sourceQuery: { service: "shipping" },
@@ -66,6 +80,8 @@ function investigation(id: string): Investigation {
     toolCalls: [],
     rounds: 0,
     startedAt: "2026-01-01T00:10:00.000Z",
+    schemaVersion: 2,
+    budgetLedger: [],
   };
 }
 
@@ -82,7 +98,6 @@ test("Main Agent RCA tools expose explicit investigation controls instead of a b
     "start_rca_investigation",
     "resume_rca_investigation",
     "query_rca_overview",
-    "screen_rca_candidates",
     "update_hypotheses",
     "dispatch_investigations",
     "get_investigation_state",
@@ -103,7 +118,16 @@ test("Main Agent compact state excludes runtime accounting and diagnostics", asy
     termination: { reason: "provider_error", detail: "unavailable" },
   });
   const definitions = createRcaMainAgentTools({
-    rcaService: { get: async () => current } as unknown as RcaService,
+    rcaService: {
+      get: async () => current,
+      getBudgetProjection: () => ({
+        primary: { limit: 4, used: 0, reserved: 0, remaining: 4 },
+        recovery: { limit: 2, used: 0, reserved: 0, remaining: 2 },
+        safety: { taskIntents: 0, startedTasks: 0, toolExecutions: 0 },
+        runtime: { running: 0, maxPerInvestigation: 3, maxGlobal: 4 },
+        reservations: [],
+      }),
+    } as unknown as RcaService,
     conversationId: "conversation-compact",
     getModelRef: () => ({ provider: "test", id: "test" }),
     onProjection: () => {},
@@ -119,68 +143,6 @@ test("Main Agent compact state excludes runtime accounting and diagnostics", asy
   assert.equal(task.termination, "provider_error");
   assert.equal(task.usage, undefined);
   assert.equal(task.diagnostics, undefined);
-});
-
-test("screen_rca_candidates delegates a bounded candidate set to the RCA service", async () => {
-  let received:
-    | { investigationId: string; candidates: string[]; topNPerCandidate: number }
-    | undefined;
-  const fakeService = {
-    async queryCandidateCoverage(
-      investigationId: string,
-      candidates: string[],
-      topNPerCandidate: number,
-    ) {
-      received = { investigationId, candidates, topNPerCandidate };
-      return {
-        candidates: candidates.map((candidate, index) => ({
-          candidate,
-          evidenceId: `E0${index + 1}`,
-          toolCallId: `C0${index + 1}`,
-          summary: `${candidate} screened`,
-          result: {},
-        })),
-      };
-    },
-  } as unknown as RcaService;
-
-  const definitions = createRcaMainAgentTools({
-    rcaService: fakeService,
-    conversationId: "conversation-candidate-coverage",
-    getModelRef: () => ({ provider: "packy", id: "deepseek-flash" }),
-    onProjection: () => {},
-    onLinkInvestigation: () => {},
-  });
-  const tool = definitions.find((item) => item.name === "screen_rca_candidates");
-  assert.ok(tool);
-
-  const execute = tool.execute as unknown as (
-    toolCallId: string,
-    parameters: {
-      investigationId: string;
-      candidates: string[];
-      topNPerCandidate?: number;
-    },
-  ) => Promise<{ content: Array<{ type: string; text: string }> }>;
-
-  const response = await execute("call-screen", {
-    investigationId: "INV-screen",
-    candidates: ["checkout", "shipping", "email"],
-    topNPerCandidate: 4,
-  });
-  const payload = JSON.parse(response.content[0]?.text ?? "{}") as {
-    candidates?: Array<{ candidate?: string }>;
-  };
-
-  assert.deepEqual(received, {
-    investigationId: "INV-screen",
-    candidates: ["checkout", "shipping", "email"],
-    topNPerCandidate: 4,
-  });
-  assert.deepEqual(
-    payload.candidates?.map((item) => item.candidate),
-    ["checkout", "shipping", "email"],
-  );
 });
 
 test("start_rca_investigation does not implicitly replace a linked investigation", async () => {
@@ -210,10 +172,22 @@ test("start_rca_investigation does not implicitly replace a linked investigation
   assert.ok(start);
   const executeStart = start.execute as unknown as (
     toolCallId: string,
-    parameters: { caseId: string; forceNew?: boolean },
+    parameters: {
+      symptom: string;
+      target: { service: string; operation?: string };
+      window: { from: string; to: string };
+      forceNew?: boolean;
+    },
   ) => Promise<{ content: Array<{ type: string; text: string }> }>;
 
-  const result = await executeStart("call-start", { caseId: "t039" });
+  const result = await executeStart("call-start", {
+    symptom: "checkout latency",
+    target: { service: "checkout", operation: "PlaceOrder" },
+    window: {
+      from: "2026-01-01T00:00:00.000Z",
+      to: "2026-01-01T00:10:00.000Z",
+    },
+  });
   const payload = JSON.parse(result.content[0]?.text ?? "{}") as {
     started?: boolean;
     recommendedAction?: string;
@@ -233,6 +207,8 @@ test("cancelling an active RCA terminalizes expert tasks and tools before cleanu
     const repository = new InvestigationRepository(directory);
     const service = new RcaService(repository);
     const current = investigation("INV-agentic-cancel");
+    current.schemaVersion = undefined;
+    current.budgetLedger = undefined;
     current.expertTasks.push({
       id: "T01",
       expert: "trace",
@@ -247,8 +223,8 @@ test("cancelling an active RCA terminalizes expert tasks and tools before cleanu
     current.toolCalls.push({
       id: "C02",
       expertTaskId: "T01",
-      tool: "query_traces",
-      query: { caseId: "t999", service: "checkout" },
+      tool: "search_traces",
+      query: { target: { service: "checkout" } },
       status: "running",
       startedAt: "2026-01-01T00:10:00.000Z",
     });
@@ -328,7 +304,7 @@ test("user steering interrupts only the active dispatch and keeps the investigat
         hypothesisIds: ["H01"],
         context: {
           alertSummary: "checkout latency",
-          mainWindow: current.alertContext.window,
+          mainWindow: current.context!.window,
           knownFacts: [],
         },
         expected: ["Return a tool-backed finding."],
@@ -342,11 +318,14 @@ test("user steering interrupts only the active dispatch and keeps the investigat
       "14:02 checkout 做过一次手工发布",
     );
     assert.equal(intervention?.id, "UI01");
-    assert.equal(service.interruptActiveDispatch(current.id), true);
+    assert.equal(service.interruptActiveDispatch(current.id), false);
 
     const outcome = await dispatchPromise;
     assert.equal(outcome.interrupted, true);
-    assert.deepEqual(outcome.findings, []);
+    assert.equal(outcome.findings.length, 1);
+    assert.equal(outcome.findings[0]?.status, "cancelled");
+    assert.equal(outcome.findings[0]?.termination, "aborted");
+    assert.deepEqual(outcome.findings[0]?.evidenceIds, []);
 
     const persisted = await repository.get(current.id);
     assert.equal(persisted.status, "running");
@@ -865,150 +844,46 @@ test("Main Agent overview mutations are serialized so parallel calls cannot allo
 });
 
 
-test("compact metric results omit raw samples while preserving aggregate signals", async () => {
+test("compact metric result enforces the Live Agent 32 KiB text budget", async () => {
   const { compactToolResultForAgent } = await import("./tools");
   const compact = compactToolResultForAgent("query_metrics", {
-    caseId: "t999",
-    modality: "metric",
-    query: { metric: "cpu_usage_total" },
-    matchedRows: 100,
-    returnedRows: 20,
-    truncated: false,
-    rawRef: "rca100://t999/metrics.parquet?q=x",
+    status: "success",
+    query: { operation: "query_metrics", metric: "cpu_usage_total" },
+    timeRange: { from: "2026-01-01T00:00:00Z", to: "2026-01-01T00:10:00Z" },
+    retrievedAt: "2026-01-01T00:10:01Z",
+    backendAlias: "prometheus",
+    contractVersion: "1",
+    warnings: [],
+    truncationReasons: [],
     data: {
-      anomalies: Array.from({ length: 20 }, (_, index) => ({
-        entitySet: "service",
-        entity: `svc-${index}`,
-        metric: "cpu_usage_total",
-        baselineCount: 10,
-        incidentCount: 5,
-        baselineMedian: 1,
-        incidentMedian: 0.5,
-        baselineP95: 1.2,
-        incidentP95: 0.7,
-        ratio: 0.5,
-        robustZ: -3,
-        direction: "decrease",
-        score: 3,
-        rawRef: "raw",
-      })),
-      peerOutliers: Array.from({ length: 20 }, (_, index) => ({
-        entitySet: "service",
-        entity: `svc-${index}`,
-        metric: "cpu_usage_total",
-        incidentMedian: 0.5,
-        peerMedian: 1,
-        ratio: 0.5,
-        rawRef: "raw",
-      })),
-      sample: Array.from({ length: 20 }, (_, index) => ({
-        time: `2026-01-01T00:00:${String(index).padStart(2, "0")}Z`,
-        value: index,
+      series: Array.from({ length: 20 }, (_, index) => ({
+        labels: { service: `svc-${index}` },
+        points: Array.from({ length: 100 }, (_, point) => ({
+          timestamp: `2026-01-01T00:${String(Math.floor(point / 6)).padStart(2, "0")}:00Z`,
+          value: point,
+        })),
       })),
     },
-  }) as {
-    data: {
-      anomalies: unknown[];
-      peerOutliers: unknown[];
-      sampleOmitted: number;
-      directionCounts: { increase: number; decrease: number; flat: number };
-      sample?: unknown[];
-    };
-  };
-
-  assert.equal(compact.data.anomalies.length, 12);
-  assert.equal(compact.data.peerOutliers.length, 8);
-  assert.equal(compact.data.sampleOmitted, 20);
-  assert.equal("sample" in compact.data, false);
-  assert.equal(compact.data.directionCounts.decrease, 12);
+  });
+  assert.ok(Buffer.byteLength(JSON.stringify(compact), "utf8") <= 32 * 1024);
+  assert.equal(
+    Boolean(
+      compact &&
+        typeof compact === "object" &&
+        !Array.isArray(compact) &&
+        (compact as { agentTextTruncated?: boolean }).agentTextTruncated,
+    ),
+    true,
+  );
 });
-
-test("agentic tool success persists an observation independently from evidence", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "pi-chat-observation-"));
-  try {
-    const repository = new InvestigationRepository(directory);
-    const current = investigation("INV-agentic-observation");
-    current.observations = [];
-    await repository.save(current);
-
-    const fakeTools = {
-      execute: async () => ({
-        tool: "query_metrics",
-        arguments: {},
-        result: {
-          caseId: "t999",
-          modality: "metric",
-          query: {},
-          matchedRows: 10,
-          returnedRows: 1,
-          truncated: false,
-          rawRef: "rca100://t999/metrics.parquet?q=x",
-          data: {
-            anomalies: [{
-              entitySet: "service",
-              entity: "email",
-              metric: "cpu_usage_total",
-              baselineCount: 10,
-              incidentCount: 5,
-              baselineMedian: 1,
-              incidentMedian: 0.5,
-              baselineP95: 1.2,
-              incidentP95: 0.7,
-              ratio: 0.5,
-              robustZ: -3,
-              direction: "decrease",
-              score: 3,
-              rawRef: "raw",
-            }],
-            peerOutliers: [],
-            sample: [{ time: "2026-01-01T00:00:00Z", value: 0.5 }],
-          },
-        },
-        rawRef: "rca100://t999/metrics.parquet?q=x",
-        summary: "query_metrics: matched 10, returned 1",
-      }),
-    };
-
-    const service = new RcaService(
-      repository,
-      undefined,
-      fakeTools as never,
-    );
-    const bus = await (service as unknown as {
-      busFor(id: string): Promise<unknown>;
-    }).busFor(current.id);
-    const recorded = await (service as unknown as {
-      invokeRecordedTool(
-        investigation: Investigation,
-        bus: unknown,
-        tool: "query_metrics",
-        arguments_: Record<string, unknown>,
-      ): Promise<{ observationId?: string }>;
-    }).invokeRecordedTool(current, bus, "query_metrics", {
-      caseId: "t999",
-      from: current.alertContext.window.from,
-      to: current.alertContext.window.to,
-    });
-
-    assert.equal(recorded.observationId, "O01");
-    const saved = await repository.get(current.id);
-    assert.equal(saved.observations?.length, 1);
-    assert.equal(saved.evidence.length, 1);
-    assert.equal(saved.observations?.[0]?.toolCallId, "C01");
-    assert.match(saved.observations?.[0]?.summary ?? "", /email cpu_usage_total/);
-    assert.ok(saved.toolCalls[0]?.runtime?.before.rssMb);
-    assert.ok(saved.toolCalls[0]?.runtime?.after?.rssMb);
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
-});
-
 
 test("recoverInterrupted marks active investigations interrupted and resumable", async () => {
   const directory = await mkdtemp(join(tmpdir(), "pi-chat-recover-"));
   try {
     const repository = new InvestigationRepository(directory);
     const current = investigation("INV-recoverable-restart");
+    current.schemaVersion = undefined;
+    current.budgetLedger = undefined;
     current.status = "running";
     current.expertTasks.push({
       id: "T01",
@@ -1126,7 +1001,7 @@ test("dispatch rejects a baseline window that overlaps the main incident window"
           expected: ["state whether saturation is present"],
         },
       ]),
-      /baselineWindow overlaps mainWindow/,
+      /baselineWindow overlaps|overlaps or invalidates mainWindow/,
     );
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -1134,72 +1009,36 @@ test("dispatch rejects a baseline window that overlaps the main incident window"
 });
 
 
-test("compact trace results bound critical-path context while preserving raw refs", async () => {
+test("compact trace result enforces the Live Agent 32 KiB text budget", async () => {
   const { compactToolResultForAgent } = await import("./tools");
-  const node = (index: number) => ({
-    service: `svc-${index}`,
-    operation: `op-${index}`,
-    host: `host-${index}`,
-    startTime: "2026-01-01T00:00:00.000Z",
-    endTime: "2026-01-01T00:00:01.000Z",
-    durationMs: 1000 - index,
-    spanId: `s-${index}`,
-    parentSpanId: index ? `s-${index - 1}` : undefined,
-    statusCode: "OK",
-  });
-  const compact = compactToolResultForAgent("query_traces", {
-    caseId: "t999",
-    modality: "trace",
-    query: { service: "checkout" },
-    matchedRows: 100,
-    returnedRows: 50,
-    truncated: true,
-    rawRef: "rca100://t999/traces.parquet?q=x",
+  const compact = compactToolResultForAgent("search_traces", {
+    status: "success",
+    query: { operation: "search_traces", target: { service: "checkout" } },
+    timeRange: { from: "2026-01-01T00:00:00Z", to: "2026-01-01T00:10:00Z" },
+    retrievedAt: "2026-01-01T00:10:01Z",
+    backendAlias: "tempo",
+    contractVersion: "1",
+    warnings: [],
+    truncationReasons: [],
     data: {
-      anomalies: Array.from({ length: 15 }, (_, index) => ({
-        service: `svc-${index}`,
-        operation: `op-${index}`,
-        host: `host-${index}`,
-        baselineCount: 10,
-        incidentCount: 5,
-        baselineP95Ms: 10,
-        incidentP95Ms: 100,
-        ratio: 10,
-        maxIncidentMs: 200,
-        rawRef: `raw-${index}`,
-      })),
-      topSpans: Array.from({ length: 20 }, (_, index) => node(index)),
-      criticalPaths: Array.from({ length: 6 }, (_, index) => ({
-        traceId: `trace-${index}`,
-        totalDurationMs: 1000,
-        path: Array.from({ length: 15 }, (_, nodeIndex) => node(nodeIndex)),
-        rawRef: `trace-raw-${index}`,
-      })),
-      propagationCandidates: Array.from({ length: 15 }, (_, index) => ({
-        service: `svc-${index}`,
-        operation: `op-${index}`,
-        observations: 5,
-        medianDurationMs: 100,
+      traces: Array.from({ length: 50 }, (_, index) => ({
+        traceId: String(index + 1).padStart(32, "0"),
+        rootService: "checkout",
+        rootOperation: "PlaceOrder",
+        detail: "x".repeat(2048),
       })),
     },
-  }) as {
-    data: {
-      anomalies: unknown[];
-      topSpans: unknown[];
-      criticalPaths: Array<{ path: unknown[]; pathNodesOmitted: number; rawRef: string }>;
-      propagationCandidates: unknown[];
-      omitted: Record<string, number>;
-    };
-  };
-
-  assert.equal(compact.data.anomalies.length, 8);
-  assert.equal(compact.data.topSpans.length, 10);
-  assert.equal(compact.data.criticalPaths.length, 3);
-  assert.equal(compact.data.criticalPaths[0]?.path.length, 8);
-  assert.equal(compact.data.criticalPaths[0]?.pathNodesOmitted, 7);
-  assert.equal(compact.data.criticalPaths[0]?.rawRef, "trace-raw-0");
-  assert.equal(compact.data.propagationCandidates.length, 8);
-  assert.equal(compact.data.omitted.anomalies, 7);
+  });
+  assert.ok(Buffer.byteLength(JSON.stringify(compact), "utf8") <= 32 * 1024);
+  assert.equal(
+    Boolean(
+      compact &&
+        typeof compact === "object" &&
+        !Array.isArray(compact) &&
+        (compact as { agentTextTruncated?: boolean }).agentTextTruncated,
+    ),
+    true,
+  );
 });
 
 test("conclusion rejects any hypothesis left outside selected rejected or unresolved buckets", async () => {

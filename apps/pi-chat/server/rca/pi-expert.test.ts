@@ -1,40 +1,101 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  createAgentSession,
-  type ModelRuntime,
-} from "@earendil-works/pi-coding-agent";
+import { createAgentSession, type ModelRuntime } from "@earendil-works/pi-coding-agent";
 
+import { LIVE_LIMITS } from "./live/types";
 import { PiExpertRunner } from "./pi-expert";
-import type {
-  Investigation,
-  InvestigationBrief,
-  RcaTask,
-} from "./types";
 import type { ObservabilityToolRegistry } from "./tools";
+import type { Investigation, InvestigationBrief, RcaTask } from "./types";
 
 type SessionFactoryOptions = NonNullable<Parameters<typeof createAgentSession>[0]>;
 type CreatedSession = Awaited<ReturnType<typeof createAgentSession>>;
 type FakeEventListener = (event: unknown) => void;
 type FakeTool = {
   name: string;
-  execute: (
-    toolCallId: string,
-    parameters: Record<string, unknown>,
-  ) => Promise<unknown>;
+  execute: (toolCallId: string, parameters: Record<string, unknown>) => Promise<unknown>;
 };
+
+test("专家累计结果达到128KiB预算前停止新取证，单条最终文本不超过32KiB", async () => {
+  let active: string[] = [];
+  let calls = 0;
+  let totalBytes = 0;
+  const createSession = (async (options: SessionFactoryOptions) => {
+    const tools = options.customTools as unknown as FakeTool[];
+    const search = tools.find((tool) => tool.name === "search_traces")!;
+    const submit = tools.find((tool) => tool.name === "submit_finding")!;
+    return {
+      session: {
+        sessionManager: { getSessionId: () => "byte-budget-session" },
+        setActiveToolsByName(names: string[]) {
+          active = names;
+        },
+        subscribe() {
+          return () => {};
+        },
+        async prompt() {
+          while (active.includes("search_traces")) {
+            try {
+              const result = (await search.execute(`query-${calls}`, {})) as {
+                content: Array<{ text: string }>;
+              };
+              const bytes = Buffer.byteLength(result.content[0]!.text);
+              assert.ok(bytes <= LIVE_LIMITS.maxAgentToolBytes);
+              totalBytes += bytes;
+            } catch (error) {
+              assert.match(String(error), /累计结果预算/);
+            }
+          }
+          assert.deepEqual(active, ["submit_finding"]);
+          await submit.execute("submit", successfulFinding(`C${calls}`));
+        },
+        abort() {},
+        dispose() {},
+      },
+    } as unknown as CreatedSession;
+  }) as typeof createAgentSession;
+  const context = fixture();
+  const runner = new PiExpertRunner({} as ModelRuntime, fakeRegistry(), createSession);
+  await runner.run({
+    ...context,
+    invoke: async () => {
+      calls++;
+      return {
+        callId: `C${calls}`,
+        execution: {
+          summary: "bounded",
+          result: {
+            data: { traces: Array.from({ length: 15 }, () => ({ text: "x".repeat(2000) })) },
+          },
+        },
+      };
+    },
+  });
+  assert.ok(calls < 12);
+  assert.ok(calls > 1);
+  assert.ok(totalBytes <= LIVE_LIMITS.maxExpertResultBytes);
+});
 
 function fixture() {
   const investigation = {
     id: "INV-test",
-    caseId: "t039",
     status: "running",
     symptom: "checkout latency",
+    context: {
+      symptom: "checkout latency",
+      trigger: { type: "manual" },
+      window: {
+        from: "2026-04-28T01:18:30.000Z",
+        to: "2026-04-28T01:27:55.000Z",
+      },
+      target: { service: "checkout", operation: "PlaceOrder" },
+    },
+    formatVersion: 3,
+    source: { kind: "live", contractVersion: "1" },
     hypotheses: [
       {
         id: "H01",
-        statement: "event/topology change is causal",
+        statement: "trace latency propagation is causal",
         status: "investigating",
         confidence: 0.4,
         supportingEvidenceIds: [],
@@ -45,8 +106,8 @@ function fixture() {
   } as unknown as Investigation;
 
   const brief: InvestigationBrief = {
-    role: "event-topology",
-    question: "Check whether event/topology evidence supports H01.",
+    role: "trace",
+    question: "Check whether trace evidence supports H01.",
     hypothesisIds: ["H01"],
     context: {
       alertSummary: "checkout PlaceOrder latency increased",
@@ -60,25 +121,11 @@ function fixture() {
     expected: ["Return a tool-backed finding."],
   };
 
-  const task = {
-    caseId: "t039",
-    version: "runtime",
-    alert: {
-      eventId: "t039",
-      title: "checkout PlaceOrder latency increased",
-      triggerTime: "2026-04-28T01:27:55.000Z",
-      window: brief.context.mainWindow,
-      entity: {
-        id: "checkout",
-        name: "checkout",
-        type: "service",
-        domain: "otel-demo",
-      },
-      service: "checkout",
-      operation: "PlaceOrder",
-    },
-    availableModalities: ["event", "topology", "alert"],
-  } as RcaTask;
+  const task: RcaTask = {
+    version: "live-v1",
+    context: investigation.context,
+    availableModalities: ["trace"],
+  };
 
   return { investigation, brief, task };
 }
@@ -111,15 +158,15 @@ function successfulFinding(toolCallId?: string) {
     strength: toolCallId ? "moderate" : "inconclusive",
     verdict: toolCallId ? "supports" : "no-signal",
     summary: toolCallId
-      ? "Event evidence supports H01 after bounded investigation."
+      ? "Trace evidence supports H01 after bounded investigation."
       : "No additional event evidence was required.",
-    conclusions: [toolCallId ? "The collected event signal is relevant." : "No signal."],
+    conclusions: [toolCallId ? "The collected trace signal is relevant." : "No signal."],
     evidenceClaims: toolCallId
       ? [
           {
             toolCallId,
-            modality: "event",
-            summary: "The recorded event query returned the relevant signal.",
+            modality: "trace",
+            summary: "The recorded trace query returned the relevant signal.",
             supports: ["H01"],
             contradicts: [],
           },
@@ -130,21 +177,19 @@ function successfulFinding(toolCallId?: string) {
   };
 }
 
-test("event-topology 工具调用满 12 次后在同一 Session 切换到 submit_finding", async () => {
+test("Trace 工具调用满 12 次后在同一 Session 切换到 submit_finding", async () => {
   const sessionOptions: SessionFactoryOptions[] = [];
   const activeToolTransitions: string[][] = [];
   let activeTools: string[] = [];
   let promptCount = 0;
 
-  const createSession = (async (
-    options: SessionFactoryOptions,
-  ): Promise<CreatedSession> => {
+  const createSession = (async (options: SessionFactoryOptions): Promise<CreatedSession> => {
     sessionOptions.push(options);
     const listeners = new Set<FakeEventListener>();
     const tools = (options.customTools ?? []) as unknown as FakeTool[];
-    const queryEvents = tools.find((item) => item.name === "query_events");
+    const queryEvents = tools.find((item) => item.name === "search_traces");
     const submitFinding = tools.find((item) => item.name === "submit_finding");
-    assert.ok(queryEvents, "session should register query_events");
+    assert.ok(queryEvents, "session should register search_traces");
     assert.ok(submitFinding, "session should register submit_finding");
 
     const session = {
@@ -162,14 +207,13 @@ test("event-topology 工具调用满 12 次后在同一 Session 切换到 submit
       async prompt() {
         promptCount += 1;
         assert.equal(promptCount, 1, "max-budget handoff should finish in the original run");
-        assert.equal(activeTools.includes("query_events"), true);
+        assert.equal(activeTools.includes("search_traces"), true);
         assert.equal(activeTools.includes("submit_finding"), false);
 
         for (let i = 0; i < 12; i++) {
           await queryEvents.execute("model-tool-" + (i + 1), {
-            caseId: "t039",
-            from: "2026-04-28T01:18:30.000Z",
-            to: "2026-04-28T01:27:55.000Z",
+            target: { service: "checkout" },
+            window: { kind: "incident" },
             limit: 1,
           });
         }
@@ -212,7 +256,7 @@ test("event-topology 工具调用满 12 次后在同一 Session 切换到 submit
         execution: {
           result: {
             caseId: "t039",
-            modality: "event",
+            modality: "trace",
             matchedRows: 1,
             returnedRows: 1,
             data: { events: [{ id: recorded }] },
@@ -242,9 +286,7 @@ test("专家提前结束取证时仍在同一 Session 进入 Finalize Phase", as
   let activeTools: string[] = [];
   let promptCount = 0;
 
-  const createSession = (async (
-    options: SessionFactoryOptions,
-  ): Promise<CreatedSession> => {
+  const createSession = (async (options: SessionFactoryOptions): Promise<CreatedSession> => {
     sessionOptions.push(options);
     const listeners = new Set<FakeEventListener>();
     const tools = (options.customTools ?? []) as unknown as FakeTool[];

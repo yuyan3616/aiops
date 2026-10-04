@@ -16,3 +16,5 @@
 11. 如果 brief 用于 candidate coverage，不要只汇报最极端 latency anomaly；优先寻找能区分主要结构相关候选的 incident-window 变化，尤其是 throughput/request_count、latency、error/availability 的同步变化。coverage 目标是避免漏掉合理候选，不是扫描所有 metric。
 
 你的任务是确认假设中的 metric 行为是否真实、是否为 incident-specific，以及它是否具有实质相关性。
+12. 必须先 discover_metrics 再 query_metrics。Counter 只使用 rate/increase 等 reset-aware 语义；classic Histogram quantile 是估算值；Gauge 使用 raw/聚合，不要套用 Counter reset 语义。
+13. 当前 Target 已确认 exemplars=false，provider attempt lifecycle 不可用；不要把 provider generation 当成 attempt，也不要声称存在 exemplar 关联。

@@ -18,6 +18,15 @@ function fixture(id: string): Investigation {
     budgetLedger: [],
     status: "running",
     symptom: "checkout latency",
+    context: {
+      symptom: "checkout latency",
+      trigger: { type: "manual" },
+      window: { from: "2026-09-28T00:00:00Z", to: "2026-09-28T00:10:00Z" },
+      target: { service: "checkout", operation: "PlaceOrder" },
+    },
+    formatVersion: 3,
+    source: { kind: "live", contractVersion: "1" },
+    creation: { requestHash: "budget-v2-fixture" },
     alertContext: {
       eventId: "evt",
       title: "checkout latency",
@@ -405,7 +414,7 @@ test("completed tool work commits Primary even if a transient model failure foll
     const invoke = (
       context as { invoke: (tool: string, args: Record<string, unknown>) => Promise<unknown> }
     ).invoke;
-    await invoke("query_traces", { caseId: "t039" });
+    await invoke("search_traces", { target: { service: "checkout" }, window: { kind: "incident" } });
     throw new PiExpertRunError(
       "provider temporarily unavailable",
       {
@@ -423,10 +432,42 @@ test("completed tool work commits Primary even if a transient model failure foll
   t.after(() => rm(state.directory, { recursive: true, force: true }));
   Object.assign(state.service, {
     tools: {
-      execute: async () => ({
-        result: { rawRef: "test://trace", data: {} },
-        summary: "trace queried",
-        rawRef: "test://trace",
+      prepare: (
+        tool: "search_traces",
+        arguments_: Record<string, unknown>,
+        investigation: Investigation,
+      ) => ({
+        tool,
+        arguments: arguments_,
+        target: investigation.context!.target,
+        window: investigation.context!.window,
+      }),
+      executePrepared: async (
+        _investigationId: string,
+        prepared: {
+          tool: "search_traces";
+          arguments: Record<string, unknown>;
+          window: { from: string; to: string };
+        },
+      ) => ({
+        tool: prepared.tool,
+        arguments: prepared.arguments,
+        result: {
+          status: "success",
+          query: { operation: "search_traces" },
+          timeRange: prepared.window,
+          retrievedAt: "2026-09-28T00:10:01Z",
+          backendAlias: "tempo",
+          contractVersion: "1",
+          data: { traces: [{ traceId: "00000000000000000000000000000001" }] },
+          warnings: [],
+          truncationReasons: [],
+        },
+        summary: "search_traces: success, returned 1",
+        resultStatus: "success",
+        actualWindow: prepared.window,
+        backendAlias: "tempo",
+        rawRef: "tempo://query/search_traces",
       }),
     },
   });
@@ -697,4 +738,99 @@ test("pending tasks released by repeated steering still exhaust the intent Safet
       }),
     /safety limit reached: task intents/,
   );
+});
+
+
+test("three Specialists may settle out of order without corrupting Budget or task identity", async (t) => {
+  const resolvers = new Map<string, (value: unknown) => void>();
+  let started = 0;
+  let markAllStarted!: () => void;
+  const startedBarrier = new Promise<void>((resolve) => {
+    markAllStarted = resolve;
+  });
+  const state = await setup("INV-v2-out-of-order", async (context: unknown) => {
+    const question = (context as { brief: InvestigationBrief }).brief.question;
+    started++;
+    if (started === 3) markAllStarted();
+    return new Promise((resolve) => {
+      resolvers.set(question, resolve);
+    });
+  });
+  t.after(() => rm(state.directory, { recursive: true, force: true }));
+
+  const dispatch = state.service.dispatchAgentic(
+    "INV-v2-out-of-order",
+    [brief("first"), brief("second"), brief("third")],
+    { dispatchOperationId: "op-out-of-order" },
+  );
+  await startedBarrier;
+  resolvers.get("third")!(await success());
+  await new Promise((resolve) => setTimeout(resolve, 1));
+  resolvers.get("first")!(await success());
+  await new Promise((resolve) => setTimeout(resolve, 1));
+  resolvers.get("second")!(await success());
+
+  const result = await dispatch;
+  assert.deepEqual(result.findings.map((item) => item.taskRef), ["T01", "T02", "T03"]);
+  const persisted = await state.repository.get("INV-v2-out-of-order");
+  assert.deepEqual(persisted.expertTasks.map((task) => task.status), [
+    "completed",
+    "completed",
+    "completed",
+  ]);
+  assert.equal(foldBudget(persisted).projection.primary.used, 3);
+  assert.equal(foldBudget(persisted).projection.primary.reserved, 0);
+});
+
+test("steering storage failure still aborts the underlying Specialist and leaves no late Evidence or slot leak", async (t) => {
+  let markStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  let sawAbort = false;
+  const state = await setup("INV-v2-steer-storage-failure", async (context: unknown) => {
+    const signal = (context as { signal: AbortSignal }).signal;
+    markStarted();
+    return new Promise((_resolve, reject) => {
+      const onAbort = () => {
+        sawAbort = true;
+        reject(new DOMException("steered", "AbortError"));
+      };
+      if (signal.aborted) onAbort();
+      else signal.addEventListener("abort", onAbort, { once: true });
+    });
+  });
+  t.after(() => rm(state.directory, { recursive: true, force: true }));
+
+  const dispatch = state.service.dispatchAgentic(
+    "INV-v2-steer-storage-failure",
+    [brief("old investigation")],
+    { dispatchOperationId: "op-steer-storage-failure" },
+  );
+  await started;
+
+  const originalSave = state.repository.save.bind(state.repository);
+  Object.assign(state.repository, {
+    save: async (investigation: Investigation) => {
+      if (investigation.userInterventions?.some((item) => item.content === "new context")) {
+        throw new Error("injected intervention storage failure");
+      }
+      return originalSave(investigation);
+    },
+  });
+
+  await assert.rejects(
+    state.service.recordUserIntervention("INV-v2-steer-storage-failure", "new context"),
+    /injected intervention storage failure/,
+  );
+  const outcome = await dispatch;
+  assert.equal(sawAbort, true);
+  assert.equal(outcome.interrupted, true);
+
+  const persisted = await state.repository.get("INV-v2-steer-storage-failure");
+  assert.equal(persisted.userInterventions?.length ?? 0, 0);
+  assert.equal(persisted.expertTasks[0]?.status, "cancelled");
+  assert.equal(persisted.evidence.length, 0);
+  assert.equal(state.service.getBudgetProjection(persisted).runtime.running, 0);
+  assert.equal(foldBudget(persisted).projection.primary.reserved, 0);
 });

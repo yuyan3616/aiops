@@ -42,10 +42,26 @@ export interface AlertContext {
   region?: string;
 }
 
+export interface IncidentContext {
+  symptom: string;
+  trigger:
+    | { type: "manual" }
+    | { type: "alert"; eventId?: string; title?: string; source?: string }
+    | { type: "api"; source?: string };
+  window: TimeRange;
+  target: {
+    service?: string;
+    operation?: string;
+    entity?: string;
+    environment?: string;
+    region?: string;
+    container?: string;
+  };
+}
+
 export interface RcaTask {
-  caseId: string;
   version: string;
-  alert: AlertContext;
+  context?: IncidentContext;
   availableModalities: EvidenceModality[];
 }
 
@@ -63,25 +79,32 @@ export interface Hypothesis {
 }
 
 export interface Observation {
+  timeRange?: TimeRange;
+  sourceItems?: string[];
   id: string;
-  caseId: string;
+  investigationId?: string;
+  caseId?: string;
   modality: EvidenceModality;
   toolCallId: string;
   expertTaskId?: string;
   summary: string;
   rawRef?: string;
+  snapshotRef?: string;
   facts: Record<string, unknown>;
   createdAt: string;
 }
 
 export interface Evidence {
   id: string;
-  caseId: string;
+  investigationId?: string;
+  caseId?: string;
   modality: EvidenceModality;
   entity?: string;
   timeRange?: TimeRange;
   summary: string;
   rawRef: string;
+  snapshotRef?: string;
+  sourceItems?: string[];
   supports: string[];
   contradicts: string[];
   sourceQuery: Record<string, unknown>;
@@ -112,6 +135,7 @@ export interface InvestigationBrief {
 }
 
 export interface AgentEvidenceClaim {
+  sourceItems?: string[];
   toolCallId: string;
   modality: EvidenceModality;
   entity?: string;
@@ -225,14 +249,15 @@ export interface RuntimeResourceSnapshot {
   heapTotalMb: number;
   externalMb: number;
   arrayBuffersMb: number;
-  activeParquetScans: number;
-  maxConcurrentParquetScans: number;
-  totalParquetScans: number;
-  parquetBatchesRead: number;
-  parquetRowsScanned: number;
+  activeParquetScans?: number;
+  maxConcurrentParquetScans?: number;
+  totalParquetScans?: number;
+  parquetBatchesRead?: number;
+  parquetRowsScanned?: number;
 }
 
 export interface ToolCallRecord {
+  sourceItems?: string[];
   id: string;
   expertTaskId?: string;
   tool: string;
@@ -240,6 +265,8 @@ export interface ToolCallRecord {
   status: "running" | "completed" | "failed" | "cancelled";
   resultSummary?: string;
   rawRef?: string;
+  snapshotRef?: string;
+  resultStatus?: "success" | "no_data" | "partial" | "unsupported";
   startedAt: string;
   completedAt?: string;
   runtime?: {
@@ -286,10 +313,17 @@ export interface RCAResult {
 }
 
 export interface InvestigationScope {
+  // Legacy RCA100 fields remain readable.
   alertService?: string;
   alertOperation?: string;
-  timeRange: TimeRange;
+  timeRange?: TimeRange;
   candidateEntities: string[];
+  extensions?: Array<{
+    target?: Record<string, string>;
+    window?: TimeRange;
+    reason: string;
+    createdAt: string;
+  }>;
 }
 
 export interface InvestigationUserIntervention {
@@ -300,10 +334,20 @@ export interface InvestigationUserIntervention {
 
 export interface Investigation {
   id: string;
-  caseId: string;
+  caseId?: string;
   status: InvestigationStatus;
   symptom: string;
-  alertContext: AlertContext;
+  alertContext?: AlertContext;
+  context?: IncidentContext;
+  formatVersion?: 3;
+  source?: {
+    kind: "live";
+    contractVersion: "1";
+  };
+  creation?: {
+    operationId?: string;
+    requestHash: string;
+  };
   scope: InvestigationScope;
   hypotheses: Hypothesis[];
   observations?: Observation[];
@@ -347,86 +391,4 @@ export interface InvestigationEvent {
   at: string;
   summary: string;
   payload: Record<string, unknown>;
-}
-
-export interface SchemaField {
-  name: string;
-  type: string;
-}
-
-export interface ModalitySchema {
-  modality: EvidenceModality;
-  rowCount: number;
-  fields: SchemaField[];
-  file: string;
-}
-
-export interface MetricAnomaly {
-  entitySet: string;
-  entityId?: string;
-  entity: string;
-  service?: string;
-  metric: string;
-  baselineCount: number;
-  incidentCount: number;
-  baselineMedian: number;
-  incidentMedian: number;
-  baselineP95: number;
-  incidentP95: number;
-  ratio: number;
-  robustZ: number;
-  direction: "increase" | "decrease" | "flat";
-  score: number;
-  rawRef: string;
-}
-
-export interface TraceAnomaly {
-  service: string;
-  operation: string;
-  host?: string;
-  baselineCount: number;
-  incidentCount: number;
-  baselineP95Ms: number;
-  incidentP95Ms: number;
-  ratio: number;
-  maxIncidentMs: number;
-  rawRef: string;
-}
-
-export interface TraceQueryWindowRelation {
-  startedBeforeWindow: boolean;
-  startedInWindow: boolean;
-  endedInWindow: boolean;
-  spansEntireWindow: boolean;
-}
-
-export interface TracePathNode {
-  service: string;
-  operation: string;
-  host?: string;
-  startTime: string;
-  endTime: string;
-  durationMs: number;
-  spanId: string;
-  parentSpanId?: string;
-  statusCode?: string;
-  queryWindowRelation?: TraceQueryWindowRelation;
-}
-
-export interface CriticalTracePath {
-  traceId: string;
-  totalDurationMs: number;
-  path: TracePathNode[];
-  rawRef: string;
-}
-
-export interface QueryEnvelope<T> {
-  caseId: string;
-  modality: EvidenceModality;
-  query: Record<string, unknown>;
-  matchedRows: number;
-  returnedRows: number;
-  truncated: boolean;
-  rawRef: string;
-  data: T;
 }

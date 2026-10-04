@@ -4,8 +4,8 @@ import { getAgentDir, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { serve } from "@hono/node-server";
 import { createApp } from "@server/app";
 import { ConversationService } from "@server/conversation/service";
-import { RCA100Adapter } from "@server/rca/adapter";
 import { InvestigationRepository } from "@server/rca/repository";
+import { createLiveProvidersFromEnv } from "@server/rca/live/config";
 import { RcaService } from "@server/rca/service";
 import { ObservabilityToolRegistry } from "@server/rca/tools";
 
@@ -26,7 +26,11 @@ if (packyProvider) {
   );
 }
 const modelRuntime = await ModelRuntime.create();
-const rcaTools = new ObservabilityToolRegistry(new RCA100Adapter(globalConfig.rcaCasesDir));
+const liveRuntime = createLiveProvidersFromEnv();
+const rcaTools = new ObservabilityToolRegistry(liveRuntime.providers);
+process.stdout.write(
+  `Live observability capabilities: ${JSON.stringify(liveRuntime.availability)}\n`,
+);
 const investigationRepository = new InvestigationRepository(globalConfig.rcaInvestigationsDir);
 const recoveredInvestigations = await investigationRepository.recoverInterrupted();
 if (recoveredInvestigations.length > 0) {
@@ -34,7 +38,19 @@ if (recoveredInvestigations.length > 0) {
     `Recovered interrupted RCA investigations: ${recoveredInvestigations.join(", ")}\n`,
   );
 }
+const repairedProjections = await investigationRepository.recoverProjections();
+if (repairedProjections.length > 0) {
+  process.stderr.write(
+    `Repaired RCA event projections: ${repairedProjections.join(", ")}\n`,
+  );
+}
 const rcaService = new RcaService(investigationRepository, modelRuntime, rcaTools);
+const recoveredReports = await rcaService.recoverReports();
+if (recoveredReports.length > 0) {
+  process.stderr.write(
+    `Recovered missing RCA reports: ${recoveredReports.join(", ")}\n`,
+  );
+}
 const recoveredVisualizations = await rcaService.recoverVisualizations();
 if (recoveredVisualizations.length > 0) {
   process.stderr.write(
