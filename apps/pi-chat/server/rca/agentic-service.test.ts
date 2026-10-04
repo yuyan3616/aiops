@@ -322,7 +322,10 @@ test("user steering interrupts only the active dispatch and keeps the investigat
 
     const outcome = await dispatchPromise;
     assert.equal(outcome.interrupted, true);
-    assert.deepEqual(outcome.findings, []);
+    assert.equal(outcome.findings.length, 1);
+    assert.equal(outcome.findings[0]?.status, "cancelled");
+    assert.equal(outcome.findings[0]?.termination, "aborted");
+    assert.deepEqual(outcome.findings[0]?.evidenceIds, []);
 
     const persisted = await repository.get(current.id);
     assert.equal(persisted.status, "running");
