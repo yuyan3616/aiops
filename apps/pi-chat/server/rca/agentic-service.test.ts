@@ -98,6 +98,7 @@ test("Main Agent RCA tools expose explicit investigation controls instead of a b
     "start_rca_investigation",
     "resume_rca_investigation",
     "query_rca_overview",
+    "read_rca_trace",
     "update_hypotheses",
     "dispatch_investigations",
     "get_investigation_state",
@@ -109,12 +110,30 @@ test("Main Agent RCA tools expose explicit investigation controls instead of a b
 test("Main Agent compact state excludes runtime accounting and diagnostics", async () => {
   const current = investigation("INV-compact-runtime");
   current.expertTasks.push({
-    id: "T01", expert: "trace", objective: "trace latency", status: "failed",
-    hypothesisIds: [], toolCallIds: [], evidenceIds: [], createdAt: current.startedAt,
-    usage: { turns: 2, inputTokens: 100, outputTokens: 20, cacheReadTokens: 10,
-      cacheWriteTokens: 0, totalTokens: 130, contextTokens: 80 },
-    diagnostics: { toolCallCount: 0, thinkingChars: 0, outputChars: 0,
-      repairAttempted: false, repairSucceeded: false },
+    id: "T01",
+    expert: "trace",
+    objective: "trace latency",
+    status: "failed",
+    hypothesisIds: [],
+    toolCallIds: [],
+    evidenceIds: [],
+    createdAt: current.startedAt,
+    usage: {
+      turns: 2,
+      inputTokens: 100,
+      outputTokens: 20,
+      cacheReadTokens: 10,
+      cacheWriteTokens: 0,
+      totalTokens: 130,
+      contextTokens: 80,
+    },
+    diagnostics: {
+      toolCallCount: 0,
+      thinkingChars: 0,
+      outputChars: 0,
+      repairAttempted: false,
+      repairSucceeded: false,
+    },
     termination: { reason: "provider_error", detail: "unavailable" },
   });
   const definitions = createRcaMainAgentTools({
@@ -135,14 +154,42 @@ test("Main Agent compact state excludes runtime accounting and diagnostics", asy
   });
   const tool = definitions.find((item) => item.name === "get_investigation_state")!;
   const execute = tool.execute as unknown as (
-    callId: string, parameters: { investigationId: string },
+    callId: string,
+    parameters: { investigationId: string },
   ) => Promise<{ content: Array<{ text: string }> }>;
   const response = await execute("call-compact", { investigationId: current.id });
-  const task = (JSON.parse(response.content[0]!.text) as { expertTasks: Array<Record<string, unknown>> })
-    .expertTasks[0]!;
+  const task = (
+    JSON.parse(response.content[0]!.text) as { expertTasks: Array<Record<string, unknown>> }
+  ).expertTasks[0]!;
   assert.equal(task.termination, "provider_error");
   assert.equal(task.usage, undefined);
   assert.equal(task.diagnostics, undefined);
+});
+
+test("Main log correlation forwards traceId without exposing it as a Trace search override", async () => {
+  const calls: Array<{ kind: string; query: Record<string, unknown> }> = [];
+  const tools = createRcaMainAgentTools({
+    rcaService: {
+      queryOverview: async (_id: string, kind: string, query: Record<string, unknown>) => {
+        calls.push({ kind, query });
+        return { evidenceId: "E01", result: {} };
+      },
+    } as unknown as RcaService,
+    conversationId: "log-correlation",
+    getModelRef: () => ({ provider: "test", id: "test" }),
+    onProjection: () => {},
+    onLinkInvestigation: () => {},
+  });
+  const execute = tools.find((tool) => tool.name === "query_rca_overview")!.execute as unknown as (
+    id: string,
+    input: { investigationId: string; kind: string; logTraceId: string },
+  ) => Promise<unknown>;
+  const traceId = "1".repeat(32);
+  await execute("logs", { investigationId: "INV", kind: "logs", logTraceId: traceId });
+  await execute("traces", { investigationId: "INV", kind: "traces", logTraceId: traceId });
+  assert.equal(calls[0]!.query.traceId, traceId);
+  assert.equal(calls[0]!.query.logTraceId, undefined);
+  assert.equal(calls[1]!.query.traceId, undefined);
 });
 
 test("start_rca_investigation does not implicitly replace a linked investigation", async () => {
@@ -200,7 +247,6 @@ test("start_rca_investigation does not implicitly replace a linked investigation
   assert.equal(payload.activeRcaContext?.investigationId, "INV-existing");
 });
 
-
 test("cancelling an active RCA terminalizes expert tasks and tools before cleanup", async () => {
   const directory = await mkdtemp(join(tmpdir(), "pi-chat-agentic-cancel-"));
   try {
@@ -245,11 +291,7 @@ test("cancelling an active RCA terminalizes expert tasks and tools before cleanu
     assert.equal(cancelled.expertTasks[0]?.status, "cancelled");
     assert.equal(cancelled.toolCalls[0]?.status, "cancelled");
     assert.match(cancelled.toolCalls[0]?.error ?? "", /cancelled/i);
-    assert.deepEqual(eventTypes, [
-      "tool.completed",
-      "expert.completed",
-      "investigation.cancelled",
-    ]);
+    assert.deepEqual(eventTypes, ["tool.completed", "expert.completed", "investigation.cancelled"]);
     assert.equal(await service.cancelConversation("conversation-cancel"), 0);
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -330,10 +372,7 @@ test("user steering interrupts only the active dispatch and keeps the investigat
     const persisted = await repository.get(current.id);
     assert.equal(persisted.status, "running");
     assert.equal(persisted.expertTasks[0]?.status, "cancelled");
-    assert.equal(
-      persisted.userInterventions?.[0]?.content,
-      "14:02 checkout 做过一次手工发布",
-    );
+    assert.equal(persisted.userInterventions?.[0]?.content, "14:02 checkout 做过一次手工发布");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -368,7 +407,10 @@ test("hypothesis mutations partially accept valid items and publish only persist
       },
     ]);
 
-    assert.deepEqual(result.accepted.map((item) => item.requestId), ["create-valid"]);
+    assert.deepEqual(
+      result.accepted.map((item) => item.requestId),
+      ["create-valid"],
+    );
     assert.equal(result.rejected.length, 1);
     assert.equal(result.rejected[0]?.requestId, "create-invalid");
     assert.equal(result.rejected[0]?.code, "UNKNOWN_EVIDENCE");
@@ -468,7 +510,6 @@ test("agentic conclusion requires real evidence and complete hypothesis accounti
     await rm(directory, { recursive: true, force: true });
   }
 });
-
 
 test("causal assessment blocks confident conclusions with unresolved temporal or propagation gaps", async () => {
   const directory = await mkdtemp(join(tmpdir(), "pi-chat-agentic-causal-"));
@@ -677,10 +718,9 @@ test("pre-existing explanations require transition evidence and supported propag
     });
     await service.waitForVisualizationIdle(current.id);
     assert.equal(concluded.investigation.rootCause?.status, "probable");
-    assert.deepEqual(
-      concluded.investigation.rootCause?.causalAssessment?.transitionEvidenceIds,
-      ["E02"],
-    );
+    assert.deepEqual(concluded.investigation.rootCause?.causalAssessment?.transitionEvidenceIds, [
+      "E02",
+    ]);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -738,7 +778,6 @@ test("inconclusive RCA accepts uncertain causal assessment", async () => {
     await rm(directory, { recursive: true, force: true });
   }
 });
-
 
 test("hypothesis updates cannot rewrite statements; revisions create a linked new id", async () => {
   const directory = await mkdtemp(join(tmpdir(), "pi-chat-agentic-"));
@@ -843,7 +882,6 @@ test("Main Agent overview mutations are serialized so parallel calls cannot allo
   assert.equal(sequence, 2);
 });
 
-
 test("compact metric result enforces the Live Agent 32 KiB text budget", async () => {
   const { compactToolResultForAgent } = await import("./tools");
   const compact = compactToolResultForAgent("query_metrics", {
@@ -869,9 +907,9 @@ test("compact metric result enforces the Live Agent 32 KiB text budget", async (
   assert.equal(
     Boolean(
       compact &&
-        typeof compact === "object" &&
-        !Array.isArray(compact) &&
-        (compact as { agentTextTruncated?: boolean }).agentTextTruncated,
+      typeof compact === "object" &&
+      !Array.isArray(compact) &&
+      (compact as { agentTextTruncated?: boolean }).agentTextTruncated,
     ),
     true,
   );
@@ -1008,7 +1046,6 @@ test("dispatch rejects a baseline window that overlaps the main incident window"
   }
 });
 
-
 test("compact trace result enforces the Live Agent 32 KiB text budget", async () => {
   const { compactToolResultForAgent } = await import("./tools");
   const compact = compactToolResultForAgent("search_traces", {
@@ -1033,9 +1070,9 @@ test("compact trace result enforces the Live Agent 32 KiB text budget", async ()
   assert.equal(
     Boolean(
       compact &&
-        typeof compact === "object" &&
-        !Array.isArray(compact) &&
-        (compact as { agentTextTruncated?: boolean }).agentTextTruncated,
+      typeof compact === "object" &&
+      !Array.isArray(compact) &&
+      (compact as { agentTextTruncated?: boolean }).agentTextTruncated,
     ),
     true,
   );

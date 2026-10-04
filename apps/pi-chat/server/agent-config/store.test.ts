@@ -35,6 +35,9 @@ function changedFiles(): ConfigFiles {
     systemPrompt: "agents/trace/SYSTEM.md",
     tools: ["search_traces", "get_trace", "discover_metrics", "query_metrics"],
     skills: [{ id: "critical-path" }],
+    capability: "多样本延迟对比",
+    useWhen: ["需要独立多轮分析"],
+    notFor: ["一次查询即可解决"],
   });
   return files;
 }
@@ -72,6 +75,9 @@ test("configuration validation rejects unknown tools, paths, executable fields a
     { tools: ["get_trace"] },
     { tools: ["query_metrics"] },
     { skills: [{ id: "missing" }] },
+    { capability: "x".repeat(501) },
+    { useWhen: ["valid", 123] },
+    { notFor: Array.from({ length: 9 }, (_, i) => `scope ${i}`) },
   ]) {
     const invalid = { ...files };
     invalid["agents/trace/agent.json"] = JSON.stringify({
@@ -173,6 +179,8 @@ test("investigations pin config; new registered role uses existing tools and bud
     const second = await service.beginAgentic(input, { operationId: "second" });
     assert.equal(second.agentConfigVersion, v2);
     assert.match(renderMainConfig(agentConfigStore.get(v2)), /latency：延迟调查员/);
+    assert.match(renderMainConfig(agentConfigStore.get(v2)), /适用：需要独立多轮分析/);
+    assert.match(renderMainConfig(agentConfigStore.get(v2)), /不适用：一次查询即可解决/);
     assert.throws(() => getExpertProfile("latency", v1), /unknown_expert/);
     const profile = getExpertProfile("latency", v2);
     assert.equal(profile.maxToolCalls, 12);

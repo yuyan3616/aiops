@@ -14,6 +14,7 @@ export const MAIN_TOOLS = [
   "start_rca_investigation",
   "resume_rca_investigation",
   "query_rca_overview",
+  "read_rca_trace",
   "update_hypotheses",
   "dispatch_investigations",
   "get_investigation_state",
@@ -31,6 +32,9 @@ export interface ConfigRole {
   systemPrompt: string;
   tools: string[];
   skills: ConfigSkill[];
+  capability?: string;
+  useWhen?: string[];
+  notFor?: string[];
 }
 export interface ConfigBundle {
   version: string;
@@ -126,7 +130,17 @@ export function validateBundle(version: string, files: ConfigFiles): ConfigBundl
   const roles: ConfigBundle["roles"] = Object.create(null);
   for (const path of strings(manifest.roles, 16)) {
     const role = object(JSON.parse(read(path)));
-    keys(role, ["id", "kind", "name", "systemPrompt", "tools", "skills"]);
+    keys(role, [
+      "id",
+      "kind",
+      "name",
+      "systemPrompt",
+      "tools",
+      "skills",
+      "capability",
+      "useWhen",
+      "notFor",
+    ]);
     const id = identifier(role.id);
     if (roles[id]) throw new Error("config_duplicate_role");
     if (role.kind !== "main" && role.kind !== "expert") throw new Error("config_invalid_kind");
@@ -162,6 +176,9 @@ export function validateBundle(version: string, files: ConfigFiles): ConfigBundl
       systemPrompt: string(read(role.systemPrompt), MAX_FILE_BYTES),
       tools,
       skills: selected,
+      ...(role.capability !== undefined ? { capability: string(role.capability, 500) } : {}),
+      ...(role.useWhen !== undefined ? { useWhen: strings(role.useWhen, 8) } : {}),
+      ...(role.notFor !== undefined ? { notFor: strings(role.notFor, 8) } : {}),
     };
   }
   if (!roles.main || Object.values(roles).filter((role) => role.kind === "expert").length < 1)
@@ -375,7 +392,14 @@ export function renderMainConfig(bundle: ConfigBundle): string {
     .join("\n\n");
   const experts = Object.values(bundle.roles)
     .filter((entry) => entry.kind === "expert")
-    .map((entry) => `- ${entry.id}：${entry.name}；工具：${entry.tools.join(", ")}`)
+    .map((entry) =>
+      [
+        `- ${entry.id}：${entry.name}；工具：${entry.tools.join(", ")}`,
+        ...(entry.capability ? [`  能力：${entry.capability}`] : []),
+        ...(entry.useWhen?.length ? [`  适用：${entry.useWhen.join("；")}`] : []),
+        ...(entry.notFor?.length ? [`  不适用：${entry.notFor.join("；")}`] : []),
+      ].join("\n"),
+    )
     .join("\n");
   return `# 角色：${role.name}\n\n${role.systemPrompt}\n\n${skills}\n\n## 当前角色注册表（配置版本 ${bundle.version}）\ndispatch 的 role 必须使用下列 ID。\n${experts}`;
 }

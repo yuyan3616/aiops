@@ -6,6 +6,8 @@
 
 注册表从配置构造专家 Profile；Evidence 模态由服务端按工具推导。专家总查询上限仍为 12，query_metrics 上限仍为 6；Finding 强度规则、submit_finding 协议、Budget v2、授权和取消不允许配置覆盖。event-topology 仅保留历史名称展示，不再包含可执行 Profile。
 
+Main 默认直接取证，专家按需参与，详见 [Main 优先取证](main-first-investigation.md)。角色 JSON 支持可选 capability/useWhen/notFor，注册表向 Main 注入能力边界。Main 工具包含有界查询及 read_rca_trace；零专家调查可以正常结案。
+
 ## 加载
 
 启动与每 60 秒后台轮询先解析目标 ref 的 commit SHA，再以该 SHA 读取 manifest 引用的全部文件，校验后原子启用。每个文件最多 64 KiB，整个配置包最多 512 KiB。只接受受控 JSON/Markdown 相对路径、已实现工具、已注册技能和已知字段。没有远程代码执行。

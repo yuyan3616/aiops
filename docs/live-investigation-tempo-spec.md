@@ -167,7 +167,7 @@ Registry 注入三个 Provider；显式定义每个工具的 modality、schema�
 
 新 dispatch 仅 trace/log/metrics；没有真实 Provider 的 event-topology 不进入新 Session，历史类型仍可读。删除生产 get_alert_context/schema/parquet/events/alerts/topology 工具路径。
 
-query_rca_overview 仅 traces/logs/metrics，使用同一 Provider 和更小结果上限。Main 不需要知道具体后端产品。旧 `screen_rca_candidates` 已从 Main Agent 工具面删除；候选覆盖通过 `discover_metrics/query_metrics` 的显式 scoped target 完成。无结构/应用指标能力时明确 unsupported，不能偷偷读取 RCA100 或用 host CPU 冒充各服务请求指标。
+query_rca_overview 支持 traces/logs/metrics，使用同一 Provider 和更小结果上限；logs 支持 logTraceId 关联查询。Main 还可用 read_rca_trace 读取本调查已搜索授权的单条 Trace。Main 默认直接取证并可零专家结案，需要独立上下文或多轮专项分析时才按角色能力边界派专家，详见 main-first-investigation.md。Main 不需要知道具体后端产品。旧 `screen_rca_candidates` 已从 Main Agent 工具面删除；候选覆盖通过 `discover_metrics/query_metrics` 的显式 scoped target 完成。无结构/应用指标能力时明确 unsupported，不能偷偷读取 RCA100 或用 host CPU 冒充各服务请求指标。
 
 专家仍不能决定最终 RCA，Evidence/Finding/Hypothesis/Conclusion 因果门槛保留。精确关联也只证明执行归属，不能自动升级为因果。
 
