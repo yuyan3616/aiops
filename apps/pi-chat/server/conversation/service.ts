@@ -18,7 +18,7 @@ import {
   unavailableConversationRcaContext,
 } from "@server/rca/conversation-context";
 import { createRcaMainAgentTools } from "@server/rca/main-agent-tools";
-import type { RcaService } from "@server/rca/service";
+import { RcaServiceError, type RcaService } from "@server/rca/service";
 import type { Investigation } from "@server/rca/types";
 import { hasSameStringItems } from "@server/utils";
 import type {
@@ -160,6 +160,14 @@ export class ConversationService {
     const cleanedUserInput = userInput.trim();
     if (!cleanedUserInput || cleanedUserInput.length === 0) {
       throw new Error("User input cannot be empty.");
+    }
+
+    const context = await this.resolveRcaContext(conversationId);
+    if (context.sourceKind === "legacy") {
+      throw new RcaServiceError(
+        "legacy_read_only",
+        "这条历史调查使用的 RCA100 数据源已停用，目前仅支持查看已有记录，无法继续调查。需要排查真实系统时，请新建 Live 会话。",
+      );
     }
 
     const loadSkillsResult = loadSkillsFromDir({

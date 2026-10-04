@@ -240,12 +240,6 @@ importers:
       hono-pino:
         specifier: ^0.10.3
         version: 0.10.3(hono@4.13.3)(pino@10.3.1)
-      hyparquet:
-        specifier: ^1.31.1
-        version: 1.31.1
-      hyparquet-compressors:
-        specifier: ^1.1.2
-        version: 1.1.2
       lucide-react:
         specifier: ^0.468.0
         version: 0.468.0(react@19.2.8)
@@ -3328,9 +3322,6 @@ packages:
   functions-have-names@1.2.3:
     resolution: {integrity: sha512-xckBUXyTIqT97tq2x2AMb+g163b5JFysYk0x4qxNFwbfQkmNZoiRHb6sPzI9/QV33WeuvVYBUIiD4NzNIyqaRQ==}
 
-  fzstd@0.1.1:
-    resolution: {integrity: sha512-dkuVSOKKwh3eas5VkJy1AW1vFpet8TA/fGmVA5krThl8YcOVE/8ZIoEA1+U1vEn5ckxxhLirSdY837azmbaNHA==}
-
   gaxios@7.3.1:
     resolution: {integrity: sha512-kB3rzJV7d9juLZh8/56QTXCwQfxyhdOMdyYk1HdQKFtF8TJTDTZQJtixWIwXdE9Jji91mC41DUNpjleo4L4eAQ==}
     engines: {node: '>=18'}
@@ -3499,15 +3490,6 @@ packages:
   https-proxy-agent@9.1.0:
     resolution: {integrity: sha512-ag87y7cJJ9/3+GxFr8Oy4O5faDsGRGnBGsJj/YjOSsSx/5eadKLYTMPlzuR6obgoCDDm0abAAZitXXQkMOPSpA==}
     engines: {node: '>= 20'}
-
-  hyparquet-compressors@1.1.2:
-    resolution: {integrity: sha512-0Hx6w0ZpVpNCefKy5xBYLTp6rKeZn/tsUzuliNzfKqSCdLcTQSfwATEoeedS703Y17k1qNS61HwRME5aOeNkPg==}
-
-  hyparquet@1.31.1:
-    resolution: {integrity: sha512-tF9580Xb+41+Eb+mH0av1k7m1PWl+PSKrX66Yd7UOZ760cwEXP9/enwHRMSCeVncaubRI8XPb3v580/ujYKK5w==}
-
-  hysnappy@1.1.1:
-    resolution: {integrity: sha512-/V9XcN2NtRyWjR4LYMfvnvasVVF8jbT/ej0eofBQjZel91E3D813FQ3mQC6gDSMMTCq/FJh28XHeyqr3I/oBRw==}
 
   iconv-lite@0.7.3:
     resolution: {integrity: sha512-IKXpvIzjnC9XTAUbVBcMfGS0EPaIXtW6v+zr+RRp+hqULEpo0owZax6wyRwPOJbWbzjYspQwusTsfVr0ifh4uQ==}
@@ -8038,8 +8020,6 @@ snapshots:
 
   functions-have-names@1.2.3: {}
 
-  fzstd@0.1.1: {}
-
   gaxios@7.3.1(supports-color@8.1.1):
     dependencies:
       extend: 3.0.2
@@ -8247,15 +8227,6 @@ snapshots:
     transitivePeerDependencies:
       - kerberos
       - supports-color
-
-  hyparquet-compressors@1.1.2:
-    dependencies:
-      fzstd: 0.1.1
-      hysnappy: 1.1.1
-
-  hyparquet@1.31.1: {}
-
-  hysnappy@1.1.1: {}
 
   iconv-lite@0.7.3:
     dependencies:

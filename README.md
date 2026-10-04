@@ -3,7 +3,7 @@
 基于 Pi Agent 的多 Agent AIOps / RCA 工作台。新 Investigation 的生产查询路径使用 **Tempo + Loki + Prometheus**；Main Agent 负责假设、取证计划、反证与最终综合，Trace / Log / Metrics 专家在独立 Pi Session 中执行受限查询。
 
 > Live Observability 迁移基线：`main@8ae4b77a4845b17902e48d3ea5b4af69d13e8516`。  
-> 历史 RCA100 Investigation 继续可读，但所有调查写操作由 Service 层返回 `legacy_read_only`。RCA100 adapter / parquet / t039 下载脚本仅保留给离线评测与历史开发资产，不进入生产服务启动或新调查查询链路。
+> 历史 RCA100 Investigation 继续可读，但所有调查写操作由 Service 层返回 `legacy_read_only`。RCA100 adapter、parquet 依赖、下载脚本与评分器已删除，不再维护数据集能力。历史会话只支持查看，发送追问会返回明确停用提示，请新建 Live 会话进行排障。
 
 ## 当前架构
 
@@ -155,29 +155,12 @@ pnpm --filter pi-chat build
 
 GitHub Actions 对 Pull Request 与 `main` 执行同一套检查。Railway 使用根目录 [`Dockerfile`](Dockerfile) 构建，生产镜像**不再下载 t039 / RCA100 数据集**。
 
-## 离线 RCA100 评测
-
-RCA100 只保留为隔离的离线 benchmark / evaluator，不是生产数据源。需要本地 benchmark 时仍可显式执行：
-
-```bash
-pnpm --filter pi-chat rca:fetch:t039
-```
-
-评分器只接受带 legacy `caseId` 的历史/离线 Investigation，Ground Truth 不进入 Agent Runtime：
-
-```bash
-cd apps/pi-chat
-RCA100_ANSWER_KEY_DIR=/absolute/path/to/RCA100/answer_key \
-RCA_INVESTIGATIONS_DIR=/absolute/path/to/investigations \
-pnpm rca:evaluate INV-...
-```
-
 ## 主要目录
 
 | 路径 | 内容 |
 | --- | --- |
 | `apps/pi-chat/server/rca/live/` | Live HTTP Client 与 Tempo/Loki/Prometheus Provider |
-| `apps/pi-chat/server/rca/` | Investigation Service、Budget v2、专家 Runtime、历史兼容与离线评估 |
+| `apps/pi-chat/server/rca/` | Investigation Service、Budget v2、专家 Runtime、历史记录读取 |
 | `apps/pi-chat/server/conversation/` | Pi 会话、历史记录、RCA Conversation context |
 | `apps/pi-chat/server/routes/` | 对话、系统与 RCA HTTP 边界 |
 | `docs/live-investigation-tempo-spec.md` | Live Observability 迁移规格 |

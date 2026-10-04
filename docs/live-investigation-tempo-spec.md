@@ -229,7 +229,7 @@ claim 必须引用当前任务完成的 ToolCall，modality 与该 ToolCall 一�
 4. 三种 Client/Provider 单测与真实 smoke，验证 bounded、异常、取消、Exemplar 查询及证据快照；尚不切换 Agent。
 5. 同步切换新调查入口、Registry、工具/Profile/Overview/Prompt、Conversation 展示；保持 Budget v2。
 6. 验证并发、intervention、cancel、storage failure、restart、投影补齐、历史只读与上下文上限。
-7. 删除生产 RCA100Adapter/parquet/rcaCasesDir、旧配置、启动下载路径和 Prompt；保留历史读取与独立离线评估需要的隔离代码，不进入生产 import graph。
+7. 删除生产 RCA100Adapter/parquet/rcaCasesDir、旧配置、启动下载路径和 Prompt；删除离线 adapter、parquet helper、下载与评测能力，仅保留历史记录读取。
 8. 多模态闭环通过后上线；再进行 Provider Slow、Tool timeout、Application Error、Resource Pressure 故障验证。
 
 开发过程可有未发布中间提交，但生产切换必须原子完成入口和工具路由，不能让新 Live Investigation 临时回退到 RCA100。回滚按发布版本处理，不构建永久双 Runtime。
@@ -241,7 +241,7 @@ claim 必须引用当前任务完成的 ToolCall，modality 与该 ToolCall 一�
 - 并行专家/同调查工具返回乱序时，ID、状态、Budget 与证据引用正确。
 - intervention/cancel 发生于排队、fetch、body、retry、commit 前后；没有晚到 Evidence，没有泄漏 slot；存储失败仍 abort。
 - 进程在快照、journal、event、report 之间退出，重启可修复投影而不重复消费预算。
-- 旧 v2 RCA100 调查只读，不可 resume/dispatch/conclude；报告和追问可用。
+- 旧 v2 RCA100 调查只读，不可 resume/dispatch/conclude；已有报告可读；追问返回数据源停用提示，不启动模型或取证。
 - Counter reset、Histogram quantile、Gauge、series映射与单位正确；当前 Exemplar capability=false 且不伪造关联。
 - headers-only、截断Trace、未知采样/最新未到数据不被当完整证据；gap/时间重叠/CPU正常不升级为因果。
 - Secret 与恶意 telemetry 指令不进入执行路径；response与累积上下文上限有效。

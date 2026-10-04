@@ -438,16 +438,6 @@ export class InvestigationRepository {
     return persisted.report.endsWith("\n") ? persisted.report : `${persisted.report}\n`;
   }
 
-  async saveEvaluation(investigationId: string, evaluation: unknown): Promise<void> {
-    const directory = this.directory(investigationId);
-    await mkdir(directory, { recursive: true });
-    await writeFile(
-      join(directory, "evaluation.json"),
-      JSON.stringify(evaluation, null, 2),
-      "utf8",
-    );
-  }
-
   async listInvestigationIds(): Promise<string[]> {
     try {
       const entries = await readdir(this.investigationsDir, { withFileTypes: true });

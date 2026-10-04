@@ -62,9 +62,6 @@ export interface IncidentContext {
 export interface RcaTask {
   version: string;
   context?: IncidentContext;
-  // Legacy benchmark fields are retained only for offline adapter/test compatibility.
-  caseId?: string;
-  alert?: AlertContext;
   availableModalities: EvidenceModality[];
 }
 
@@ -394,86 +391,4 @@ export interface InvestigationEvent {
   at: string;
   summary: string;
   payload: Record<string, unknown>;
-}
-
-export interface SchemaField {
-  name: string;
-  type: string;
-}
-
-export interface ModalitySchema {
-  modality: EvidenceModality;
-  rowCount: number;
-  fields: SchemaField[];
-  file: string;
-}
-
-export interface MetricAnomaly {
-  entitySet: string;
-  entityId?: string;
-  entity: string;
-  service?: string;
-  metric: string;
-  baselineCount: number;
-  incidentCount: number;
-  baselineMedian: number;
-  incidentMedian: number;
-  baselineP95: number;
-  incidentP95: number;
-  ratio: number;
-  robustZ: number;
-  direction: "increase" | "decrease" | "flat";
-  score: number;
-  rawRef: string;
-}
-
-export interface TraceAnomaly {
-  service: string;
-  operation: string;
-  host?: string;
-  baselineCount: number;
-  incidentCount: number;
-  baselineP95Ms: number;
-  incidentP95Ms: number;
-  ratio: number;
-  maxIncidentMs: number;
-  rawRef: string;
-}
-
-export interface TraceQueryWindowRelation {
-  startedBeforeWindow: boolean;
-  startedInWindow: boolean;
-  endedInWindow: boolean;
-  spansEntireWindow: boolean;
-}
-
-export interface TracePathNode {
-  service: string;
-  operation: string;
-  host?: string;
-  startTime: string;
-  endTime: string;
-  durationMs: number;
-  spanId: string;
-  parentSpanId?: string;
-  statusCode?: string;
-  queryWindowRelation?: TraceQueryWindowRelation;
-}
-
-export interface CriticalTracePath {
-  traceId: string;
-  totalDurationMs: number;
-  path: TracePathNode[];
-  rawRef: string;
-}
-
-export interface QueryEnvelope<T> {
-  caseId: string;
-  modality: EvidenceModality;
-  query: Record<string, unknown>;
-  matchedRows: number;
-  returnedRows: number;
-  truncated: boolean;
-  rawRef: string;
-  data: T;
 }

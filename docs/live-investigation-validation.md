@@ -42,7 +42,7 @@ IncidentContext
 - Main/Expert 的 RCA100 `caseId` 查询合同
 - 生产 Registry 的 parquet / alerts / events / topology 查询工具
 
-RCA100 adapter、parquet helper、t039 下载和 scorer 仅保留为隔离的离线 benchmark / evaluator 与历史开发资产，不进入新调查生产 import/query graph。
+RCA100 adapter、parquet helper、t039 下载和 scorer 现已彻底删除，专属依赖与离线测试一并移除。历史文件不改写，历史 Session/报告仍可读；关联旧调查的会话发送消息返回 HTTP 409 / legacy_read_only，且不会启动模型或查询。请新建 Live 会话进行排障。
 
 ## Persistence and compatibility
 
@@ -243,3 +243,12 @@ pnpm --filter pi-chat build
 本轮远程 CI 在 push 后单独核实；先前 #402/#403 不能代表本轮修复通过。
 
 真实 Railway → NGINX → ECS smoke 仍为 BLOCKED，等待用户部署网关和配置认证。接入步骤见 [Live 查询网关接入](live-gateway-connection.md)。本轮没有合并 main、没有部署 Railway、没有修改 Target/ECS/NGINX。
+
+
+## RCA100 能力移除（2026-10-04）
+
+用户确认不再维护数据集能力：删除 adapter、parquet helper、t039 下载脚本、离线评分入口及专属依赖；移除仅用于这些能力的类型、持久化方法和测试。旧记录字段只供历史展示保留，不迁移或删除已有 Session/Investigation 文件。
+
+关联历史调查的 Session 消息入口直接返回 HTTP 409、`legacy_read_only` 与中文停用提示，在加载模型、执行 Prompt 或写入用户消息之前拒绝。新排障请创建 Live 会话。现有历史消息、Evidence 与报告读取继续保留；通用恢复测试仍验证旧记录报告卡及报告下载。
+
+本轮本地验证：Typecheck PASS；Lint PASS（保留原有 warnings）；Build PASS；98 tests / 98 passed / 0 failed / 0 skipped。新增服务端消息入口与 HTTP 提示测试，验证无模型初始化。真实 Railway→网关→ECS smoke 仍待网关部署。

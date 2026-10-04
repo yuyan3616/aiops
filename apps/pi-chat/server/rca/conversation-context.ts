@@ -125,7 +125,7 @@ export function renderConversationRcaContext(
     "本段是当前调查状态的唯一可信来源。Live IncidentContext 的原始 window/target 已冻结；后续查询只能通过服务端受控 scope 扩展。",
     ...(context.sourceKind === "legacy"
       ? [
-          "这是历史 RCA100 调查，只允许读取、展示和追问解释；不得 resume、修改 hypothesis、dispatch、cancel、重新结案或写入 evidence。",
+          "这是历史 RCA100 调查，数据源已停用，仅允许读取和展示已有记录。追问应提示无法继续调查；不得 resume、修改 hypothesis、dispatch、cancel、重新结案或写入 evidence。",
         ]
       : []),
     ...interventionLines,
