@@ -52,20 +52,6 @@ export interface ToolExecution {
   backendAlias: string;
 }
 
-export interface PiToolExecutionResult {
-  content: Array<{ type: "text"; text: string }>;
-  details: unknown;
-}
-
-export interface PiToolFactoryOptions {
-  names?: readonly ObservabilityToolName[];
-  execute?: (
-    name: ObservabilityToolName,
-    toolCallId: string,
-    parameters: Record<string, unknown>,
-  ) => Promise<PiToolExecutionResult>;
-}
-
 function object(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)

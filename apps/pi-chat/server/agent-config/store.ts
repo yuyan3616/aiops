@@ -425,6 +425,8 @@ export class AgentConfigStore {
   }
   private commitBundle(bundle: ConfigBundle, files: ConfigFiles, activate = true): ConfigBundle {
     const version = bundle.version;
+    const snapshot = JSON.stringify({ version, files });
+    if (Buffer.byteLength(snapshot) > MAX_BYTES * 2) throw new Error("config_cache_too_large");
     const existing = this.bundles.get(version);
     if (existing && JSON.stringify(existing) !== JSON.stringify(bundle))
       throw new Error("config_immutable_version_conflict");
@@ -434,7 +436,7 @@ export class AgentConfigStore {
         const cached = this.get(version);
         if (JSON.stringify(cached) !== JSON.stringify(bundle))
           throw new Error("config_immutable_version_conflict");
-      } else this.atomicWrite(path, JSON.stringify({ version, files }));
+      } else this.atomicWrite(path, snapshot);
       if (bundle.schemaVersion === 2) {
         const final = join(this.options.cacheDir, "versions", version);
         if (!existsSync(final)) {

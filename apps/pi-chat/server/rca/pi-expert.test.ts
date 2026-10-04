@@ -135,25 +135,7 @@ function fixture() {
 }
 
 function fakeRegistry(): ObservabilityToolRegistry {
-  return {
-    createPiTools(options: {
-      names?: string[];
-      execute?: (
-        name: string,
-        toolCallId: string,
-        parameters: Record<string, unknown>,
-      ) => Promise<unknown>;
-    }) {
-      return (options.names ?? []).map((name) => ({
-        name,
-        label: name,
-        description: name,
-        parameters: {},
-        execute: (toolCallId: string, parameters: Record<string, unknown>) =>
-          options.execute?.(name, toolCallId, parameters),
-      }));
-    },
-  } as unknown as ObservabilityToolRegistry;
+  return {} as ObservabilityToolRegistry;
 }
 
 function successfulFinding(toolCallId?: string) {

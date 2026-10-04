@@ -71,3 +71,26 @@ test("Main host refuses an already cancelled operation before touching Service",
   );
   assert.equal(calls, 0);
 });
+
+test("Main host rejects operations against a different running investigation version", async () => {
+  let calls = 0;
+  const host = createRcaMainHost({
+    rcaService: {
+      get: async () => ({ status: "running" }),
+      resolveAgentConfigVersion: async () => "old-version",
+      queryOverview: async () => {
+        calls++;
+      },
+    } as never,
+    conversationId: "test",
+    getAgentConfigVersion: () => "new-version",
+    getModelRef: () => ({ provider: "test", id: "test" }),
+    onProjection: () => {},
+    onLinkInvestigation: () => {},
+  });
+  await assert.rejects(
+    host.query_rca_overview("id", { investigationId: "test", kind: "logs" } as never),
+    /agent_config_version_mismatch/,
+  );
+  assert.equal(calls, 0);
+});

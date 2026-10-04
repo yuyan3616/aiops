@@ -347,8 +347,8 @@ export class PiExpertRunner {
       signal?.throwIfAborted();
       context.signal?.throwIfAborted();
       if (!finalizePhase) throw new Error("finding_finalize_phase_required");
-      const params = validateFindingSubmission(input);
       try {
+        const params = validateFindingSubmission(input);
         for (const claim of params.evidenceClaims) {
           if (!recordedToolCallIds.has(claim.toolCallId)) {
             throw new Error(

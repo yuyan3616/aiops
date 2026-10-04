@@ -400,6 +400,19 @@ export function createRcaMainHost(options: RcaMainHostOptions) {
       async (...args: unknown[]) => {
         const signal = args[2] as AbortSignal | undefined;
         signal?.throwIfAborted();
+        const input = args[1] as { investigationId?: string } | undefined;
+        const boundVersion = options.getAgentConfigVersion?.();
+        if (boundVersion && input?.investigationId && name !== "get_investigation_state") {
+          const investigation = await rcaService.get(input.investigationId);
+          if (investigation.status === "running" || investigation.status === "interrupted") {
+            const investigationVersion = await rcaService.resolveAgentConfigVersion(
+              input.investigationId,
+            );
+            if (investigationVersion !== boundVersion)
+              throw new Error("agent_config_version_mismatch");
+          }
+        }
+        signal?.throwIfAborted();
         return (operation as (...args: unknown[]) => Promise<unknown>)(...args);
       },
     ]),
