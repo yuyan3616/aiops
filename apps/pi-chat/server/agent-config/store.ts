@@ -2,6 +2,15 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
+import {
+  HOST_API_VERSION,
+  moduleHash,
+  preflightExtensions,
+  collectExtensionTools,
+  type ConfigExtension,
+  type ExtensionHost,
+} from "./extension-loader";
+
 export const EXPERT_TOOLS = [
   "search_traces",
   "get_trace",
@@ -32,17 +41,22 @@ export interface ConfigRole {
   systemPrompt: string;
   tools: string[];
   skills: ConfigSkill[];
+  extensions?: string[];
   capability?: string;
   useWhen?: string[];
   notFor?: string[];
 }
 export interface ConfigBundle {
+  schemaVersion: 1 | 2;
+  extensions?: Record<string, ConfigExtension>;
+  sourceFiles?: ConfigFiles;
   version: string;
   roles: Record<string, ConfigRole>;
   skills: Record<string, { id: string; title: string; content: string }>;
 }
 export type ConfigFiles = Record<string, string>;
-const MAX_BYTES = 512 * 1024;
+const MAX_BYTES = 2 * 1024 * 1024;
+const MAX_MODULE_BYTES = 256 * 1024;
 const MAX_FILE_BYTES = 64 * 1024;
 const MAX_FILES = 128;
 // Accept old persisted cache IDs for pinned investigations; no bundled files are loaded.
@@ -77,15 +91,24 @@ function identifier(value: unknown): string {
 }
 export function configPath(value: unknown): string {
   const path = string(value);
-  if (!/^(?:[a-zA-Z0-9_-]+\/)*[a-zA-Z0-9_-]+\.(?:json|md)$/.test(path))
+  if (!/^(?:[a-zA-Z0-9_-]+\/)*[a-zA-Z0-9_-]+\.(?:json|md|mjs)$/.test(path))
     throw new Error("config_invalid_path");
   return path;
 }
 export function referencedPaths(manifestText: string): string[] {
   const manifest = object(JSON.parse(manifestText));
-  keys(manifest, ["schemaVersion", "roles", "skills"]);
-  if (manifest.schemaVersion !== 1) throw new Error("config_unsupported_schema");
+  keys(manifest, [
+    "schemaVersion",
+    "roles",
+    "skills",
+    ...(manifest.schemaVersion === 2 ? ["hostApiVersion", "extensions"] : []),
+  ]);
+  if (manifest.schemaVersion !== 1 && manifest.schemaVersion !== 2)
+    throw new Error("config_unsupported_schema");
   return [
+    ...(manifest.schemaVersion === 2
+      ? Object.values(object(manifest.extensions)).map((entry) => configPath(object(entry).entry))
+      : []),
     ...strings(manifest.roles, 16).map(configPath),
     ...Object.values(object(manifest.skills)).map((entry) => configPath(object(entry).path)),
   ];
@@ -106,7 +129,10 @@ export function validateBundle(version: string, files: ConfigFiles): ConfigBundl
     throw new Error("config_bundle_too_large");
   for (const [path, content] of Object.entries(files)) {
     configPath(path);
-    if (typeof content !== "string" || Buffer.byteLength(content) > MAX_FILE_BYTES)
+    if (
+      typeof content !== "string" ||
+      Buffer.byteLength(content) > (path.endsWith(".mjs") ? MAX_MODULE_BYTES : MAX_FILE_BYTES)
+    )
       throw new Error("config_file_too_large");
   }
   const read = (path: unknown) => {
@@ -116,6 +142,32 @@ export function validateBundle(version: string, files: ConfigFiles): ConfigBundl
   };
   const manifest = object(JSON.parse(read("manifest.json")));
   referencedPaths(read("manifest.json"));
+  const schemaVersion = manifest.schemaVersion as 1 | 2;
+  if (
+    schemaVersion === 1 &&
+    (Object.keys(files).some((path) => path.endsWith(".mjs")) ||
+      Object.values(files).reduce((sum, text) => sum + Buffer.byteLength(text), 0) > 512 * 1024)
+  )
+    throw new Error("config_v1_executable_forbidden");
+  const extensions: Record<string, ConfigExtension> = Object.create(null);
+  if (schemaVersion === 2) {
+    if (manifest.hostApiVersion !== HOST_API_VERSION)
+      throw new Error("config_host_api_incompatible");
+    for (const [rawId, rawEntry] of Object.entries(object(manifest.extensions))) {
+      const id = identifier(rawId);
+      const entry = object(rawEntry);
+      keys(entry, ["entry", "sha256"]);
+      const path = configPath(entry.entry);
+      const sha256 = string(entry.sha256, 64);
+      if (
+        !path.endsWith(".mjs") ||
+        !/^[a-f0-9]{64}$/.test(sha256) ||
+        moduleHash(read(path)) !== sha256
+      )
+        throw new Error("config_module_hash_mismatch");
+      extensions[id] = { entry: path, sha256 };
+    }
+  }
   const skills: ConfigBundle["skills"] = Object.create(null);
   for (const [rawId, rawSkill] of Object.entries(object(manifest.skills))) {
     const id = identifier(rawId);
@@ -140,6 +192,7 @@ export function validateBundle(version: string, files: ConfigFiles): ConfigBundl
       "capability",
       "useWhen",
       "notFor",
+      ...(schemaVersion === 2 ? ["extensions"] : []),
     ]);
     const id = identifier(role.id);
     if (roles[id]) throw new Error("config_duplicate_role");
@@ -147,7 +200,11 @@ export function validateBundle(version: string, files: ConfigFiles): ConfigBundl
     if ((id === "main") !== (role.kind === "main")) throw new Error("config_requires_single_main");
     const tools = strings(role.tools);
     const allowed: readonly string[] = role.kind === "main" ? MAIN_TOOLS : EXPERT_TOOLS;
-    if (tools.some((tool) => !allowed.includes(tool)) || !tools.length)
+    if (
+      (schemaVersion === 1 && tools.some((tool) => !allowed.includes(tool))) ||
+      !tools.length ||
+      tools.some((tool) => !/^[a-z][a-z0-9_]{0,63}$/.test(tool) || tool === "submit_finding")
+    )
       throw new Error("config_unknown_tool");
     if (
       (tools.includes("get_trace") && !tools.includes("search_traces")) ||
@@ -169,7 +226,12 @@ export function validateBundle(version: string, files: ConfigFiles): ConfigBundl
         ...(entry.baseline !== undefined ? { baseline: entry.baseline as boolean } : {}),
       };
     });
+    const roleExtensions =
+      schemaVersion === 2 ? strings(role.extensions, 16).map(identifier) : undefined;
+    if (roleExtensions?.some((id) => !extensions[id]) || roleExtensions?.length === 0)
+      throw new Error("config_unknown_extension");
     roles[id] = {
+      ...(roleExtensions ? { extensions: roleExtensions } : {}),
       id,
       kind: role.kind,
       name: string(role.name),
@@ -183,7 +245,13 @@ export function validateBundle(version: string, files: ConfigFiles): ConfigBundl
   }
   if (!roles.main || Object.values(roles).filter((role) => role.kind === "expert").length < 1)
     throw new Error("config_missing_roles");
-  return freeze({ version, roles, skills });
+  return freeze({
+    version,
+    roles,
+    skills,
+    schemaVersion,
+    ...(schemaVersion === 2 ? { extensions, sourceFiles: { ...files } } : {}),
+  });
 }
 interface CacheSnapshot {
   version: string;
@@ -243,6 +311,52 @@ export class AgentConfigStore {
     this.bundles.set(version, bundle);
     return bundle;
   }
+  async toolsFor(version: string, roleId: string, host: ExtensionHost) {
+    const profile = this.get(version);
+    const code =
+      profile.schemaVersion === 2 ? profile : this.get(this.legacyExtensionVersion(version));
+    const role = code.roles[roleId];
+    if (!role) throw new Error("config_unknown_expert");
+    const selected =
+      profile.schemaVersion === 2
+        ? code
+        : {
+            ...code,
+            roles: {
+              ...code.roles,
+              [roleId]: { ...profile.roles[roleId]!, extensions: role.extensions },
+            },
+          };
+    const directory = this.options.cacheDir
+      ? join(this.options.cacheDir, "versions", code.version)
+      : undefined;
+    if (directory && !existsSync(join(directory, "complete.json")))
+      throw new Error("config_pinned_version_missing");
+    return collectExtensionTools(selected, roleId, host, code.sourceFiles, directory);
+  }
+  legacyExtensionVersion(version: string): string {
+    if (!this.options.cacheDir) throw new Error("config_legacy_extension_binding_missing");
+    const path = join(this.options.cacheDir, "legacy-bindings.json");
+    const bindings = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : {};
+    const code = bindings[version];
+    if (typeof code !== "string" || !/^[a-f0-9]{40}$/.test(code))
+      throw new Error("config_legacy_extension_binding_missing");
+    return code;
+  }
+  bindLegacy(version: string, extensionVersion: string) {
+    if (
+      !this.options.cacheDir ||
+      this.get(version).schemaVersion !== 1 ||
+      this.get(extensionVersion).schemaVersion !== 2
+    )
+      throw new Error("config_invalid_legacy_binding");
+    const path = join(this.options.cacheDir, "legacy-bindings.json");
+    const bindings = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : {};
+    if (bindings[version] && bindings[version] !== extensionVersion)
+      throw new Error("config_immutable_binding_conflict");
+    bindings[version] = extensionVersion;
+    this.atomicWrite(path, JSON.stringify(bindings));
+  }
   private atomicWrite(path: string, content: string) {
     mkdirSync(dirname(path), { recursive: true });
     const temporary = `${path}.${randomUUID()}.tmp`;
@@ -251,6 +365,16 @@ export class AgentConfigStore {
   }
   activate(version: string, files: ConfigFiles): ConfigBundle {
     const bundle = validateBundle(version, files);
+    if (bundle.schemaVersion === 2) throw new Error("config_requires_extension_install");
+    return this.commitBundle(bundle, files);
+  }
+  async install(version: string, files: ConfigFiles): Promise<ConfigBundle> {
+    const bundle = validateBundle(version, files);
+    if (bundle.schemaVersion === 2) await preflightExtensions(bundle, files);
+    return this.commitBundle(bundle, files);
+  }
+  private commitBundle(bundle: ConfigBundle, files: ConfigFiles): ConfigBundle {
+    const version = bundle.version;
     const existing = this.bundles.get(version);
     if (existing && JSON.stringify(existing) !== JSON.stringify(bundle))
       throw new Error("config_immutable_version_conflict");
@@ -261,6 +385,22 @@ export class AgentConfigStore {
         if (JSON.stringify(cached) !== JSON.stringify(bundle))
           throw new Error("config_immutable_version_conflict");
       } else this.atomicWrite(path, JSON.stringify({ version, files }));
+      if (bundle.schemaVersion === 2) {
+        const final = join(this.options.cacheDir, "versions", version);
+        if (!existsSync(final)) {
+          const staging = final + "." + randomUUID() + ".tmp";
+          mkdirSync(staging, { recursive: true, mode: 0o700 });
+          for (const [path, text] of Object.entries(files))
+            this.atomicWrite(join(staging, path), text);
+          this.atomicWrite(join(staging, "complete.json"), JSON.stringify({ version }));
+          renameSync(staging, final);
+        }
+        if (JSON.parse(readFileSync(join(final, "complete.json"), "utf8")).version !== version)
+          throw new Error("config_cache_version_mismatch");
+        for (const [path, content] of Object.entries(files))
+          if (readFileSync(join(final, path), "utf8") !== content)
+            throw new Error("config_immutable_version_conflict");
+      }
       this.atomicWrite(join(this.options.cacheDir, "active.json"), JSON.stringify({ version }));
     }
     this.bundles.set(version, bundle);
@@ -341,7 +481,7 @@ export class AgentConfigStore {
           if (done) break;
           bytes += value.byteLength;
           total += value.byteLength;
-          if (bytes > MAX_BYTES * 2 || total > MAX_BYTES * 4)
+          if (bytes > 1024 * 1024 || total > MAX_BYTES * 4)
             throw new Error("config_download_too_large");
           chunks.push(value);
         }
@@ -369,7 +509,7 @@ export class AgentConfigStore {
         result.encoding !== "base64" ||
         typeof result.content !== "string" ||
         typeof result.size !== "number" ||
-        result.size > MAX_FILE_BYTES
+        result.size > (path.endsWith(".mjs") ? MAX_MODULE_BYTES : MAX_FILE_BYTES)
       )
         throw new Error("config_invalid_remote_file");
       files[path] = Buffer.from(result.content, "base64").toString("utf8");
@@ -378,7 +518,7 @@ export class AgentConfigStore {
     for (const path of referencedPaths(await read("manifest.json"))) await read(path);
     for (const path of JSON.parse(files["manifest.json"]!).roles as string[])
       await read(configPath(JSON.parse(files[path]!).systemPrompt));
-    this.activate(version, files);
+    await this.install(version, files);
     this.lastRefreshError = undefined;
     return true;
   }

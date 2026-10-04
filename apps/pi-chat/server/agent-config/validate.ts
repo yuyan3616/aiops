@@ -1,6 +1,7 @@
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { resolve, sep } from "node:path";
 
+import { preflightExtensions } from "./extension-loader";
 import { configPath, referencedPaths, validateBundle, type ConfigFiles } from "./store";
 
 if (!process.argv[2])
@@ -14,7 +15,7 @@ function read(path: string): string {
   if (
     !stat.isFile() ||
     stat.isSymbolicLink() ||
-    stat.size > 64 * 1024 ||
+    stat.size > (path.endsWith(".mjs") ? 256 * 1024 : 64 * 1024) ||
     !realpathSync(absolute).startsWith(directory + sep)
   )
     throw new Error("config_invalid_file");
@@ -25,6 +26,7 @@ for (const path of referencedPaths(read("manifest.json"))) read(path);
 for (const path of JSON.parse(files["manifest.json"]!).roles as string[])
   read(configPath(JSON.parse(files[path]!).systemPrompt));
 const bundle = validateBundle("0".repeat(40), files);
+if (bundle.schemaVersion === 2) await preflightExtensions(bundle, files);
 process.stdout.write(
   `配置验证通过：${Object.keys(bundle.roles).length} 个角色，${Object.keys(bundle.skills).length} 个技能\n`,
 );
