@@ -744,10 +744,6 @@ test("pending tasks released by repeated steering still exhaust the intent Safet
 test("three Specialists may settle out of order without corrupting Budget or task identity", async (t) => {
   const resolvers = new Map<string, (value: unknown) => void>();
   let started = 0;
-  const allStarted = new Promise<void>((resolve) => {
-    const statePromise = resolve;
-    Object.assign(globalThis, { __unusedStatePromise: statePromise });
-  });
   let markAllStarted!: () => void;
   const startedBarrier = new Promise<void>((resolve) => {
     markAllStarted = resolve;
@@ -760,11 +756,7 @@ test("three Specialists may settle out of order without corrupting Budget or tas
       resolvers.set(question, resolve);
     });
   });
-  void allStarted;
-  t.after(() => {
-    delete (globalThis as { __unusedStatePromise?: unknown }).__unusedStatePromise;
-    return rm(state.directory, { recursive: true, force: true });
-  });
+  t.after(() => rm(state.directory, { recursive: true, force: true }));
 
   const dispatch = state.service.dispatchAgentic(
     "INV-v2-out-of-order",
