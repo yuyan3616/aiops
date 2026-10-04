@@ -739,3 +739,106 @@ test("pending tasks released by repeated steering still exhaust the intent Safet
     /safety limit reached: task intents/,
   );
 });
+
+
+test("three Specialists may settle out of order without corrupting Budget or task identity", async (t) => {
+  const resolvers = new Map<string, (value: unknown) => void>();
+  let started = 0;
+  const allStarted = new Promise<void>((resolve) => {
+    const statePromise = resolve;
+    Object.assign(globalThis, { __unusedStatePromise: statePromise });
+  });
+  let markAllStarted!: () => void;
+  const startedBarrier = new Promise<void>((resolve) => {
+    markAllStarted = resolve;
+  });
+  const state = await setup("INV-v2-out-of-order", async (context: unknown) => {
+    const question = (context as { brief: InvestigationBrief }).brief.question;
+    started++;
+    if (started === 3) markAllStarted();
+    return new Promise((resolve) => {
+      resolvers.set(question, resolve);
+    });
+  });
+  void allStarted;
+  t.after(() => {
+    delete (globalThis as { __unusedStatePromise?: unknown }).__unusedStatePromise;
+    return rm(state.directory, { recursive: true, force: true });
+  });
+
+  const dispatch = state.service.dispatchAgentic(
+    "INV-v2-out-of-order",
+    [brief("first"), brief("second"), brief("third")],
+    { dispatchOperationId: "op-out-of-order" },
+  );
+  await startedBarrier;
+  resolvers.get("third")!(await success());
+  await new Promise((resolve) => setTimeout(resolve, 1));
+  resolvers.get("first")!(await success());
+  await new Promise((resolve) => setTimeout(resolve, 1));
+  resolvers.get("second")!(await success());
+
+  const result = await dispatch;
+  assert.deepEqual(result.findings.map((item) => item.taskRef), ["T01", "T02", "T03"]);
+  const persisted = await state.repository.get("INV-v2-out-of-order");
+  assert.deepEqual(persisted.expertTasks.map((task) => task.status), [
+    "completed",
+    "completed",
+    "completed",
+  ]);
+  assert.equal(foldBudget(persisted).projection.primary.used, 3);
+  assert.equal(foldBudget(persisted).projection.primary.reserved, 0);
+});
+
+test("steering storage failure still aborts the underlying Specialist and leaves no late Evidence or slot leak", async (t) => {
+  let markStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  let sawAbort = false;
+  const state = await setup("INV-v2-steer-storage-failure", async (context: unknown) => {
+    const signal = (context as { signal: AbortSignal }).signal;
+    markStarted();
+    return new Promise((_resolve, reject) => {
+      const onAbort = () => {
+        sawAbort = true;
+        reject(new DOMException("steered", "AbortError"));
+      };
+      if (signal.aborted) onAbort();
+      else signal.addEventListener("abort", onAbort, { once: true });
+    });
+  });
+  t.after(() => rm(state.directory, { recursive: true, force: true }));
+
+  const dispatch = state.service.dispatchAgentic(
+    "INV-v2-steer-storage-failure",
+    [brief("old investigation")],
+    { dispatchOperationId: "op-steer-storage-failure" },
+  );
+  await started;
+
+  const originalSave = state.repository.save.bind(state.repository);
+  Object.assign(state.repository, {
+    save: async (investigation: Investigation) => {
+      if (investigation.userInterventions?.some((item) => item.content === "new context")) {
+        throw new Error("injected intervention storage failure");
+      }
+      return originalSave(investigation);
+    },
+  });
+
+  await assert.rejects(
+    state.service.recordUserIntervention("INV-v2-steer-storage-failure", "new context"),
+    /injected intervention storage failure/,
+  );
+  const outcome = await dispatch;
+  assert.equal(sawAbort, true);
+  assert.equal(outcome.interrupted, true);
+
+  const persisted = await state.repository.get("INV-v2-steer-storage-failure");
+  assert.equal(persisted.userInterventions?.length ?? 0, 0);
+  assert.equal(persisted.expertTasks[0]?.status, "cancelled");
+  assert.equal(persisted.evidence.length, 0);
+  assert.equal(state.service.getBudgetProjection(persisted).runtime.running, 0);
+  assert.equal(foldBudget(persisted).projection.primary.reserved, 0);
+});
