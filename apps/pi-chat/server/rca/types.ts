@@ -82,6 +82,8 @@ export interface Hypothesis {
 }
 
 export interface Observation {
+  timeRange?: TimeRange;
+  sourceItems?: string[];
   id: string;
   investigationId?: string;
   caseId?: string;
@@ -136,6 +138,7 @@ export interface InvestigationBrief {
 }
 
 export interface AgentEvidenceClaim {
+  sourceItems?: string[];
   toolCallId: string;
   modality: EvidenceModality;
   entity?: string;
@@ -257,6 +260,7 @@ export interface RuntimeResourceSnapshot {
 }
 
 export interface ToolCallRecord {
+  sourceItems?: string[];
   id: string;
   expertTaskId?: string;
   tool: string;

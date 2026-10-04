@@ -51,6 +51,8 @@ export interface LiveProviderResult<T> {
   data: T;
   warnings: string[];
   truncationReasons: string[];
+  /** References local to this immutable query snapshot, in data-array order. */
+  sourceItems?: string[];
 }
 
 export interface LiveTarget {
@@ -79,6 +81,8 @@ export interface LiveSpan {
   operation: string;
   startTime?: string;
   endTime?: string;
+  startTimeUnixNano?: string;
+  endTimeUnixNano?: string;
   durationMs?: number;
   status: "ok" | "error" | "unset";
   attributes: Record<string, string | number | boolean>;
@@ -93,6 +97,7 @@ export interface LiveTrace {
     missingParents: boolean;
     unfinishedSpans: boolean;
   };
+  analysis?: ReturnType<typeof import("./trace-analysis").analyzeTrace>;
 }
 
 export interface LiveLogRecord {
@@ -194,10 +199,7 @@ export function validSpanId(value: string): boolean {
 
 export function redactTelemetryText(value: string): string {
   return value
-    .replace(
-      /\bauthorization\b\s*[:=]\s*(?:Bearer|Basic)\s+[^\s,;]+/gi,
-      "authorization=[REDACTED]",
-    )
+    .replace(/\bauthorization\b\s*[:=]\s*(?:Bearer|Basic)\s+[^\s,;]+/gi, "authorization=[REDACTED]")
     .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, "Bearer [REDACTED]")
     .replace(
       /\b(api[_-]?key|secret|password|passwd|authorization|token)\b\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,

@@ -1,6 +1,14 @@
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 
+import type {
+  LogSearchInput,
+  MetricDiscoverInput,
+  MetricQueryInput,
+  ProviderSet,
+  TraceGetInput,
+  TraceSearchInput,
+} from "./live/providers";
 import {
   LIVE_CONTRACT_VERSION,
   LIVE_LIMITS,
@@ -10,14 +18,6 @@ import {
   type MetricDescriptor,
   validateTimeRange,
 } from "./live/types";
-import type {
-  LogSearchInput,
-  MetricDiscoverInput,
-  MetricQueryInput,
-  ProviderSet,
-  TraceGetInput,
-  TraceSearchInput,
-} from "./live/providers";
 import type { Investigation, TimeRange } from "./types";
 
 export const OBSERVABILITY_TOOL_NAMES = [
@@ -98,7 +98,9 @@ function mergeTarget(base: LiveTarget, requested: LiveTarget): LiveTarget {
   return {
     ...base,
     ...Object.fromEntries(
-      Object.entries(requested).filter(([, value]) => typeof value === "string" && value.length > 0),
+      Object.entries(requested).filter(
+        ([, value]) => typeof value === "string" && value.length > 0,
+      ),
     ),
   };
 }
@@ -140,9 +142,13 @@ function resolveWindow(
   validateTimeRange(requested);
   if (row.kind === "baseline") {
     if (overlaps(incident, requested)) {
-      throw new LiveBackendError("invalid_query", "Baseline window must not overlap incident window", {
-        backendAlias: "registry",
-      });
+      throw new LiveBackendError(
+        "invalid_query",
+        "Baseline window must not overlap incident window",
+        {
+          backendAlias: "registry",
+        },
+      );
     }
     return { window: requested };
   }
@@ -172,11 +178,8 @@ function auditArguments(
     ...rest,
     target,
     window,
+    windowKind: object(_window)?.kind ?? "incident",
   };
-}
-
-function byteLength(value: unknown): number {
-  return Buffer.byteLength(JSON.stringify(value), "utf8");
 }
 
 function compactUnknown(value: unknown, arrayLimit: number): unknown {
@@ -196,11 +199,12 @@ function compactUnknown(value: unknown, arrayLimit: number): unknown {
   );
 }
 
-export function compactToolResultForAgent(
-  _tool: ObservabilityToolName,
-  result: unknown,
-): unknown {
-  if (byteLength(result) <= LIVE_LIMITS.maxAgentToolBytes) return result;
+export function compactToolResultForAgent(_tool: ObservabilityToolName, result: unknown): unknown {
+  // Budget the final serialized text, including the Specialist wrapper.
+  const fits = (value: unknown) =>
+    Buffer.byteLength(JSON.stringify({ toolCallId: "C0000000000", result: value }), "utf8") <=
+    LIVE_LIMITS.maxAgentToolBytes - 1024;
+  if (fits(result)) return result;
   for (const limit of [20, 10, 5, 2]) {
     const compact = compactUnknown(result, limit);
     const wrapped = {
@@ -208,7 +212,7 @@ export function compactToolResultForAgent(
       truncationReason: `agent_tool_text_limit:${LIVE_LIMITS.maxAgentToolBytes}`,
       result: compact,
     };
-    if (byteLength(wrapped) <= LIVE_LIMITS.maxAgentToolBytes) return wrapped;
+    if (fits(wrapped)) return wrapped;
   }
   const row = object(result);
   return {
@@ -242,7 +246,7 @@ function resultSummary(tool: ObservabilityToolName, result: LiveProviderResult<u
 function toolResult(result: unknown) {
   const compact = compactToolResultForAgent("search_logs", result);
   return {
-    content: [{ type: "text" as const, text: JSON.stringify(compact, null, 2) }],
+    content: [{ type: "text" as const, text: JSON.stringify(compact) }],
     details: result,
   };
 }
@@ -273,6 +277,36 @@ export class ObservabilityToolRegistry {
 
   constructor(providers: ProviderSet) {
     this.providers = providers;
+  }
+
+  clearAuthorization(investigationId: string): void {
+    this.allowedTraceIds.delete(investigationId);
+    this.metricCatalog.delete(investigationId);
+  }
+
+  /** Called only after the ToolCall and its snapshot have been committed. */
+  authorizeCompletedResult(investigationId: string, tool: string, result: unknown): void {
+    const envelope = object(result);
+    if (envelope?.status !== "success" && envelope?.status !== "partial") return;
+    const data = object(envelope.data);
+    if (tool === "search_traces" && Array.isArray(data?.traces)) {
+      const allowed = this.allowedTraceIds.get(investigationId) ?? new Set<string>();
+      for (const entry of data.traces) {
+        const row = object(entry);
+        if (typeof row?.traceId === "string") allowed.add(row.traceId);
+      }
+      this.allowedTraceIds.set(investigationId, allowed);
+    }
+    if (tool === "discover_metrics" && Array.isArray(data?.metrics)) {
+      const catalog =
+        this.metricCatalog.get(investigationId) ?? new Map<string, MetricDescriptor>();
+      for (const entry of data.metrics) {
+        const descriptor = object(entry) as unknown as MetricDescriptor | undefined;
+        if (descriptor && typeof descriptor.name === "string")
+          catalog.set(descriptor.name, descriptor);
+      }
+      this.metricCatalog.set(investigationId, catalog);
+    }
   }
 
   names(): readonly ObservabilityToolName[] {
@@ -350,14 +384,6 @@ export class ObservabilityToolRegistry {
           ),
         };
         result = await this.providers.trace.searchTraces(input, signal);
-        const data = object(result.data);
-        const traces = Array.isArray(data?.traces) ? data.traces : [];
-        const allowed = this.allowedTraceIds.get(investigationId) ?? new Set<string>();
-        for (const item of traces) {
-          const row = object(item);
-          if (typeof row?.traceId === "string") allowed.add(row.traceId);
-        }
-        this.allowedTraceIds.set(investigationId, allowed);
         break;
       }
       case "get_trace": {
@@ -432,15 +458,6 @@ export class ObservabilityToolRegistry {
           limit: Math.min(typeof args.limit === "number" ? Math.floor(args.limit) : 50, 100),
         };
         result = await this.providers.metrics.discoverMetrics(input, signal);
-        const rows = object(result.data)?.metrics;
-        const catalog = this.metricCatalog.get(investigationId) ?? new Map<string, MetricDescriptor>();
-        if (Array.isArray(rows)) {
-          for (const entry of rows) {
-            const descriptor = object(entry) as unknown as MetricDescriptor | undefined;
-            if (descriptor && typeof descriptor.name === "string") catalog.set(descriptor.name, descriptor);
-          }
-        }
-        this.metricCatalog.set(investigationId, catalog);
         break;
       }
       case "query_metrics": {
@@ -517,6 +534,7 @@ export class ObservabilityToolRegistry {
     }
 
     if (signal?.aborted) throw new DOMException("Investigation cancelled", "AbortError");
+    result.sourceItems = sourceItemsForResult(prepared.tool, result);
     return {
       tool: prepared.tool,
       arguments: prepared.arguments,
@@ -571,7 +589,10 @@ export class ObservabilityToolRegistry {
       async (toolCallId: string, parameters: Record<string, unknown>) =>
         options.execute
           ? options.execute(name, toolCallId, parameters)
-          : toolResult({ status: "unsupported", warnings: ["Service execution context is required."] });
+          : toolResult({
+              status: "unsupported",
+              warnings: ["Service execution context is required."],
+            });
 
     const definitions = [
       defineTool({
@@ -593,8 +614,7 @@ export class ObservabilityToolRegistry {
       defineTool({
         name: "get_trace",
         label: "读取 Trace",
-        description:
-          "读取本调查中 search_traces 已返回的 traceId。任意 traceId 不会被授权。",
+        description: "读取本调查中 search_traces 已返回的 traceId。任意 traceId 不会被授权。",
         parameters: Type.Object({
           ...scope,
           traceId: Type.String({ minLength: 32, maxLength: 32 }),
@@ -690,4 +710,34 @@ export class ObservabilityToolRegistry {
       providerAttemptLifecycle: false,
     };
   }
+}
+
+export function sourceItemsForResult(tool: string, result: LiveProviderResult<unknown>): string[] {
+  const data = object(result.data);
+  if (tool === "get_trace") {
+    const spans = object(data?.trace)?.spans;
+    return Array.isArray(spans)
+      ? spans.flatMap((span) => {
+          const id = object(span)?.spanId;
+          return typeof id === "string" ? [`span:${id}`] : [];
+        })
+      : [];
+  }
+  if (tool === "search_traces")
+    return Array.isArray(data?.traces)
+      ? data.traces.flatMap((trace) => {
+          const id = object(trace)?.traceId;
+          return typeof id === "string" ? [`trace:${id}`] : [];
+        })
+      : [];
+  if (tool === "search_logs")
+    return Array.isArray(data?.logs) ? data.logs.map((_, index) => `log:${index}`) : [];
+  if (tool === "query_metrics")
+    return Array.isArray(data?.series) ? data.series.map((_, index) => `series:${index}`) : [];
+  return Array.isArray(data?.metrics)
+    ? data.metrics.flatMap((metric) => {
+        const name = object(metric)?.name;
+        return typeof name === "string" ? [`metric:${name}`] : [];
+      })
+    : [];
 }

@@ -9,13 +9,13 @@ import {
   type ModelRuntime,
 } from "@earendil-works/pi-coding-agent";
 
+import { LIVE_LIMITS } from "./live/types";
 import {
   buildExpertSystemPrompt,
   getExpertProfile,
   normalizeFindingForProfile,
 } from "./profiles/registry";
 import { AgentUsageAccumulator, safeRuntimeDetail } from "./runtime-accounting";
-import { LIVE_LIMITS } from "./live/types";
 import {
   compactToolResultForAgent,
   type ObservabilityToolName,
@@ -204,6 +204,13 @@ function findingToolParameters() {
         Type.Object(
           {
             toolCallId: Type.String({ minLength: 1, maxLength: 64 }),
+            sourceItems: Type.Optional(
+              Type.Array(Type.String({ minLength: 1, maxLength: 256 }), {
+                maxItems: 20,
+                description:
+                  "Snapshot-local sourceItems from the referenced tool result, e.g. span:<spanId>, log:0 or series:0. Required when returned facts exist.",
+              }),
+            ),
             modality: Type.Union([
               Type.Literal("metric"),
               Type.Literal("log"),
@@ -333,11 +340,13 @@ export class PiExpertRunner {
     const toolDefinitions = this.tools.createPiTools({
       names: profile.tools,
       execute: async (name, _toolCallId, parameters) => {
+        if (expertResultBytes > LIVE_LIMITS.maxExpertResultBytes - LIVE_LIMITS.maxAgentToolBytes) {
+          activateFinalizePhase?.();
+          throw new Error("专家累计结果预算已接近上限，请基于已观察证据提交 finding。");
+        }
         if (toolCallCount >= profile.maxToolCalls) {
           activateFinalizePhase?.();
-          throw new Error(
-            `${profile.label} 的调查工具预算已用完。请停止取证并提交最终 finding。`,
-          );
+          throw new Error(`${profile.label} 的调查工具预算已用完。请停止取证并提交最终 finding。`);
         }
         const toolBudget = profile.toolBudgets?.[name];
         const currentToolCalls = perToolCalls.get(name) ?? 0;
@@ -362,11 +371,7 @@ export class PiExpertRunner {
         sampleProcessMemory();
         recordedToolCallIds.add(recorded.callId);
         const compactResult = compactToolResultForAgent(name, recorded.execution.result);
-        const compactText = JSON.stringify(
-          { toolCallId: recorded.callId, result: compactResult },
-          null,
-          2,
-        );
+        const compactText = JSON.stringify({ toolCallId: recorded.callId, result: compactResult });
         const resultBytes = Buffer.byteLength(compactText, "utf8");
         expertResultBytes += resultBytes;
         const expertBudgetExceeded = expertResultBytes > LIVE_LIMITS.maxExpertResultBytes;
@@ -660,6 +665,7 @@ export class PiExpertRunner {
         )
         .map((item) => ({
           toolCallId: typeof item.toolCallId === "string" ? item.toolCallId : "",
+          ...(Array.isArray(item.sourceItems) ? { sourceItems: strings(item.sourceItems) } : {}),
           modality: item.modality as EvidenceModality,
           ...(typeof item.entity === "string" && item.entity.trim()
             ? { entity: item.entity.trim().slice(0, 200) }

@@ -5,16 +5,8 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { LiveHttpClient } from "./live/http-client";
-import {
-  LogProvider,
-  MetricsProvider,
-  TraceProvider,
-} from "./live/providers";
-import {
-  LIVE_LIMITS,
-  LiveBackendError,
-  type MetricDescriptor,
-} from "./live/types";
+import { LogProvider, MetricsProvider, TraceProvider } from "./live/providers";
+import { LIVE_LIMITS, LiveBackendError, type MetricDescriptor } from "./live/types";
 import { InvestigationRepository } from "./repository";
 import { RcaService } from "./service";
 import { ObservabilityToolRegistry } from "./tools";
@@ -184,11 +176,9 @@ test("LiveHttpClient enforces auth, response size, timeout and finite retry sema
     baseUrl: "http://backend.test",
     backendAlias: "size",
     fetchImpl: (async () =>
-      jsonResponse(
-        {},
-        200,
-        { "content-length": String(LIVE_LIMITS.maxBackendBodyBytes + 1) },
-      )) as typeof fetch,
+      jsonResponse({}, 200, {
+        "content-length": String(LIVE_LIMITS.maxBackendBodyBytes + 1),
+      })) as typeof fetch,
   });
   await assert.rejects(
     oversized.requestJson({ path: "/size" }),
@@ -288,6 +278,7 @@ test("TraceProvider returns bounded partial search results and Registry authoriz
 
   const prepared = registry.prepare("search_traces", { limit: 2 }, investigation);
   const searched = await registry.executePrepared(investigation.id, prepared);
+  registry.authorizeCompletedResult(investigation.id, prepared.tool, searched.result);
   assert.equal(searched.result.status, "partial");
   assert.deepEqual(searched.result.truncationReasons, ["trace_search_limit:2"]);
   assert.equal((searched.result.data as { traces: unknown[] }).traces.length, 2);
@@ -384,7 +375,7 @@ test("MetricsProvider preserves Counter reset, Histogram quantile, Gauge and uni
             method: "POST",
             api_key: "must-not-leak",
           },
-          { __name__: "http_server_duration", service: "checkout", le: "0.5" },
+          { __name__: "http_server_duration_bucket", service: "checkout", le: "0.5" },
           { __name__: "process_cpu_usage", service: "checkout" },
         ],
       });
@@ -406,7 +397,10 @@ test("MetricsProvider preserves Counter reset, Histogram quantile, Gauge and uni
         result: [
           {
             metric: { service: "checkout" },
-            values: [[1791072000, "1"], [1791072030, "2"]],
+            values: [
+              [1791072000, "1"],
+              [1791072030, "2"],
+            ],
           },
         ],
       },
@@ -609,8 +603,5 @@ test("legacy RCA100 investigations reject all Service write paths with legacy_re
   for (const operation of operations) {
     await assert.rejects(operation, /legacy_read_only/);
   }
-  await assert.rejects(
-    service.beginAgentic("t039"),
-    /legacy_read_only/,
-  );
+  await assert.rejects(service.beginAgentic("t039"), /legacy_read_only/);
 });

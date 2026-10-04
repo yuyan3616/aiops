@@ -37,25 +37,29 @@ test("restart recovery closes running RCA work and is idempotent", async (t) => 
     hypotheses: [],
     observations: [],
     evidence: [],
-    expertTasks: [{
-      id: "T01",
-      expert: "trace",
-      objective: "locate latency",
-      status: "running",
-      hypothesisIds: [],
-      toolCallIds: ["C01"],
-      evidenceIds: [],
-      implementation: "pi-session",
-      createdAt: "2026-09-28T00:00:00.000Z",
-    }],
-    toolCalls: [{
-      id: "C01",
-      expertTaskId: "T01",
-      tool: "query_traces",
-      query: { service: "checkout" },
-      status: "running",
-      startedAt: "2026-09-28T00:00:00.000Z",
-    }],
+    expertTasks: [
+      {
+        id: "T01",
+        expert: "trace",
+        objective: "locate latency",
+        status: "running",
+        hypothesisIds: [],
+        toolCallIds: ["C01"],
+        evidenceIds: [],
+        implementation: "pi-session",
+        createdAt: "2026-09-28T00:00:00.000Z",
+      },
+    ],
+    toolCalls: [
+      {
+        id: "C01",
+        expertTaskId: "T01",
+        tool: "query_traces",
+        query: { service: "checkout" },
+        status: "running",
+        startedAt: "2026-09-28T00:00:00.000Z",
+      },
+    ],
     rounds: 1,
     startedAt: "2026-09-28T00:00:00.000Z",
   };
@@ -98,12 +102,14 @@ test("restart recovery closes running RCA work and is idempotent", async (t) => 
       "investigation.interrupted",
     ],
   );
-  assert.deepEqual(events.map((event) => event.id), [1, 2, 3, 4, 5]);
+  assert.deepEqual(
+    events.map((event) => event.id),
+    [1, 2, 3, 4, 5],
+  );
 
   assert.deepEqual(await repository.recoverInterrupted(), []);
   assert.equal((await repository.listEvents("INV-test")).length, 5);
 });
-
 
 test("terminal RCA state cannot be regressed by a stale whole-document save", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "pi-chat-rca-terminal-"));
@@ -134,25 +140,29 @@ test("terminal RCA state cannot be regressed by a stale whole-document save", as
     hypotheses: [],
     observations: [],
     evidence: [],
-    expertTasks: [{
-      id: "T01",
-      expert: "trace",
-      objective: "locate latency",
-      status: "running",
-      hypothesisIds: [],
-      toolCallIds: ["C01"],
-      evidenceIds: [],
-      implementation: "pi-session",
-      createdAt: "2026-09-28T00:00:00.000Z",
-    }],
-    toolCalls: [{
-      id: "C01",
-      expertTaskId: "T01",
-      tool: "query_traces",
-      query: { service: "checkout" },
-      status: "running",
-      startedAt: "2026-09-28T00:00:00.000Z",
-    }],
+    expertTasks: [
+      {
+        id: "T01",
+        expert: "trace",
+        objective: "locate latency",
+        status: "running",
+        hypothesisIds: [],
+        toolCallIds: ["C01"],
+        evidenceIds: [],
+        implementation: "pi-session",
+        createdAt: "2026-09-28T00:00:00.000Z",
+      },
+    ],
+    toolCalls: [
+      {
+        id: "C01",
+        expertTaskId: "T01",
+        tool: "query_traces",
+        query: { service: "checkout" },
+        status: "running",
+        startedAt: "2026-09-28T00:00:00.000Z",
+      },
+    ],
     rounds: 1,
     startedAt: "2026-09-28T00:00:00.000Z",
   };
@@ -214,8 +224,6 @@ test("persists Markdown report artifacts and reads legacy JSON reports", async (
   );
   assert.equal(await repository.getReport(legacyId), report + "\n");
 });
-
-
 
 test("restart projection repair reconstructs missing Live events idempotently", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "pi-chat-rca-projection-repair-"));
@@ -301,14 +309,15 @@ test("restart projection repair reconstructs missing Live events idempotently", 
   await repository.save(investigation);
 
   assert.deepEqual(await repository.recoverProjections(), [investigation.id]);
+  const repairedJournal = await readFile(
+    join(repository.directory(investigation.id), "tool-calls.jsonl"),
+    "utf8",
+  );
+  assert.equal(repairedJournal.trim().split("\n").length, 1);
+  assert.equal(JSON.parse(repairedJournal).id, "C01");
   assert.deepEqual(
     (await repository.listEvents(investigation.id)).map((event) => event.type),
-    [
-      "tool.completed",
-      "observation.created",
-      "evidence.created",
-      "investigation.completed",
-    ],
+    ["tool.completed", "observation.created", "evidence.created", "investigation.completed"],
   );
   assert.deepEqual(await repository.recoverProjections(), []);
 });

@@ -1,4 +1,6 @@
+import type { TimeRange } from "../types";
 import { LiveHttpClient, type LiveHttpClientOptions } from "./http-client";
+import { analyzeTrace } from "./trace-analysis";
 import {
   LIVE_LIMITS,
   LIVE_CONTRACT_VERSION,
@@ -18,7 +20,6 @@ import {
   validTraceId,
   validateTimeRange,
 } from "./types";
-import type { TimeRange } from "../types";
 
 export interface ProviderSet {
   trace?: TraceProvider;
@@ -58,6 +59,21 @@ function object(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
+function invalidResponse(backendAlias: string, message: string): never {
+  throw new LiveBackendError("invalid_response", message, { backendAlias });
+}
+
+function responseData(raw: unknown, backendAlias: string): Record<string, unknown> {
+  const row = object(raw);
+  if (!row || (row.status !== undefined && row.status !== "success") || !object(row.data)) {
+    return invalidResponse(backendAlias, "Backend returned an invalid success envelope");
+  }
+  return object(row.data)!;
+}
+
+function nanoString(value: unknown): string | undefined {
+  return typeof value === "string" && /^\d+$/.test(value) ? value : undefined;
+}
 
 function normalizeOtelId(value: unknown, bytes: 8 | 16): string | undefined {
   if (typeof value !== "string") return undefined;
@@ -94,11 +110,7 @@ function otlpAttributes(value: unknown): Record<string, string | number | boolea
     if (sensitiveTelemetryKey(row.key)) continue;
     const raw = object(row.value);
     const candidate =
-      raw?.stringValue ??
-      raw?.intValue ??
-      raw?.doubleValue ??
-      raw?.boolValue ??
-      row.value;
+      raw?.stringValue ?? raw?.intValue ?? raw?.doubleValue ?? raw?.boolValue ?? row.value;
     const safe = safeAttributeValue(candidate);
     if (safe !== undefined) output[row.key.slice(0, 128)] = safe;
   }
@@ -185,26 +197,33 @@ export class TraceProvider {
     validateTimeRange(input.window);
     const service = input.target.service;
     if (!service) {
-      return providerResult(this.backendAlias, input.window, { operation: "search_traces" }, {
-        traces: [],
-        sampleCount: 0,
-      }, {
-        status: "unsupported",
-        warnings: ["Trace search requires a service target; entity/container are not guessed as service."],
-      });
+      return providerResult(
+        this.backendAlias,
+        input.window,
+        { operation: "search_traces" },
+        {
+          traces: [],
+          sampleCount: 0,
+        },
+        {
+          status: "unsupported",
+          warnings: [
+            "Trace search requires a service target; entity/container are not guessed as service.",
+          ],
+        },
+      );
     }
     const limit = Math.max(1, Math.min(Math.floor(input.limit ?? 20), LIVE_LIMITS.maxTraces));
     const predicates = [`resource.service.name = ${quote(service)}`];
     const operation = input.operation ?? input.target.operation;
     if (operation) predicates.push(`name = ${quote(operation)}`);
-    if (input.status) predicates.push(`status = ${input.status === "error" ? "error" : input.status}`);
+    if (input.status)
+      predicates.push(`status = ${input.status === "error" ? "error" : input.status}`);
     if (typeof input.minDurationMs === "number" && Number.isFinite(input.minDurationMs)) {
       predicates.push(`duration >= ${Math.max(0, input.minDurationMs)}ms`);
     }
     if (input.target.environment) {
-      predicates.push(
-        `resource.deployment.environment.name = ${quote(input.target.environment)}`,
-      );
+      predicates.push(`resource.deployment.environment.name = ${quote(input.target.environment)}`);
     }
     const compiled = `{ ${predicates.join(" && ")} }`;
     const search = new URLSearchParams({
@@ -218,7 +237,9 @@ export class TraceProvider {
       search,
       signal,
     });
-    const rows = Array.isArray(raw.traces) ? raw.traces : [];
+    if (!object(raw) || !Array.isArray(raw.traces))
+      invalidResponse(this.backendAlias, "Tempo search response requires traces");
+    const rows = raw.traces as unknown[];
     const traces: LiveTraceSummary[] = [];
     for (const item of rows.slice(0, limit)) {
       const row = object(item);
@@ -245,7 +266,7 @@ export class TraceProvider {
         ...(typeof row.spanCount === "number" ? { spanCount: row.spanCount } : {}),
       });
     }
-    const truncated = rows.length > limit;
+    const truncated = rows.length >= limit;
     return providerResult(
       this.backendAlias,
       input.window,
@@ -290,9 +311,12 @@ export class TraceProvider {
       headers: { Accept: "application/json" },
       signal,
     });
+    const payload = object(raw?.trace) ?? object(raw);
     const batches =
-      (Array.isArray(raw.batches) ? raw.batches : undefined) ??
-      (Array.isArray(raw.resourceSpans) ? raw.resourceSpans : []);
+      (Array.isArray(payload?.batches) ? payload.batches : undefined) ??
+      (Array.isArray(payload?.resourceSpans) ? payload.resourceSpans : undefined);
+    if (!batches)
+      invalidResponse(this.backendAlias, "Tempo trace response requires resourceSpans or batches");
     const spans: LiveTrace["spans"] = [];
     let sawMore = false;
     for (const batch of batches) {
@@ -313,13 +337,14 @@ export class TraceProvider {
           }
           const row = object(rawSpan);
           if (!row) continue;
-          const currentTraceId = traceId(row.traceId ?? row.traceID) ?? id;
+          const currentTraceId = traceId(row.traceId ?? row.traceID);
+          if (currentTraceId !== id)
+            invalidResponse(this.backendAlias, "Tempo span traceId does not match requested trace");
           const currentSpanId = spanId(row.spanId ?? row.spanID);
           if (!currentSpanId) continue;
           const parent = spanId(row.parentSpanId ?? row.parentSpanID);
-          const startNs =
-            typeof row.startTimeUnixNano === "string" ? row.startTimeUnixNano : undefined;
-          const endNs = typeof row.endTimeUnixNano === "string" ? row.endTimeUnixNano : undefined;
+          const startNs = nanoString(row.startTimeUnixNano);
+          const endNs = nanoString(row.endTimeUnixNano);
           spans.push({
             traceId: currentTraceId,
             spanId: currentSpanId,
@@ -328,6 +353,8 @@ export class TraceProvider {
             operation: boundedString(row.name, 256) ?? "unknown",
             ...(startNs && nanoToIso(startNs) ? { startTime: nanoToIso(startNs) } : {}),
             ...(endNs && nanoToIso(endNs) ? { endTime: nanoToIso(endNs) } : {}),
+            ...(startNs ? { startTimeUnixNano: startNs } : {}),
+            ...(endNs ? { endTimeUnixNano: endNs } : {}),
             ...(durationMs(startNs, endNs) !== undefined
               ? { durationMs: durationMs(startNs, endNs) }
               : {}),
@@ -341,26 +368,38 @@ export class TraceProvider {
     }
     const ids = new Set(spans.map((span) => span.spanId));
     const missingParents = spans.some((span) => span.parentSpanId && !ids.has(span.parentSpanId));
-    const unfinishedSpans = spans.some((span) => !span.endTime);
+    const unfinishedSpans = spans.some(
+      (span) => !span.endTime || span.durationMs === undefined || span.durationMs <= 0,
+    );
+    const backendPartial = raw.status === "PARTIAL" || raw.status === "partial";
     const trace: LiveTrace = {
       traceId: id,
       spans,
       completeness: {
-        state: sawMore || missingParents || unfinishedSpans ? "partial" : "unknown",
+        state:
+          backendPartial || sawMore || missingParents || unfinishedSpans ? "partial" : "unknown",
         truncated: sawMore,
         missingParents,
         unfinishedSpans,
       },
     };
+    trace.analysis = analyzeTrace(trace);
     return providerResult(
       this.backendAlias,
       input.window,
       { operation: "get_trace", traceId: id, target: input.target },
       { trace },
       {
-        status: spans.length === 0 ? "no_data" : sawMore ? "partial" : "success",
+        status:
+          backendPartial || sawMore || missingParents || unfinishedSpans
+            ? "partial"
+            : spans.length === 0
+              ? "no_data"
+              : "success",
         warnings: [
           "Trace completeness is unknown unless the backend provides explicit sampling/completeness metadata.",
+          ...(backendPartial ? ["Tempo reported a partial trace."] : []),
+          ...trace.analysis.warnings,
         ],
         truncationReasons: sawMore ? [`trace_span_limit:${LIVE_LIMITS.maxTraceSpans}`] : [],
       },
@@ -436,18 +475,13 @@ function decodeLogLine(
         : undefined;
   const inner = nestedText ? parseJsonLine(nestedText.trim()) : outer;
   const rawMessage =
-    inner.msg ??
-    inner.message ??
-    inner.body ??
-    outer.msg ??
-    outer.message ??
-    nestedText ??
-    line;
-  const eventTime =
-    [inner.time, inner.timestamp, outer.time, outer.timestamp].find(
-      (value): value is string => typeof value === "string" && Number.isFinite(Date.parse(value)),
-    );
-  const normalizedTrace = traceId(inner.traceId ?? inner.trace_id ?? outer.traceId ?? outer.trace_id);
+    inner.msg ?? inner.message ?? inner.body ?? outer.msg ?? outer.message ?? nestedText ?? line;
+  const eventTime = [inner.time, inner.timestamp, outer.time, outer.timestamp].find(
+    (value): value is string => typeof value === "string" && Number.isFinite(Date.parse(value)),
+  );
+  const normalizedTrace = traceId(
+    inner.traceId ?? inner.trace_id ?? outer.traceId ?? outer.trace_id,
+  );
   const normalizedSpan = spanId(inner.spanId ?? inner.span_id ?? outer.spanId ?? outer.span_id);
   return {
     timestamp: eventTime ? new Date(eventTime).toISOString() : logTimestamp(envelopeNs),
@@ -476,11 +510,13 @@ function decodeLogLine(
 }
 
 function logMatches(record: LiveLogRecord, input: LogSearchInput): boolean {
-  if (input.severity && record.severity?.toLowerCase() !== input.severity.toLowerCase()) return false;
+  if (input.severity && record.severity?.toLowerCase() !== input.severity.toLowerCase())
+    return false;
   if (
     input.lifecycleStatus &&
     record.lifecycleStatus?.toLowerCase() !== input.lifecycleStatus.toLowerCase()
-  ) return false;
+  )
+    return false;
   if (input.event && record.event?.toLowerCase() !== input.event.toLowerCase()) return false;
   if (input.traceId && record.traceId !== input.traceId.toLowerCase()) return false;
   if (input.spanId && record.spanId !== input.spanId.toLowerCase()) return false;
@@ -505,7 +541,9 @@ export class LogProvider {
   async searchLogs(
     input: LogSearchInput,
     signal?: AbortSignal,
-  ): Promise<LiveProviderResult<{ logs: LiveLogRecord[]; sampleCount: number; matched: "unknown" }>> {
+  ): Promise<
+    LiveProviderResult<{ logs: LiveLogRecord[]; sampleCount: number; matched: "unknown" }>
+  > {
     validateTimeRange(input.window);
     const matchers: string[] = [];
     if (input.target.service) matchers.push(`${this.serviceLabel}=${quote(input.target.service)}`);
@@ -523,7 +561,9 @@ export class LogProvider {
         { logs: [], sampleCount: 0, matched: "unknown" as const },
         {
           status: "unsupported",
-          warnings: ["Log search requires a configured service/environment/container label target."],
+          warnings: [
+            "Log search requires a configured service/environment/container label target.",
+          ],
         },
       );
     }
@@ -573,13 +613,18 @@ export class LogProvider {
       search,
       signal,
     });
-    const result = object(raw.data)?.result;
+    const data = responseData(raw, this.backendAlias);
+    if (!Array.isArray(data.result))
+      invalidResponse(this.backendAlias, "Loki response requires result array");
+    const result = data.result as unknown[];
     const logs: LiveLogRecord[] = [];
+    let returnedRecords = 0;
     if (Array.isArray(result)) {
       for (const series of result) {
         const row = object(series);
         const stream = object(row?.stream) ?? {};
         const values = Array.isArray(row?.values) ? row.values : [];
+        returnedRecords += values.length;
         for (const item of values) {
           if (logs.length >= limit) break;
           if (!Array.isArray(item) || typeof item[0] !== "string" || typeof item[1] !== "string") {
@@ -600,7 +645,7 @@ export class LogProvider {
       }
     }
     logs.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
-    const atLimit = logs.length >= limit;
+    const atLimit = returnedRecords >= limit;
     return providerResult(
       this.backendAlias,
       input.window,
@@ -620,9 +665,14 @@ export class LogProvider {
       },
       { logs, sampleCount: logs.length, matched: "unknown" },
       {
-        status: logs.length === 0 ? "no_data" : atLimit ? "partial" : "success",
+        status: atLimit ? "partial" : logs.length === 0 ? "no_data" : "success",
         warnings: [
           "matched is unknown because this bounded query returns samples rather than a complete backend aggregate.",
+          ...(atLimit
+            ? [
+                "Backend sample limit reached before local structured filtering; zero retained logs does not prove no matching logs in the window.",
+              ]
+            : []),
         ],
         truncationReasons: atLimit ? [`log_limit:${limit}`] : [],
       },
@@ -785,44 +835,84 @@ export class MetricsProvider {
       signal,
       deadlineAt,
     });
-    const series = Array.isArray(raw.data) ? raw.data : [];
-    const names = [...new Set(series.map((entry) => object(entry)?.__name__).filter(
-      (value): value is string => typeof value === "string" && /^[a-zA-Z_:][a-zA-Z0-9_:]*$/.test(value),
-    ))];
+    if (
+      !object(raw) ||
+      (raw.status !== undefined && raw.status !== "success") ||
+      !Array.isArray(raw.data)
+    ) {
+      invalidResponse(this.backendAlias, "Prometheus series response requires a success array");
+    }
+    const series = raw.data as unknown[];
+    const names = [
+      ...new Set(
+        series
+          .map((entry) => object(entry)?.__name__)
+          .filter(
+            (value): value is string =>
+              typeof value === "string" && /^[a-zA-Z_:][a-zA-Z0-9_:]*$/.test(value),
+          ),
+      ),
+    ];
     const searchTerm = input.search?.trim().toLowerCase();
     const limit = Math.max(1, Math.min(Math.floor(input.limit ?? 50), 100));
-    const selected = names
-      .filter((name) => !searchTerm || name.toLowerCase().includes(searchTerm))
-      .slice(0, limit);
+    // Classic histograms expose suffixed series but metadata describes the family.
+    const families = [
+      ...new Set(names.map((name) => (name.endsWith("_bucket") ? name.slice(0, -7) : name))),
+    ];
+    const matching = families.filter(
+      (name) => !searchTerm || name.toLowerCase().includes(searchTerm),
+    );
+    const selected = matching.slice(0, limit);
     const descriptors = await Promise.all(
       selected.map(async (name): Promise<MetricDescriptor> => {
-        const metadataSearch = new URLSearchParams({ metric: name, limit: "1" });
+        const family =
+          /_(?:sum|count)$/.test(name) &&
+          names.includes(`${name.replace(/_(?:sum|count)$/, "")}_bucket`)
+            ? name.replace(/_(?:sum|count)$/, "")
+            : name;
+        const metadataSearch = new URLSearchParams({ metric: family, limit: "1" });
         const metadata = await this.client.requestJson<Record<string, unknown>>({
           path: "/api/v1/metadata",
           search: metadataSearch,
           signal,
           deadlineAt,
         });
-        const rows = object(metadata.data)?.[name];
+        const metadataData = responseData(metadata, this.backendAlias);
+        const rows = metadataData[family];
         const first = Array.isArray(rows) ? object(rows[0]) : undefined;
-        const type = descriptorType(first?.type);
-        const unit = boundedString(first?.unit, 64);
-        const labels = [...new Set(
-          series
-            .filter((entry) => object(entry)?.__name__ === name)
-            .flatMap((entry) => Object.keys(object(entry) ?? {}))
-            .filter((label) => label !== "__name__" && !sensitiveTelemetryKey(label)),
-        )].slice(0, 32);
+        const familyType = descriptorType(first?.type);
+        const type = familyType === "histogram" && family !== name ? "counter" : familyType;
+        const unit =
+          name.endsWith("_count") && family !== name
+            ? "observations"
+            : boundedString(first?.unit, 64);
+        const labels = [
+          ...new Set(
+            series
+              .filter(
+                (entry) =>
+                  object(entry)?.__name__ === name || object(entry)?.__name__ === `${name}_bucket`,
+              )
+              .flatMap((entry) => Object.keys(object(entry) ?? {}))
+              .filter(
+                (label) =>
+                  label !== "__name__" &&
+                  !(type === "histogram" && label === "le") &&
+                  !sensitiveTelemetryKey(label),
+              ),
+          ),
+        ].slice(0, 32);
         return {
           name,
           type,
           ...(unit ? { unit } : {}),
           labels,
-          operations: allowedOps(type),
+          operations:
+            type === "histogram" && !names.includes(`${name}_bucket`) ? [] : allowedOps(type),
         };
       }),
     );
-    const truncated = names.length > selected.length;
+    const truncated = matching.length > selected.length;
     return providerResult(
       this.backendAlias,
       input.window,
@@ -868,7 +958,9 @@ export class MetricsProvider {
         },
         {
           status: "unsupported",
-          warnings: [`Operation ${input.operation} is not valid for ${descriptor.type ?? "unknown"} metric ${metric}.`],
+          warnings: [
+            `Operation ${input.operation} is not valid for ${descriptor.type ?? "unknown"} metric ${metric}.`,
+          ],
         },
       );
     }
@@ -886,7 +978,9 @@ export class MetricsProvider {
       filters,
     );
     const selectorMetric =
-      descriptor.type === "histogram" && input.operation === "quantile" && !metric.endsWith("_bucket")
+      descriptor.type === "histogram" &&
+      input.operation === "quantile" &&
+      !metric.endsWith("_bucket")
         ? `${metric}_bucket`
         : metric;
     const selector = `${selectorMetric}{${matchers.join(",")}}`;
@@ -920,7 +1014,8 @@ export class MetricsProvider {
     }
 
     const maxStepByPoints = Math.ceil(
-      rangeSeconds / Math.max(1, Math.floor(LIVE_LIMITS.maxMetricDatapoints / LIVE_LIMITS.maxMetricSeries)),
+      rangeSeconds /
+        Math.max(1, Math.floor(LIVE_LIMITS.maxMetricDatapoints / LIVE_LIMITS.maxMetricSeries)),
     );
     const requestedStep = Math.max(1, Math.floor(input.stepSeconds ?? 30));
     const stepSeconds = Math.max(requestedStep, maxStepByPoints);
@@ -935,7 +1030,10 @@ export class MetricsProvider {
       search,
       signal,
     });
-    const rows = Array.isArray(object(raw.data)?.result) ? (object(raw.data)?.result as unknown[]) : [];
+    const data = responseData(raw, this.backendAlias);
+    if (!Array.isArray(data.result))
+      invalidResponse(this.backendAlias, "Prometheus range response requires result array");
+    const rows = data.result as unknown[];
     const series: MetricSeries[] = [];
     let datapoints = 0;
     let truncated = false;
@@ -950,9 +1048,7 @@ export class MetricsProvider {
         Object.entries(object(row.metric) ?? {})
           .filter(
             ([key, value]) =>
-              key !== "__name__" &&
-              !sensitiveTelemetryKey(key) &&
-              typeof value === "string",
+              key !== "__name__" && !sensitiveTelemetryKey(key) && typeof value === "string",
           )
           .slice(0, 32)
           .map(([key, value]) => [key, redactTelemetryText(String(value)).slice(0, 256)]),
@@ -978,13 +1074,21 @@ export class MetricsProvider {
       if (truncated) break;
     }
     const status =
-      series.length === 0 ? "no_data" : truncated || stepSeconds > requestedStep ? "partial" : "success";
+      series.length === 0
+        ? "no_data"
+        : truncated || stepSeconds > requestedStep
+          ? "partial"
+          : "success";
     const warnings = [
       ...(stepSeconds > requestedStep
-        ? [`stepSeconds adjusted from ${requestedStep} to ${stepSeconds} to respect datapoint limits.`]
+        ? [
+            `stepSeconds adjusted from ${requestedStep} to ${stepSeconds} to respect datapoint limits.`,
+          ]
         : []),
       ...(quantileEstimated
-        ? ["Histogram quantile is estimated from classic buckets and is not an exact raw-request percentile."]
+        ? [
+            "Histogram quantile is estimated from classic buckets and is not an exact raw-request percentile.",
+          ]
         : []),
     ];
     return providerResult(

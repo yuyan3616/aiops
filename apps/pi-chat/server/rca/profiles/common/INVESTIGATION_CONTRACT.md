@@ -41,4 +41,5 @@
 - Runtime 进入 Finalize Phase 后会关闭全部调查工具，只开放协议工具 `submit_finding`。
 - 必须通过 `submit_finding` 提交最终 finding；该协议动作不消耗调查工具预算。
 - `submit_finding` 只能引用当前专家 Session 内真实、已成功返回的 toolCallId。
+- 有返回事实的 claim 必须从该工具结果的 `sourceItems` 中选择引用：Trace 为 `trace:<traceId>` / `span:<spanId>`；Log 为 `log:<数组索引>`；Metric 为 `metric:<name>` / `series:<数组索引>`。索引仅在该查询快照内有效，不能跨查询复用。引用编号只保证来源可追溯，不自动证明摘要或因果。
 - Runtime 会继续校验允许的 modality、hypothesis 引用和 tool-call provenance 后再接收 evidence。

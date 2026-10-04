@@ -107,6 +107,8 @@ PROMETHEUS_BASE_URL=https://prometheus.example.internal
 
 支持可选 Bearer / Basic Auth / tenant，以及 Loki / Prometheus label mapping，完整字段见 [`apps/pi-chat/.env.example`](apps/pi-chat/.env.example)。
 
+NGINX 网关可使用独立子域名或 BASE_URL 路径前缀；认证、转发和验收步骤见 [Live 查询网关接入](docs/live-gateway-connection.md)。
+
 **部署边界：** 当前 Target / OTel Collector / Tempo / Loki / Prometheus 位于阿里云 ECS，而 main RCA 系统位于 Railway。已知三个查询端口目前只绑定 ECS `127.0.0.1`，所以 Railway 尚无安全可达路径。不要为了验收裸开放 Tempo/Loki/Prometheus 公网端口；应后续配置私网、VPN、受认证反向代理或 Tunnel 后再执行真实只读 smoke。
 
 ## 持久化与恢复
@@ -119,6 +121,8 @@ JSONL / UI event、Markdown report 和 visualization 是可重建投影：
 - 从权威快照幂等补齐缺失 Tool / Observation / Evidence / Expert / lifecycle event；
 - 补齐缺失的 Live `final-report.json` / `final-report.md`；
 - 补齐待生成 visualization。
+
+Live 调查恢复时从已提交完成的 Evidence snapshot 恢复 Trace/Metric 查询授权；终态清理内存授权。Expert Evidence 继承实际查询窗口并校验 snapshot-local sourceItems。历史状态支持 offset 分页；Agent 文本按最终序列化字节数限制。
 
 旧 RCA100 Investigation 可以读取报告和历史状态，但不能 resume / dispatch / mutate hypothesis / conclude / cancel / regenerate visualization。
 

@@ -13,11 +13,6 @@ import { InvestigationEventBus, type InvestigationEventListener } from "./events
 import { LIVE_CONTRACT_VERSION, LIVE_FORMAT_VERSION, validateTimeRange } from "./live/types";
 import { PiExpertRunError, PiExpertRunner, type RecordedAgentToolExecution } from "./pi-expert";
 import { InvestigationRepository } from "./repository";
-import { InvestigationVisualizationService } from "./visualization/service";
-import type {
-  InvestigationVisualizationArtifact,
-  InvestigationVisualizationEvent,
-} from "./visualization/types";
 import { safeRuntimeDetail } from "./runtime-accounting";
 import { AbortableSemaphore } from "./semaphore";
 import {
@@ -47,6 +42,11 @@ import type {
   ToolCallRecord,
   TimeRange,
 } from "./types";
+import { InvestigationVisualizationService } from "./visualization/service";
+import type {
+  InvestigationVisualizationArtifact,
+  InvestigationVisualizationEvent,
+} from "./visualization/types";
 
 interface RunningAgenticInvestigation {
   conversationId?: string;
@@ -222,9 +222,7 @@ function toolModality(tool: ObservabilityToolName): EvidenceModality {
 
 function observationSummary(_tool: ObservabilityToolName, execution: ToolExecution): string {
   const warnings = execution.result.warnings.slice(0, 2);
-  return warnings.length
-    ? `${execution.summary}; ${warnings.join("; ")}`
-    : execution.summary;
+  return warnings.length ? `${execution.summary}; ${warnings.join("; ")}` : execution.summary;
 }
 
 function freezeIncidentContext(input: LiveIncidentInput): IncidentContext {
@@ -250,12 +248,8 @@ function freezeIncidentContext(input: LiveIncidentInput): IncidentContext {
     const from = new Date(to.getTime() - lookbackMinutes * 60_000);
     window = { from: from.toISOString(), to: to.toISOString() };
   } else {
-    const rfc3339Instant =
-      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
-    if (
-      !rfc3339Instant.test(input.window.from) ||
-      !rfc3339Instant.test(input.window.to)
-    ) {
+    const rfc3339Instant = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+    if (!rfc3339Instant.test(input.window.from) || !rfc3339Instant.test(input.window.to)) {
       throw new Error("Incident window must use RFC3339 timestamps with an explicit timezone");
     }
     const from = new Date(input.window.from);
@@ -351,6 +345,7 @@ export class RcaService {
           );
         }
         if (existing.status === "running" && !this.agenticRunning.has(id)) {
+          await this.restoreQueryAuthorization(existing);
           const bus = await this.busFor(id);
           const controller = new AbortController();
           const unsubscribe = options.onEvent ? bus.subscribe(options.onEvent) : undefined;
@@ -453,6 +448,8 @@ export class RcaService {
       throw new Error(`Investigation ${investigationId} is already active in this process`);
     }
 
+    await this.restoreQueryAuthorization(investigation);
+
     const bus = await this.busFor(investigationId);
     this.agenticRunning.get(investigationId)?.unsubscribe?.();
     const controller = new AbortController();
@@ -516,6 +513,7 @@ export class RcaService {
           modality: toolModality(tool),
           ...(typeof query.entity === "string" ? { entity: query.entity } : {}),
           timeRange: recorded.execution.actualWindow ?? draft.context!.window,
+          sourceItems: (recorded.execution.result as { sourceItems?: string[] }).sourceItems,
           summary: recorded.execution.summary,
           rawRef:
             recorded.execution.rawRef ??
@@ -1188,22 +1186,30 @@ export class RcaService {
         let finding = run.finding;
         const validHypotheses = new Set(draft.hypotheses.map((item) => item.id));
         const taskCalls = new Set(task.toolCallIds);
+        const acceptedClaims: typeof finding.evidenceClaims = [];
         for (const claim of finding.evidenceClaims) {
           if (!taskCalls.has(claim.toolCallId)) continue;
           const call = draft.toolCalls.find((item) => item.id === claim.toolCallId);
-          if (!call || call.status !== "completed") continue;
+          if (
+            !call ||
+            call.status !== "completed" ||
+            claim.modality !== toolModality(call.tool as ObservabilityToolName)
+          )
+            continue;
+          if (claim.sourceItems?.some((ref) => !call.sourceItems?.includes(ref))) continue;
+          // Queries with returned facts require a precise snapshot-local reference.
+          if (call.sourceItems?.length && !claim.sourceItems?.length) continue;
           const evidence: Evidence = {
             id: this.nextEvidenceId(draft),
             investigationId: draft.id,
             modality: claim.modality,
             ...(claim.entity ? { entity: claim.entity } : {}),
-            timeRange: draft.context!.window,
+            timeRange: structuredClone((call.query.window as TimeRange) ?? draft.context!.window),
             summary: claim.summary,
             rawRef:
-              call.rawRef ??
-              call.snapshotRef ??
-              `investigation://${draft.id}/tool/${call.id}`,
+              call.rawRef ?? call.snapshotRef ?? `investigation://${draft.id}/tool/${call.id}`,
             ...(call.snapshotRef ? { snapshotRef: call.snapshotRef } : {}),
+            ...(claim.sourceItems ? { sourceItems: [...claim.sourceItems] } : {}),
             supports: claim.supports.filter((ref) => validHypotheses.has(ref)),
             contradicts: claim.contradicts.filter((ref) => validHypotheses.has(ref)),
             sourceQuery: call.query,
@@ -1215,7 +1221,9 @@ export class RcaService {
           draft.evidence.push(evidence);
           task.evidenceIds.push(evidence.id);
           createdEvidence.push(evidence.id);
+          acceptedClaims.push(claim);
         }
+        finding = { ...finding, evidenceClaims: acceptedClaims };
         if (
           !createdEvidence.length &&
           (finding.strength === "strong" || finding.strength === "moderate")
@@ -1553,10 +1561,7 @@ export class RcaService {
       { result: investigation.rootCause, source: "main-agent" },
     );
     try {
-      await this.visualizationService.enqueue(
-        investigationId,
-        visualizationConversationId,
-      );
+      await this.visualizationService.enqueue(investigationId, visualizationConversationId);
     } catch (error) {
       process.stderr.write(
         `Failed to enqueue RCA visualization for ${investigationId}: ${String(error)}\n`,
@@ -1789,6 +1794,23 @@ export class RcaService {
     }
   }
 
+  private async restoreQueryAuthorization(investigation: Investigation): Promise<void> {
+    if (!this.tools) return;
+    this.tools.clearAuthorization(investigation.id);
+    for (const call of investigation.toolCalls) {
+      if (
+        call.status !== "completed" ||
+        !call.snapshotRef ||
+        (call.tool !== "search_traces" && call.tool !== "discover_metrics")
+      )
+        continue;
+      const snapshot = (await this.repository.getEvidenceSnapshot(investigation.id, call.id)) as {
+        result?: unknown;
+      };
+      this.tools.authorizeCompletedResult(investigation.id, call.tool, snapshot.result);
+    }
+  }
+
   private assertRunning(investigation: Investigation): void {
     if (investigation.status !== "running") {
       throw new Error(`Investigation ${investigation.id} is ${investigation.status}, not running`);
@@ -1951,6 +1973,8 @@ export class RcaService {
         retrievedAt: execution.result.retrievedAt,
         backendAlias: execution.backendAlias,
         contractVersion: execution.result.contractVersion,
+        normalizationVersion: 1,
+        contentHash: createHash("sha256").update(JSON.stringify(execution.result)).digest("hex"),
         resultStatus: execution.resultStatus,
         result: execution.result,
         agentResult: agentContextResult,
@@ -1973,6 +1997,7 @@ export class RcaService {
         call.rawRef = execution.rawRef;
         call.snapshotRef = snapshotRef;
         call.resultStatus = execution.resultStatus;
+        call.sourceItems = execution.result.sourceItems;
         call.completedAt = now();
         if (call.runtime) call.runtime.after = runtimeResourceSnapshot();
         const observation: Observation = {
@@ -1984,6 +2009,8 @@ export class RcaService {
           summary: observationSummary(tool, execution),
           ...(execution.rawRef ? { rawRef: execution.rawRef } : {}),
           snapshotRef,
+          timeRange: execution.actualWindow,
+          sourceItems: execution.result.sourceItems,
           facts: {
             source: taskId ? "pi-child-session" : "main-agent-overview",
             resultStatus: execution.resultStatus,
@@ -1997,6 +2024,8 @@ export class RcaService {
         draft.observations.push(observation);
         return observation.id;
       });
+      if (!signal?.aborted)
+        this.requireAgenticTools().authorizeCompletedResult(id, tool, execution.result);
       const persisted = await this.liveInvestigation(id);
       const completedCall = persisted.toolCalls.find((item) => item.id === callId)!;
       await this.repository.appendToolCall(id, completedCall).catch((error) => {
@@ -2033,7 +2062,8 @@ export class RcaService {
             ? "cancelled"
             : "failed";
         call.completedAt = now();
-        call.error = error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500);
+        call.error =
+          error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500);
         if (call.runtime) call.runtime.after = runtimeResourceSnapshot();
       });
       const failed = await this.liveInvestigation(id);
@@ -2238,6 +2268,7 @@ export class RcaService {
     const active = this.agenticRunning.get(investigationId);
     active?.unsubscribe?.();
     this.agenticRunning.delete(investigationId);
+    this.tools?.clearAuthorization(investigationId);
     if (this.runtimeSlots.get(investigationId)?.running === 0) {
       this.runtimeSlots.delete(investigationId);
     }

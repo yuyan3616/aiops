@@ -26,6 +26,8 @@ Target 当前已部署基线：f3fa1516b21a11023ee91cf12995844ced20826e；公共
 
 验证记录见 [Live Investigation Validation](live-investigation-validation.md)。
 
+审查后修复：按 Target `f3fa1516` 合同基线处理 Tempo v2 外层 trace、Histogram 指标族、Loki 后过滤覆盖边界、响应校验、Trace 子区间 union、Evidence 实际窗口/sourceItems、快照授权恢复和历史分页。网关接入见 [Live 查询网关接入](live-gateway-connection.md)。真实输出和最终标签映射仍需受认证网关验收，不能由 fixture 推断。
+
 ## 1. 目标、前提与职责
 
 生产最终仅保留 Live Observability：Tempo / Loki / Prometheus → Provider → Tool → Observation / Evidence → Expert / Main Agent → RCA。
@@ -193,7 +195,7 @@ JSONL 与 UI event 是可重建投影，不宣称与快照跨文件事务。实�
 
 报告也是投影，最终状态提交后可幂等补齐 JSON/Markdown；失败不产生第二次不同结论。
 
-每次成功查询保存有界、不可变的证据快照，内容覆盖实际发给 Agent 的结果及分析所需事实，包含 query/window/retrievedAt/backendAlias/contractVersion/warnings/truncation 与实际 Agent bounded result。当前实现不持久化 credential/tenant secret；normalizationVersion/content hash 可在后续格式升级时补充。先落快照再提交 Observation 引用；孤立快照可清理，不能接受指向不存在快照的 Evidence。
+每次成功查询保存有界、不可变的证据快照，内容覆盖实际发给 Agent 的结果及分析所需事实，包含 query/window/retrievedAt/backendAlias/contractVersion/normalizationVersion/contentHash/warnings/truncation 与 Agent bounded result。contentHash 是归一化 result 的 SHA-256；不持久化 credential/tenant secret。先落快照再提交 Observation 引用；孤立快照可清理，不能接受指向不存在快照的 Evidence。
 
 rawRef 仅定位：tempo://trace/<id> 等不等于快照。增加 snapshotRef 和 evidence source item refs（span/log/series）。去重相同内容不能覆盖不同查询时间的审计记录。后端 retention 后仍能读取当时证据；无需保存全部原始 dump。
 

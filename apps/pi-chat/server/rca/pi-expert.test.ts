@@ -1,29 +1,80 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  createAgentSession,
-  type ModelRuntime,
-} from "@earendil-works/pi-coding-agent";
+import { createAgentSession, type ModelRuntime } from "@earendil-works/pi-coding-agent";
 
+import { LIVE_LIMITS } from "./live/types";
 import { PiExpertRunner } from "./pi-expert";
-import type {
-  Investigation,
-  InvestigationBrief,
-  RcaTask,
-} from "./types";
 import type { ObservabilityToolRegistry } from "./tools";
+import type { Investigation, InvestigationBrief, RcaTask } from "./types";
 
 type SessionFactoryOptions = NonNullable<Parameters<typeof createAgentSession>[0]>;
 type CreatedSession = Awaited<ReturnType<typeof createAgentSession>>;
 type FakeEventListener = (event: unknown) => void;
 type FakeTool = {
   name: string;
-  execute: (
-    toolCallId: string,
-    parameters: Record<string, unknown>,
-  ) => Promise<unknown>;
+  execute: (toolCallId: string, parameters: Record<string, unknown>) => Promise<unknown>;
 };
+
+test("专家累计结果达到128KiB预算前停止新取证，单条最终文本不超过32KiB", async () => {
+  let active: string[] = [];
+  let calls = 0;
+  let totalBytes = 0;
+  const createSession = (async (options: SessionFactoryOptions) => {
+    const tools = options.customTools as unknown as FakeTool[];
+    const search = tools.find((tool) => tool.name === "search_traces")!;
+    const submit = tools.find((tool) => tool.name === "submit_finding")!;
+    return {
+      session: {
+        sessionManager: { getSessionId: () => "byte-budget-session" },
+        setActiveToolsByName(names: string[]) {
+          active = names;
+        },
+        subscribe() {
+          return () => {};
+        },
+        async prompt() {
+          while (active.includes("search_traces")) {
+            try {
+              const result = (await search.execute(`query-${calls}`, {})) as {
+                content: Array<{ text: string }>;
+              };
+              const bytes = Buffer.byteLength(result.content[0]!.text);
+              assert.ok(bytes <= LIVE_LIMITS.maxAgentToolBytes);
+              totalBytes += bytes;
+            } catch (error) {
+              assert.match(String(error), /累计结果预算/);
+            }
+          }
+          assert.deepEqual(active, ["submit_finding"]);
+          await submit.execute("submit", successfulFinding(`C${calls}`));
+        },
+        abort() {},
+        dispose() {},
+      },
+    } as unknown as CreatedSession;
+  }) as typeof createAgentSession;
+  const context = fixture();
+  const runner = new PiExpertRunner({} as ModelRuntime, fakeRegistry(), createSession);
+  await runner.run({
+    ...context,
+    invoke: async () => {
+      calls++;
+      return {
+        callId: `C${calls}`,
+        execution: {
+          summary: "bounded",
+          result: {
+            data: { traces: Array.from({ length: 15 }, () => ({ text: "x".repeat(2000) })) },
+          },
+        },
+      };
+    },
+  });
+  assert.ok(calls < 12);
+  assert.ok(calls > 1);
+  assert.ok(totalBytes <= LIVE_LIMITS.maxExpertResultBytes);
+});
 
 function fixture() {
   const investigation = {
@@ -132,9 +183,7 @@ test("Trace 工具调用满 12 次后在同一 Session 切换到 submit_finding"
   let activeTools: string[] = [];
   let promptCount = 0;
 
-  const createSession = (async (
-    options: SessionFactoryOptions,
-  ): Promise<CreatedSession> => {
+  const createSession = (async (options: SessionFactoryOptions): Promise<CreatedSession> => {
     sessionOptions.push(options);
     const listeners = new Set<FakeEventListener>();
     const tools = (options.customTools ?? []) as unknown as FakeTool[];
@@ -237,9 +286,7 @@ test("专家提前结束取证时仍在同一 Session 进入 Finalize Phase", as
   let activeTools: string[] = [];
   let promptCount = 0;
 
-  const createSession = (async (
-    options: SessionFactoryOptions,
-  ): Promise<CreatedSession> => {
+  const createSession = (async (options: SessionFactoryOptions): Promise<CreatedSession> => {
     sessionOptions.push(options);
     const listeners = new Set<FakeEventListener>();
     const tools = (options.customTools ?? []) as unknown as FakeTool[];

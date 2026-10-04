@@ -218,3 +218,28 @@ pnpm --filter pi-chat build
 - 未合并 `main`
 - 未部署 Railway production
 - 未修改 ECS 安全组 / Nginx / Tempo / Loki / Prometheus 监听地址
+
+
+## PR #25 审查修复验证（2026-10-04）
+
+本轮基于 `fe39b9b05c9efc5f2dc6894a5a6b0bb177fc2d76` 修复，用户确认的待观测 Target 为 `f3fa1516b21a11023ee91cf12995844ced20826e`。
+
+新增验证使用后端协议结构的 fixture 和本机真实 HTTP 请求；没有从 ECS 读取生产样例，不声称实际标签映射已验收。
+
+- Tempo v2 外层 `trace.resourceSpans`、backend partial、原始纳秒时间。
+- Trace direct-child interval 裁剪及 union；重叠 children 不重复扣除，gap 不推断机制，不宣称完整 critical path。
+- Classic Histogram 系列名与 family metadata 映射；无 classic bucket 的 Histogram 不声明 quantile 能力。
+- Loki 有限后端样本在本地结构化过滤后为空仍标记 partial。
+- 错误响应 envelope 不伪装 no_data。
+- Expert baseline Evidence 使用实际查询窗口，拒绝错误 modality、不存在的 sourceItems 或缺少具体事实引用的 claim。
+- 只在 snapshot + ToolCall 提交后授权 Trace/Metric；存储失败不授权；恢复从完成快照重建授权。
+- 主 Agent 历史状态 offset 分页；专家最终文本32KiB与累计128KiB上限。
+- 快照 fsync 后原子发布且禁止覆盖，保存 normalizationVersion 与 result SHA-256。
+- 重启从权威状态补齐 tool-calls.jsonl，恢复幂等。
+- 本机 HTTP Server 验证网关路径前缀与 Basic Auth；认证值不进入结果。
+
+本地最终检查：Typecheck PASS；Lint PASS（0 error，保留原有 warning）；Unit tests 100 total / 99 passed / 0 failed / 1 skipped；Build PASS（原有 bundle size warning）。唯一 skipped 是无 RCA100 benchmark fixture 的离线测试。
+
+本轮远程 CI 在 push 后单独核实；先前 #402/#403 不能代表本轮修复通过。
+
+真实 Railway → NGINX → ECS smoke 仍为 BLOCKED，等待用户部署网关和配置认证。接入步骤见 [Live 查询网关接入](live-gateway-connection.md)。本轮没有合并 main、没有部署 Railway、没有修改 Target/ECS/NGINX。

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   access,
   appendFile,
+  link,
   mkdir,
   open,
   readFile,
@@ -201,15 +202,18 @@ export class InvestigationRepository {
     const directory = join(this.directory(investigationId), "evidence-snapshots");
     await mkdir(directory, { recursive: true });
     const target = join(directory, `${toolCallId}.json`);
+    const temporary = join(directory, `.snapshot-${randomUUID()}.tmp`);
     const serialized = JSON.stringify(structuredClone(snapshot), null, 2);
     try {
-      const handle = await open(target, "wx");
+      const handle = await open(temporary, "wx");
       try {
         await handle.writeFile(serialized, "utf8");
         await handle.sync();
       } finally {
         await handle.close();
       }
+      // Publish a fully fsynced file atomically without overwriting an existing snapshot.
+      await link(temporary, target);
       const directoryHandle = await open(directory, "r");
       try {
         await directoryHandle.sync();
@@ -220,8 +224,12 @@ export class InvestigationRepository {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       const current = await readFile(target, "utf8");
       if (current !== serialized) {
-        throw new Error(`Immutable evidence snapshot conflict for ${investigationId}/${toolCallId}`);
+        throw new Error(
+          `Immutable evidence snapshot conflict for ${investigationId}/${toolCallId}`,
+        );
       }
+    } finally {
+      await unlink(temporary).catch(() => undefined);
     }
     return `investigation://${investigationId}/evidence-snapshots/${toolCallId}.json`;
   }
@@ -238,8 +246,14 @@ export class InvestigationRepository {
   async hasReportArtifacts(investigationId: string): Promise<boolean> {
     const directory = this.directory(investigationId);
     return Promise.all([
-      access(join(directory, "final-report.json")).then(() => true, () => false),
-      access(join(directory, "final-report.md")).then(() => true, () => false),
+      access(join(directory, "final-report.json")).then(
+        () => true,
+        () => false,
+      ),
+      access(join(directory, "final-report.md")).then(
+        () => true,
+        () => false,
+      ),
     ]).then(([json, markdown]) => json && markdown);
   }
 
@@ -250,6 +264,30 @@ export class InvestigationRepository {
       const events = await this.listEvents(investigationId);
       let nextId = (events.at(-1)?.id ?? 0) + 1;
       let changed = false;
+
+      // The journal is a projection too: reconstruct terminal calls from authority,
+      // including a missing or interrupted append, without mutating Investigation.
+      const journalPath = join(this.directory(investigationId), "tool-calls.jsonl");
+      const expectedJournal = investigation.toolCalls
+        .filter((call) => terminalToolCallStatuses.has(call.status))
+        .map((call) => `${JSON.stringify(call)}\n`)
+        .join("");
+      const currentJournal = await readFile(journalPath, "utf8").catch(
+        (error: NodeJS.ErrnoException) => {
+          if (error.code !== "ENOENT") throw error;
+          return "";
+        },
+      );
+      if (currentJournal !== expectedJournal) {
+        const temporary = `${journalPath}.${randomUUID()}.tmp`;
+        try {
+          await writeFile(temporary, expectedJournal, "utf8");
+          await rename(temporary, journalPath);
+        } finally {
+          await unlink(temporary).catch(() => undefined);
+        }
+        changed = true;
+      }
 
       const hasRef = (
         type: InvestigationEvent["type"],
@@ -268,7 +306,10 @@ export class InvestigationRepository {
         });
 
       for (const call of investigation.toolCalls) {
-        if (!terminalToolCallStatuses.has(call.status) || hasRef("tool.completed", "toolCall", call.id)) {
+        if (
+          !terminalToolCallStatuses.has(call.status) ||
+          hasRef("tool.completed", "toolCall", call.id)
+        ) {
           continue;
         }
         await this.appendEvent({
@@ -309,7 +350,10 @@ export class InvestigationRepository {
       }
 
       for (const task of investigation.expertTasks) {
-        if (!terminalExpertTaskStatuses.has(task.status) || hasRef("expert.completed", "expertTask", task.id)) {
+        if (
+          !terminalExpertTaskStatuses.has(task.status) ||
+          hasRef("expert.completed", "expertTask", task.id)
+        ) {
           continue;
         }
         await this.appendEvent({
@@ -317,7 +361,8 @@ export class InvestigationRepository {
           investigationId,
           type: "expert.completed",
           at: task.completedAt ?? new Date().toISOString(),
-          summary: task.finding?.summary ?? task.terminationReason ?? `${task.expert} ${task.status}`,
+          summary:
+            task.finding?.summary ?? task.terminationReason ?? `${task.expert} ${task.status}`,
           payload: { expertTask: task, recoveredProjection: true },
         });
         changed = true;
@@ -338,7 +383,10 @@ export class InvestigationRepository {
           id: nextId++,
           investigationId,
           type: lifecycleType,
-          at: investigation.completedAt ?? investigation.interruptions?.at(-1)?.at ?? new Date().toISOString(),
+          at:
+            investigation.completedAt ??
+            investigation.interruptions?.at(-1)?.at ??
+            new Date().toISOString(),
           summary:
             investigation.rootCause?.summary ??
             investigation.error ??
@@ -346,7 +394,9 @@ export class InvestigationRepository {
           payload: {
             ...(investigation.rootCause ? { result: investigation.rootCause } : {}),
             recoveredProjection: true,
-            resumable: lifecycleType === "investigation.interrupted" && investigation.source?.kind === "live",
+            resumable:
+              lifecycleType === "investigation.interrupted" &&
+              investigation.source?.kind === "live",
           },
         });
         changed = true;
