@@ -122,3 +122,33 @@ test("runtime source graph does not embed RCA100 ground truth", async () => {
     assert.doesNotMatch(source, /expected_fault_id|raw_ground_truth|ground_truth/);
   }
 });
+
+
+test("production startup graph no longer depends on RCA100 data or dataset download", async () => {
+  const repoRoot = resolve(appDir, "../..");
+  const checks = [
+    {
+      path: join(appDir, "server/index.ts"),
+      forbidden: /RCA100Adapter|RCA100_CASES_DIR|rca:fetch:t039/,
+    },
+    {
+      path: join(appDir, "server/config.ts"),
+      forbidden: /RCA100_CASES_DIR|rcaCasesDir/,
+    },
+    {
+      path: join(appDir, "server/rca/tools.ts"),
+      forbidden: /RCA100Adapter|metrics\.parquet|logs\.parquet|traces\.parquet/,
+    },
+    {
+      path: join(repoRoot, "Dockerfile"),
+      forbidden: /rca:fetch:t039|RCA100_CASES_DIR/,
+    },
+    {
+      path: join(appDir, "scripts/start-railway.sh"),
+      forbidden: /RCA100_CASES_DIR/,
+    },
+  ];
+  for (const check of checks) {
+    assert.doesNotMatch(await readFile(check.path, "utf8"), check.forbidden);
+  }
+});
