@@ -1326,7 +1326,7 @@ export class RcaService {
     const investigation = await this.liveInvestigation(investigationId);
     this.assertLiveWritable(investigation);
     if (investigation.schemaVersion === 2) {
-      this.assertRunning(investigation);
+      this.assertConcludable(investigation);
       if (
         investigation.expertTasks.some(
           (task) => task.status === "pending" || task.status === "running",
