@@ -1,6 +1,6 @@
 # Target Observability 三信号关联与应用指标规格 v4
 
-状态：**Target 侧完成生命周期边界修正并通过本地与远程 CI；验证结果见 validation 文档；生产部署验收未执行；Exemplar 明确不可用。**
+状态：**Target 侧完成生命周期边界修正并通过本地与远程 CI；运行时实现 `f3fa1516b21a11023ee91cf12995844ced20826e` 已部署到阿里云 ECS并完成部分真实运行验收；完整三后端关联与 Railway 跨云消费尚未验收；Exemplar 明确不可用。**
 目标分支：`target/production-baseline`。
 实施起点：`70cb7f744881073991f13935646f5e9c076df7d1`。
 公共合同：`docs/telemetry-contract-v1.md`，本轮**不改变其既有语义**。
@@ -23,7 +23,7 @@ Target 侧已经完成以下能力：
 
 - Provider SDK 内部 retry attempt 的独立生命周期。
 - Exemplar。
-- 生产 Collector / Prometheus / Tempo / Loki 的端到端部署验收。
+- 完整的 Tempo / Loki / Prometheus 同一次调用关联验收、Prometheus 应用指标查询验收，以及 Railway 跨云消费 smoke。
 
 因此当前能力状态为：
 
@@ -34,7 +34,7 @@ Target 侧已经完成以下能力：
 | providerGenerationDuration | available | 覆盖流消费完成/失败/取消 |
 | providerAttemptLifecycle | unavailable | Pi 0.86.1 扩展层看不到 provider-internal retry attempt |
 | exemplars | unavailable | 锁定 OTel Metrics 路径真实 OTLP payload 无 exemplar |
-| productionVerified | false | 本轮不部署生产 |
+| productionVerified | partial | Target / Collector / Tempo / Loki 与部分 Metrics 链路已实际验证；完整三后端关联和跨云消费尚未完成 |
 
 ## 2. Pi 0.86.1 的真实 Provider 生命周期
 
@@ -195,7 +195,7 @@ Tool 使用 `toolCallId` 作为稳定身份：
 | Provider generation duration | `pi_provider_generation_duration` | `pi_provider_generation_duration_seconds` | provider,model,status |
 | Provider response header | — | `pi_provider_response_header_duration_seconds` | provider,model,status |
 
-* “预期 Prometheus 名称”基于 Collector Prometheus exporter 标准 type/unit suffix 翻译。本轮没有生产 Collector 运行权限，**必须在部署后读取真实 `/metrics` 再登记为 production-verified**。
+* “预期 Prometheus 名称”基于 Collector Prometheus exporter 标准 type/unit suffix 翻译。ECS 已从 Collector `/metrics` 观察到部分真实 `pi_*` 名称与 label；完整 series / label / bucket 映射仍需通过 Prometheus API 做部署后验收。
 
 Provider generation 指标当前不是 Telemetry Contract v1 中的公共 Provider request 指标。main 不应把它当作 attempt 数据。
 
@@ -378,17 +378,30 @@ Target 新增 generation 指标属于生产者扩展；main 若未来需要消�
 
 ## 15. 生产验收边界
 
-本轮没有生产部署权限，也按要求不部署生产。
+运行时实现 `f3fa1516b21a11023ee91cf12995844ced20826e` 已部署到阿里云 ECS，并完成部分真实运行验证。详细记录见 `docs/target-observability-validation.md`。
 
-因此以下项目仍需上线后人工/自动验收：
+当前已经实际确认：
 
-- Collector 配置实际加载成功。
-- OTLP Metrics 实际收到 Target 数据。
-- Collector `/metrics` 的最终 metric names/type/unit/labels/buckets。
+- Target tracing 与 application metrics 初始化成功。
+- Collector 已加载 OTLP application metrics，并可在 `:9464/metrics` 看到真实 `pi_*` 数据。
+- Tempo Trace 写入/查询可用。
+- Loki Target 日志写入/查询可用。
+- Trace ↔ Log 的 traceId 关联可用。
+- Host / Docker Metrics → Prometheus 链路可用。
+- `providerGenerationLifecycle=true`。
+- `providerAttemptLifecycle=false`。
+- `exemplars=false`。
+
+当前仍未完成：
+
+- Prometheus API 对 Target application metrics 的完整部署后查询验收。
+- 同一次真实调用的 Tempo + Loki + Prometheus 三后端关联验收。
+- Railway main → ECS Observability Backend 的真实跨云查询 smoke。
 - 多实例 `job/instance` 映射。
-- Prometheus scrape target 与 series。
-- Tempo / Loki 对同一 lifecycle 的 trace/log 查询。
-- retention、tenant、flags、镜像版本和卷权限。
-- 如未来恢复 Exemplar：完整 payload → OpenMetrics → query_exemplars → Tempo → Loki 链路。
+- retention、volume、长期运行丢弃率和资源压力验证。
 
-不能把本地/CI 验证写成生产已生效。
+当前 Tempo / Loki / Prometheus 查询端口只绑定 ECS 的 `127.0.0.1`。Railway 与 ECS 不在同一网络，所以跨云 smoke 当前属于网络可达性 blocked，而不是 Provider 实现失败。
+
+在建立受控 HTTPS + Auth 入口前，不应为了验收直接裸开放后端查询端口。
+
+Exemplar 继续保持 unavailable。它不是普通 Trace / Log / Metrics 查询的前置条件，也不能通过开启 Prometheus feature flag 来伪装成 producer 已支持。

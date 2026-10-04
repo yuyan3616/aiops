@@ -1,6 +1,6 @@
 # Target Observability 验证记录
 
-日期：2026-10-03
+日期：2026-10-03；生产运行补充验证：2026-10-04
 分支：`target/production-baseline`
 实施起点：`70cb7f744881073991f13935646f5e9c076df7d1`
 
@@ -54,7 +54,7 @@
 
 最终追加修正 SHA `833958e461eaf9f46f62383fbf71bc7d9276a743` 补充“冷初始化不延迟已有会话 abort”和 abort 提前拒绝的处理；远程 CI #369（run id `37132410652`）全部成功，包含 frozen install、typecheck、lint、unit tests、build。
 
-[实现代码 CI #369](https://github.com/yuyan3616/aiops/actions/runs/37132410652)。此记录后的提交仅同步验证文档，不改变已验证的实现。生产验收仍未执行。
+[实现代码 CI #369](https://github.com/yuyan3616/aiops/actions/runs/37132410652)。实现代码验证完成；后续生产运行补充验证见第 6 节。
 
 ## 3. Exemplar 真实验证
 
@@ -126,30 +126,101 @@
 - 并发 Conversation Context 隔离。
 - Exemplar real OTLP payload。
 
-## 6. 未执行的生产验收
+## 6. ECS 实际部署与运行验证（2026-10-04）
 
-本轮按要求不部署生产，因此未声称以下能力已生效：
+运行时实现 SHA：
 
-- ECS/生产 Collector 配置 reload/start 成功。
-- Collector 实际版本及 Prometheus exporter 配置兼容性。
-- Prometheus 启动 flags。
-- OpenMetrics format negotiation。
-- exemplar storage。
-- `query_exemplars`。
-- 生产最终 metric names / job / instance / target_info。
-- Tempo / Loki / Prometheus 三后端同一次真实生产调用的关联。
-- 生产 retention、volume、权限和丢弃率。
+`f3fa1516b21a11023ee91cf12995844ced20826e`
 
-## 7. 生产上线验收清单
+该实现已部署到阿里云 ECS。其后的 README / validation / spec 文档提交不改变运行时代码，也不等价于再次部署。
 
-部署后至少执行：
+当前实际部署拓扑：
 
-1. 记录 Collector / Prometheus / Tempo / Loki build/version 和容器启动命令。
-2. 验证 Collector 已加载 `metrics.receivers: [otlp, host_metrics, docker_stats]`。
-3. 在 Target 发起一组已知 Agent / Tool / Provider 请求。
-4. 查看 Collector `:9464/metrics`，记录最终应用 metric name/type/unit/labels/buckets。
-5. 验证不同 Target 实例具有可区分 `instance`。
-6. Prometheus 查询 Counter、Histogram bucket/count/sum。
-7. 用 Trace ID 在 Tempo 查询对应 Span。
-8. 用同 Trace/Span ID 在 Loki 查询 lifecycle log。
-9. Exemplar 保持 unavailable；除非未来 SDK payload probe 首先通过，否则不要开启“已支持”声明。
+```text
+Alibaba Cloud ECS
+├─ aiops-rca-target
+├─ otel-collector
+├─ tempo
+├─ loki
+└─ prometheus
+```
+
+本次实际运行观察确认：
+
+- Target 启动日志出现 `OpenTelemetry tracing started`。
+- Target 启动日志出现 `OpenTelemetry metrics started`。
+- capability state 显示 `tracing=true`、`metrics=true`。
+- `providerGenerationLifecycle=true`。
+- `providerAttemptLifecycle=false`。
+- `exemplars=false`。
+- Collector 使用包含 `otlp, host_metrics, docker_stats` 的 metrics pipeline。
+- 触发真实 `utc_time` Tool 调用后，Collector `:9464/metrics` 已观察到真实应用指标，包括：
+  - `pi_provider_response_header_duration_seconds_*`
+  - `pi_tool_call_duration_seconds_*`
+  - `pi_tool_calls_total`
+- 实际 label 已观察到 `provider="packy"`、`model="deepseek-flash"`、`tool_name="utc_time"`、`status="success"`。
+- 既有部署已验证 Tempo Trace 写入/查询、Loki Target 日志写入/查询以及 Log ↔ Trace 的 traceId 关联。
+- 既有部署已验证 Host / Docker Metrics 经 Collector 进入 Prometheus。
+
+因此当前可以确认：
+
+| 链路 | 状态 |
+|---|---|
+| Target → OTLP Trace → Collector → Tempo | 已实际验证 |
+| Target stdout → Collector → Loki | 已实际验证 |
+| Trace ↔ Log traceId 关联 | 已实际验证 |
+| Target → OTLP Application Metrics → Collector `:9464` | 已实际验证 |
+| Host / Docker Metrics → Collector → Prometheus | 已实际验证 |
+| Application Metrics → Prometheus 查询 | 尚需补一次部署后查询验收 |
+| 同一次真实调用的 Tempo + Loki + Prometheus 三后端关联 | 尚未完成 |
+| Railway main → ECS Observability Backend 跨云查询 | 当前 blocked |
+
+Target 启动早期曾出现 Vite 代理访问 `127.0.0.1:4328` 的短暂 `ECONNREFUSED`，随后 Pi Chat API 正常监听且 Telemetry 正常启动。当前将其记录为启动顺序竞态，不视为持续运行故障；若后续持续出现再单独处理。
+
+### 6.1 当前网络边界
+
+Tempo / Loki / Prometheus 查询端口当前只绑定 ECS 本机：
+
+```text
+Tempo       127.0.0.1:3200
+Loki        127.0.0.1:3100
+Prometheus  127.0.0.1:9090
+```
+
+Railway 上的 main RCA Runtime 与 ECS 不在同一网络，因此目前不能直接进行真实跨云 smoke。
+
+这不是 Provider 代码失败，而是明确的网络可达性阻塞。
+
+在建立受控的 HTTPS + Auth 查询入口前，不应为了验收直接裸开放：
+
+- 3100
+- 3200
+- 9090
+- 4318
+- 9464
+
+### 6.2 尚未完成的生产验收
+
+以下能力仍不能宣称完成：
+
+- 部署后从 Prometheus API 查询 Target `pi_*` application metrics，并核对最终 series / labels。
+- 对同一次真实 Agent / Tool / Provider 调用完成 Tempo + Loki + Prometheus 三后端关联验收。
+- Railway main 通过受控网络入口真实查询 Tempo / Loki / Prometheus。
+- 多 Target 实例的 `service.instance.id` / Prometheus `instance` 区分验证。
+- retention、volume、长期运行丢弃率和资源压力验证。
+- Provider SDK 内部 attempt lifecycle；当前明确 unavailable。
+- Exemplar；当前明确 unavailable，而不是待配置能力。
+
+## 7. 后续验收清单
+
+下一阶段至少完成：
+
+1. 为 Railway → ECS Observability Backend 建立受控的 HTTPS + Auth 查询入口；不要裸开放后端端口。
+2. 在 Railway 配置外部化的 Tempo / Loki / Prometheus Base URL 与认证信息。
+3. 从 Prometheus API 查询 Target application metrics，记录真实 metric names、series、labels、bucket/count/sum。
+4. 发起一组已知 Agent / Tool / Provider 请求，用同一请求完成 Tempo、Loki、Prometheus 三后端关联验证。
+5. 如进入多实例部署，再验证 `service.instance.id` 与 Prometheus instance 映射。
+6. 继续记录 Collector / Prometheus / Tempo / Loki 的实际版本、启动参数、retention 和卷配置。
+7. Exemplar 保持 unavailable；只有未来 producer OTLP payload probe 首先出现真实 exemplar 后，才重新开启后端 exemplar 验证。
+
+不能把 CI success、进程启动成功或 mock 查询成功写成上述真实跨云验收已完成。
