@@ -9,7 +9,10 @@ export RCA_INVESTIGATIONS_DIR="${RCA_INVESTIGATIONS_DIR:-/tmp/pi-chat/data/rca/i
 
 PUBLIC_PORT="${PORT:-3000}"
 
-if [[ -n "${AGENT_CONFIG_MIGRATE_EXTENSION_SHA:-}" ]]; then
+MIGRATION_RECEIPT="$PI_CHAT_ROOT_DIR/agent-config/release-backups/migration-result.json"
+LEGACY_PROFILE="$PI_CHAT_ROOT_DIR/agent-config/013e27faf865a0cc38a6f99fc4075e220679d1b9.json"
+if [[ -n "${AGENT_CONFIG_MIGRATE_EXTENSION_SHA:-}" ]] || [[ -f "$LEGACY_PROFILE" && ! -f "$MIGRATION_RECEIPT" ]]; then
+  export AGENT_CONFIG_MIGRATE_EXTENSION_SHA="${AGENT_CONFIG_MIGRATE_EXTENSION_SHA:-491f8147d308717c22c042fdbbed5895e0a3214b}"
   pnpm exec tsx --tsconfig tsconfig.node.json scripts/migrate-agent-config-release.ts
 fi
 
