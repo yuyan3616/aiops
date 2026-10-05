@@ -17,7 +17,7 @@ if [[ -n "${AGENT_CONFIG_MIGRATE_EXTENSION_SHA:-}" ]] || [[ -f "$LEGACY_PROFILE"
 fi
 
 if [[ -f "$MIGRATION_RECEIPT" ]]; then
-  echo "Agent config migration receipt: $(cat \"$MIGRATION_RECEIPT\")"
+  echo "Agent config migration receipt: $(cat "$MIGRATION_RECEIPT")"
 else
   echo "Agent config migration receipt absent; legacy profile present: $([[ -f "$LEGACY_PROFILE" ]] && echo yes || echo no)"
 fi
