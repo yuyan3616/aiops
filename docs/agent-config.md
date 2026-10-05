@@ -32,6 +32,8 @@ pnpm agent-config:migrate /persistent/pi-chat/agent-config /path/to/committed-ai
 
 checkout 必须有完整 commit SHA 且工作区干净；命令检查所有旧角色和工具的兼容性，预热新代码包并记录映射，不修改 active 指针。此命令只供操作员使用，不向 Agent 暴露。未绑定的 v1 仍可读取，但执行会明确报错。
 
+2026-10-05 首次生产切换可临时设置 AGENT_CONFIG_MIGRATE_EXTENSION_SHA 为经过联合验证的完整配置 commit。start-railway.sh 在启动服务前执行显式远端预热、旧缓存兼容校验及不可变映射，备份旧指针并记录 migration-result.json；不切换 active，不触碰历史 RCA100。成功后清空此变量，后续启动走正常路径。此开关仅用于这次迁移，不自动绑定最新版。
+
 ## 配置与验证
 
 环境变量保持 AGENT_CONFIG_REPOSITORY、AGENT_CONFIG_REF、AGENT_CONFIG_GITHUB_TOKEN；私有仓库使用仅该仓库 Contents Read-only 凭据。受控发布建议先固定候选 commit，预热、执行旧版迁移、验证新旧调查恢复，再切换配置 ref。主应用回滚前应确认旧二进制能读取当前活动配置，必要时恢复 v1 active 指针；新产生的 v2 调查须由兼容应用继续执行。

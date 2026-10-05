@@ -9,6 +9,10 @@ export RCA_INVESTIGATIONS_DIR="${RCA_INVESTIGATIONS_DIR:-/tmp/pi-chat/data/rca/i
 
 PUBLIC_PORT="${PORT:-3000}"
 
+if [[ -n "${AGENT_CONFIG_MIGRATE_EXTENSION_SHA:-}" ]]; then
+  pnpm exec tsx --tsconfig tsconfig.node.json scripts/migrate-agent-config-release.ts
+fi
+
 pnpm exec tsx --tsconfig tsconfig.node.json server/index.ts &
 API_PID=$!
 
