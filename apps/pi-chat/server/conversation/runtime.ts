@@ -1,7 +1,6 @@
 import { createRequire } from "node:module";
 import { dirname } from "node:path";
 
-import { Type } from "@earendil-works/pi-ai";
 import {
   createAgentSessionRuntime,
   getAgentDir,
@@ -10,13 +9,13 @@ import {
   ModelRuntime,
   createAgentSessionFromServices,
   type CreateAgentSessionRuntimeFactory,
-  defineTool,
   type ExtensionFactory,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import type { GlobalConfig } from "@server/config";
 import { type ConversationRcaContext } from "@server/rca/conversation-context";
 
+import { toolsExtensionFactory } from "../agent-config/extension-loader";
 import { createMainConfigExtension } from "../agent-config/main-extension";
 import { agentConfigStore, renderMainConfig } from "../agent-config/store";
 import type { ConversationRecord } from "./types";
@@ -26,21 +25,11 @@ export interface RuntimeOptions {
   globalConfig: GlobalConfig;
   modelRuntime: ModelRuntime;
   sessionManager: SessionManager;
-  customTools?: ToolDefinition[];
+  configTools: ToolDefinition[];
+  agentConfigVersion: string;
   getAgentConfigVersion?: () => Promise<string>;
   getRcaContext?: () => ConversationRcaContext | Promise<ConversationRcaContext>;
 }
-
-const utcTimeTool = defineTool({
-  name: "utc_time",
-  label: "utc_time",
-  description: "返回当前 UTC ISO 时间戳",
-  parameters: Type.Object({}),
-  execute: async () => ({
-    content: [{ type: "text", text: new Date().toISOString() }],
-    details: {},
-  }),
-});
 
 const webAccessExtensionPath = dirname(
   createRequire(import.meta.url).resolve("pi-web-access/package.json"),
@@ -56,7 +45,8 @@ export async function createRuntime(options: RuntimeOptions) {
     globalConfig,
     modelRuntime,
     sessionManager,
-    customTools = [],
+    configTools,
+    agentConfigVersion,
     getRcaContext,
     getAgentConfigVersion,
   } = options;
@@ -75,9 +65,10 @@ export async function createRuntime(options: RuntimeOptions) {
       modelRuntime,
       resourceLoaderOptions: {
         noExtensions: true,
-        systemPromptOverride: () => renderMainConfig(agentConfigStore.current),
+        systemPromptOverride: () => renderMainConfig(agentConfigStore.get(agentConfigVersion)),
         additionalExtensionPaths: [webAccessExtensionPath, langfuseExtensionPath],
         extensionFactories: [
+          toolsExtensionFactory(configTools),
           rcaContextExtension,
           async (pi) => {
             const packageName = "pi-mcp-adapter";
@@ -94,13 +85,20 @@ export async function createRuntime(options: RuntimeOptions) {
         appendSystemPromptOverride: () => [],
       },
     });
-    const toolDefinitions = [utcTimeTool, ...customTools];
+    const loaded = services.resourceLoader.getExtensions();
+    if (loaded.errors.length) throw new Error("config_extension_binding_failed");
+    const registered = new Set<string>();
+    for (const extension of loaded.extensions) for (const name of extension.tools.keys()) {
+      if (registered.has(name)) throw new Error("config_tool_name_conflict");
+      registered.add(name);
+    }
+    const toolDefinitions = configTools;
     const agentSession = await createAgentSessionFromServices({
       services,
       sessionManager,
       noTools: "builtin",
       tools: toolDefinitions.map((tool) => tool.name),
-      customTools: toolDefinitions,
+
     });
 
     await agentSession.session.bindExtensions({});

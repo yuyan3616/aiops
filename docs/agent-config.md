@@ -1,45 +1,49 @@
-# Agent 配置加载与角色注册表
+# 版本化 Agent 配置与工具扩展
 
-## 范围
+配置源为 [aiops-agent-config](https://github.com/yuyan3616/aiops-agent-config)。配置版本始终使用完整 Git commit SHA。一个版本同时绑定角色 JSON、SYSTEM.md、技能、工具 Schema、说明和执行适配器；调查的 agentConfigVersion 固定这整套内容。
 
-配置源：[yuyan3616/aiops-agent-config](https://github.com/yuyan3616/aiops-agent-config)。第一阶段只迁移 Main/Trace/Metrics/Log 身份、SYSTEM.md、技能文档、工具允许列表；新增角色可以组合已实现的 Live 工具。没有新增配置微服务、数据库、Webhook 或管理后台。
+## 分工与执行
 
-注册表从配置构造专家 Profile；Evidence 模态由服务端按工具推导。专家总查询上限仍为 12，query_metrics 上限仍为 6；Finding 强度规则、submit_finding 协议、Budget v2、授权和取消不允许配置覆盖。event-topology 仅保留历史名称展示，不再包含可执行 Profile。
+schemaVersion 2 的 manifest 声明 hostApiVersion: "1"、扩展 entry/SHA256，角色声明 extensions 和 tools。配置仓库提前构建单文件 .mjs；生产不运行 npm install 或构建。模块只导出 createExtension({sdk, host})，返回 Pi ExtensionFactory。sdk 注入当前安装版本的 Type、defineTool 和只读 limits。Main 与 Expert 的实际注册通过 ResourceLoader.extensionFactories 完成，应用中不再保留同名工具 Schema 或备用实现。Pi SDK 保持 0.86.1。
 
-Main 默认直接取证，专家按需参与，详见 [Main 优先取证](main-first-investigation.md)。角色 JSON 支持可选 capability/useWhen/notFor，注册表向 Main 注入能力边界。Main 工具包含有界查询及 read_rca_trace；零专家调查可以正常结案。
+Host 保留 Service、Provider、鉴权、Budget v2、持久化、取消、并发与原始记录链。每个角色只获得允许的宿主操作；扩展仍需注册其允许列表中的全部工具，专家还需注册 submit_finding。Query 阶段宿主拒绝 Finding，Finalize 阶段关闭查询，保持同一 Session。Finding 的领域校验、toolCallId、来源快照、模态和假设检查继续由应用执行。
 
-## 加载
+这是受信任仓库代码执行，不是沙箱。AST 检查和 hash 检查防止误打包、导入依赖和包损坏，不把有执行权限的仓库变成不受信任代码隔离环境。扩展须经过代码审查，禁止顶层副作用、外部依赖、网络和文件 I/O。敏感数据源访问只经 Host。
 
-启动与每 60 秒后台轮询先解析目标 ref 的 commit SHA，再以该 SHA 读取 manifest 引用的全部文件，校验后原子启用。每个文件最多 64 KiB，整个配置包最多 512 KiB。只接受受控 JSON/Markdown 相对路径、已实现工具、已注册技能和已知字段。没有远程代码执行。
+## 加载、固定与缓存
 
-新调查持久化 agentConfigVersion；同一 Main 轮次及新建调查使用同一个快照，专家按调查的固定版本构造。Main 正在运行时后台更新不会改写其提示词；下一轮普通对话及终态追问可以使用最新版，运行中或 interrupted 调查的 Main 继续使用原版本。原调查证据及结论不受影响。终态会话明确新建调查时使用本轮选定的新版本。
+启动及每 60 秒轮询先解析 ref 的 SHA，再从该 SHA 获取整个包。v2 最多 128 个文件、总计 2 MiB；.mjs 每个最多 256 KiB，JSON/Markdown 每个最多 64 KiB。v1 仍采用旧格式及 512 KiB 上限。检查路径、文件类型、hash、hostApiVersion、角色契约、重复注册、Schema、缺失工具及工厂初始化；预检失败保留最近有效版本。
 
-已有 Live 调查缺少 agentConfigVersion 时，在首次继续执行前把当前有效远程/缓存版本持久化到调查，随后继续固定该版本。历史 RCA100 仍保持只读。本功能不改 schemaVersion/Budget ledger。
+持久化目录为 PI_CHAT_ROOT_DIR/agent-config。<SHA>.json 保存完整源快照，versions/<SHA>/ 保存可执行文件与 complete.json；完整目录原子落盘后才更新 active.json。启动从磁盘再次检查完整性及模块；缺失或损坏版本明确失败，不回退到最新版。生产目录须在持久化卷上，不自动清理仍被历史调查引用的版本。
 
-## 缓存与恢复
+Main 创建 Runtime 时一次选定配置版本。运行中、interrupted 调查继续使用原版本；普通对话及终态追问在下一次空闲轮次可切换新版本。切换复用 SessionManager、消息 channel、model、thinking 以及会话记录，先成功初始化候选 Runtime 再释放旧 Runtime。流式输出、待处理延续或持有执行 lease 时不切换。宿主拒绝工具版本与进行中调查不一致的操作。
 
-缓存保存在 PI_CHAT_ROOT_DIR/agent-config：每版本一个不可变 JSON 快照，active.json 为最近有效版本指针。完整写入版本缓存后才更新指针并在内存启用；缓存与加载结果深度冻结。启动优先恢复缓存，再尝试远程刷新；远程失败保留最近有效版本，没有有效缓存时标记 agent_config_unavailable：历史记录仍可读取，新会话、推理及新调查返回明确配置不可用错误。
+已有 Live 调查没有 agentConfigVersion 时在继续执行前固定一次当前版本。RCA100 保持只读；调查 schemaVersion 2、formatVersion 3、Budget v2 不变。
 
-正在恢复的调查指定版本缺失或损坏时明确失败，不退回最新版。缓存不应手动清理仍被调查引用的版本。生产需将 PI_CHAT_ROOT_DIR 放在持久化卷中。
+## v1 恢复迁移
 
-主仓库不再保存内置角色、SYSTEM.md、技能或离线默认配置。专家公共调查契约作为 investigation-contract 技能维护在独立配置仓库。旧 Event/Topology 可执行 Profile 已移除，历史名称依然可以展示。服务端只保留工具 Schema、预算及 submit_finding 协议约束；这些属于运行时合同。
+历史 v1 Profile 没有代码引用，不能自动拼接当前扩展。操作员需预热经过审查的 v2 commit，并建立不可变的旧 SHA → 兼容扩展 SHA 映射。旧版本提示词、技能和工具允许列表仍来自旧 Profile，只借用映射后的扩展实现。映射记录在 legacy-bindings.json；已经绑定的版本不能改绑。
 
-## Pi SDK 初始化
+在 apps/pi-chat 执行：
 
-依据官方 [SDK 文档](https://pi.dev/docs/latest/sdk) 和 [自定义提示词示例](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/examples/sdk/03-custom-prompt.ts)，当前安装的 0.86.1 支持通过 ResourceLoader 的 systemPromptOverride 注入已加载配置，再由 Pi 创建 Session。Main/Expert 显式关闭本地 context files、默认 skills、prompt templates、themes 和 APPEND_SYSTEM.md 自动叠加。专家在创建 Session 前注入固定版本 Profile；Main 每轮 before_agent_start 使用调查固定版本，更新 prompt 与工具允许列表。
+```bash
+pnpm agent-config:migrate /persistent/pi-chat/agent-config /path/to/committed-aiops-agent-config OLD_SHA_1,OLD_SHA_2
+```
 
-不使用 Pi 默认的文件发现来维护生产身份，GitHub 拉取和缓存由现有配置加载器管理。不升级 Pi SDK，也不重写 ResourceLoader。服务端启动时没有配置不会崩溃；health 返回 agentConfiguration.state，Agent 初始化和推理会被阻止。
+checkout 必须有完整 commit SHA 且工作区干净；命令检查所有旧角色和工具的兼容性，预热新代码包并记录映射，不修改 active 指针。此命令只供操作员使用，不向 Agent 暴露。未绑定的 v1 仍可读取，但执行会明确报错。
 
-## 配置 Railway
+## 配置与验证
 
-- AGENT_CONFIG_REPOSITORY：yuyan3616/aiops-agent-config。
-- AGENT_CONFIG_REF：默认 main，可固定 tag/commit 用于受控发布。
-- AGENT_CONFIG_GITHUB_TOKEN：私有仓库只读凭据，仅授予该仓库 Contents Read-only；直接填 Railway，不提交 Git。
+环境变量保持 AGENT_CONFIG_REPOSITORY、AGENT_CONFIG_REF、AGENT_CONFIG_GITHUB_TOKEN；私有仓库使用仅该仓库 Contents Read-only 凭据。受控发布建议先固定候选 commit，预热、执行旧版迁移、验证新旧调查恢复，再切换配置 ref。主应用回滚前应确认旧二进制能读取当前活动配置，必要时恢复 v1 active 指针；新产生的 v2 调查须由兼容应用继续执行。
 
-首次接入环境变量需要部署/重启。以后配置提交默认一分钟内检查，新调查使用已成功加载的版本。启动日志输出实际版本；刷新失败只输出固定错误码，不输出凭据、HTTP 错误内容或提示词。
+在配置仓库运行 pnpm install --frozen-lockfile、pnpm run build:check；应用目录运行：
 
-## 编辑与验证
+```bash
+pnpm agent-config:validate /path/to/aiops-agent-config
+AGENT_CONFIG_TEST_DIRECTORY=/path/to/aiops-agent-config pnpm test
+pnpm typecheck
+pnpm lint
+pnpm build
+```
 
-配置文件说明及新增角色示例见配置仓库 README。在 apps/pi-chat 中执行 pnpm agent-config:validate /path/to/aiops-agent-config，验证路径、角色、工具、技能及包大小。服务端加载时使用相同校验器。
-
-验证覆盖无效配置拒绝、原版本固定、跨重启离线缓存、版本缺失拒绝、新注册角色派发及中文展示、原有三类专家的技能选择与 Finding 校验。这里只做确定性运行时验证，不把模拟模型执行当成真实 LLM 效果验证。
+联合测试直接读取候选配置仓库，覆盖真实 Main/Expert 注册、零专家调查、Query/Finalize 和 Finding；模型输出为确定性模拟，不代替真实 LLM Live 回放。其余测试覆盖缓存离线恢复、坏包保留、显式旧版映射、空闲切换失败保留旧会话及繁忙拒绝切换。代码开发完成后的生产验收还需真实 LLM、SSE、暂停/恢复与进程重启回放。

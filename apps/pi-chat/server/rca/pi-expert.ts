@@ -1,7 +1,6 @@
-import { Type, type AssistantMessage } from "@earendil-works/pi-ai";
+import { type AssistantMessage } from "@earendil-works/pi-ai";
 import {
   createAgentSession,
-  defineTool,
   DefaultResourceLoader,
   getAgentDir,
   SessionManager,
@@ -9,6 +8,9 @@ import {
   type ModelRuntime,
 } from "@earendil-works/pi-coding-agent";
 
+import { toolsExtensionFactory } from "../agent-config/extension-loader";
+import { agentConfigStore } from "../agent-config/store";
+import { validateFindingSubmission } from "./finding-submission";
 import { LIVE_LIMITS } from "./live/types";
 import {
   buildExpertSystemPrompt,
@@ -55,6 +57,7 @@ export interface PiExpertRunContext {
   invoke: (
     tool: ObservabilityToolName,
     arguments_: Record<string, unknown>,
+    executionSignal?: AbortSignal,
   ) => Promise<RecordedAgentToolExecution>;
   onThinking?: (delta: string) => void | Promise<void>;
 }
@@ -171,88 +174,16 @@ type AgentSessionFactory = typeof createAgentSession;
 
 const SUBMIT_FINDING_TOOL = "submit_finding";
 
-function findingToolParameters() {
-  const hypothesisRefs = Type.Array(Type.String({ minLength: 1, maxLength: 64 }), {
-    maxItems: 20,
-  });
-  return Type.Object(
-    {
-      status: Type.Union([
-        Type.Literal("succeeded"),
-        Type.Literal("failed"),
-        Type.Literal("inconclusive"),
-        Type.Literal("blocked"),
-      ]),
-      strength: Type.Union([
-        Type.Literal("strong"),
-        Type.Literal("moderate"),
-        Type.Literal("weak"),
-        Type.Literal("inconclusive"),
-      ]),
-      verdict: Type.Union([
-        Type.Literal("supports"),
-        Type.Literal("contradicts"),
-        Type.Literal("no-signal"),
-        Type.Literal("mixed"),
-        Type.Literal("inconclusive"),
-      ]),
-      summary: Type.String({ minLength: 1, maxLength: 1500 }),
-      conclusions: Type.Array(Type.String({ minLength: 1, maxLength: 1000 }), {
-        maxItems: 5,
-      }),
-      evidenceClaims: Type.Array(
-        Type.Object(
-          {
-            toolCallId: Type.String({ minLength: 1, maxLength: 64 }),
-            sourceItems: Type.Optional(
-              Type.Array(Type.String({ minLength: 1, maxLength: 256 }), {
-                maxItems: 20,
-                description:
-                  "Snapshot-local sourceItems from the referenced tool result, e.g. span:<spanId>, log:0 or series:0. Required when returned facts exist.",
-              }),
-            ),
-            modality: Type.Union([
-              Type.Literal("metric"),
-              Type.Literal("log"),
-              Type.Literal("trace"),
-              Type.Literal("event"),
-              Type.Literal("alert"),
-              Type.Literal("topology"),
-            ]),
-            entity: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
-            summary: Type.String({ minLength: 1, maxLength: 1000 }),
-            supports: hypothesisRefs,
-            contradicts: hypothesisRefs,
-          },
-          { additionalProperties: false },
-        ),
-        { maxItems: 20 },
-      ),
-      candidateEntities: Type.Array(Type.String({ minLength: 1, maxLength: 200 }), {
-        maxItems: 20,
-      }),
-      candidateMechanism: Type.Optional(Type.String({ minLength: 1, maxLength: 1000 })),
-      suggestedFollowUps: Type.Array(Type.String({ minLength: 1, maxLength: 1000 }), {
-        maxItems: 10,
-      }),
-      blockedOn: Type.Optional(Type.String({ minLength: 1, maxLength: 1000 })),
-    },
-    { additionalProperties: false },
-  );
-}
-
 export class PiExpertRunner {
   private readonly modelRuntime: ModelRuntime;
-  private readonly tools: ObservabilityToolRegistry;
   private readonly createSession: AgentSessionFactory;
 
   constructor(
     modelRuntime: ModelRuntime,
-    tools: ObservabilityToolRegistry,
+    _tools: ObservabilityToolRegistry,
     createSession: AgentSessionFactory = createAgentSession,
   ) {
     this.modelRuntime = modelRuntime;
-    this.tools = tools;
     this.createSession = createSession;
   }
 
@@ -268,19 +199,6 @@ export class PiExpertRunner {
       retry: { enabled: true, maxRetries: 1 },
     });
     const agentDir = getAgentDir();
-    const resourceLoader = new DefaultResourceLoader({
-      cwd: process.cwd(),
-      agentDir,
-      settingsManager,
-      noExtensions: true,
-      noSkills: true,
-      noPromptTemplates: true,
-      noThemes: true,
-      noContextFiles: true,
-      systemPromptOverride: () => buildExpertSystemPrompt(profile, context.brief),
-      appendSystemPromptOverride: () => [],
-    });
-    await resourceLoader.reload();
 
     const model = context.model
       ? this.modelRuntime.getModel(context.model.provider, context.model.id)
@@ -338,124 +256,158 @@ export class PiExpertRunner {
     let submittedFindingPayload: Record<string, unknown> | undefined;
     let submissionValidationError: string | undefined;
 
-    const toolDefinitions = this.tools.createPiTools({
-      names: profile.tools,
-      execute: async (name, _toolCallId, parameters) => {
-        if (expertResultBytes > LIVE_LIMITS.maxExpertResultBytes - LIVE_LIMITS.maxAgentToolBytes) {
-          activateFinalizePhase?.();
-          throw new Error("专家累计结果预算已接近上限，请基于已观察证据提交 finding。");
-        }
-        if (toolCallCount >= profile.maxToolCalls) {
-          activateFinalizePhase?.();
-          throw new Error(`${profile.label} 的调查工具预算已用完。请停止取证并提交最终 finding。`);
-        }
-        const toolBudget = profile.toolBudgets?.[name];
-        const currentToolCalls = perToolCalls.get(name) ?? 0;
-        if (toolBudget !== undefined && currentToolCalls >= toolBudget) {
-          throw new Error(
-            `${profile.label} 的 ${name} 调用预算已用完。请基于已经收集的 observation 收敛。`,
-          );
-        }
-        perToolCalls.set(name, currentToolCalls + 1);
-        toolCallCount++;
-        sampleProcessMemory();
-        // Live tool schemas and Provider limits are the authority for query bounds.
-        // Do not mutate structured parameters here or re-introduce legacy topN semantics.
-        const boundedParameters = parameters;
-        let recorded: RecordedAgentToolExecution;
-        try {
-          recorded = await context.invoke(name, boundedParameters);
-        } catch (error) {
-          toolError = error;
-          throw error;
-        }
-        sampleProcessMemory();
-        recordedToolCallIds.add(recorded.callId);
-        const compactResult = compactToolResultForAgent(name, recorded.execution.result);
-        const compactText = JSON.stringify({ toolCallId: recorded.callId, result: compactResult });
-        const resultBytes = Buffer.byteLength(compactText, "utf8");
-        expertResultBytes += resultBytes;
-        const expertBudgetExceeded = expertResultBytes > LIVE_LIMITS.maxExpertResultBytes;
-        if (expertBudgetExceeded) activateFinalizePhase?.();
+    let finalizePhase = false;
+    const executeQuery = async (
+      name: ObservabilityToolName,
+      _toolCallId: string,
+      parameters: Record<string, unknown>,
+      signal?: AbortSignal,
+    ) => {
+      signal?.throwIfAborted();
+      context.signal?.throwIfAborted();
+      if (finalizePhase || !profile.tools.includes(name))
+        throw new Error("config_expert_tool_not_allowed");
 
-        // The protocol action is not part of the investigation budget. Once the
-        // final allowed investigation call completes, the next agent turn sees
-        // only submit_finding.
-        if (toolCallCount >= profile.maxToolCalls) {
-          activateFinalizePhase?.();
-        }
+      if (expertResultBytes > LIVE_LIMITS.maxExpertResultBytes - LIVE_LIMITS.maxAgentToolBytes) {
+        activateFinalizePhase?.();
+        throw new Error("专家累计结果预算已接近上限，请基于已观察证据提交 finding。");
+      }
+      if (toolCallCount >= profile.maxToolCalls) {
+        activateFinalizePhase?.();
+        throw new Error(`${profile.label} 的调查工具预算已用完。请停止取证并提交最终 finding。`);
+      }
+      const toolBudget = profile.toolBudgets?.[name];
+      const currentToolCalls = perToolCalls.get(name) ?? 0;
+      if (toolBudget !== undefined && currentToolCalls >= toolBudget) {
+        throw new Error(
+          `${profile.label} 的 ${name} 调用预算已用完。请基于已经收集的 observation 收敛。`,
+        );
+      }
+      perToolCalls.set(name, currentToolCalls + 1);
+      toolCallCount++;
+      sampleProcessMemory();
+      // Live tool schemas and Provider limits are the authority for query bounds.
+      // Do not mutate structured parameters here or re-introduce legacy topN semantics.
+      const boundedParameters = parameters;
+      let recorded: RecordedAgentToolExecution;
+      try {
+        recorded = await context.invoke(name, boundedParameters, signal);
+      } catch (error) {
+        toolError = error;
+        throw error;
+      }
+      signal?.throwIfAborted();
+      context.signal?.throwIfAborted();
+      sampleProcessMemory();
+      recordedToolCallIds.add(recorded.callId);
+      const compactResult = compactToolResultForAgent(name, recorded.execution.result);
+      const compactText = JSON.stringify({ toolCallId: recorded.callId, result: compactResult });
+      const resultBytes = Buffer.byteLength(compactText, "utf8");
+      expertResultBytes += resultBytes;
+      const expertBudgetExceeded = expertResultBytes > LIVE_LIMITS.maxExpertResultBytes;
+      if (expertBudgetExceeded) activateFinalizePhase?.();
 
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: expertBudgetExceeded
-                ? JSON.stringify({
-                    toolCallId: recorded.callId,
-                    status: "partial",
-                    warnings: [
-                      `Specialist result budget exceeded ${LIVE_LIMITS.maxExpertResultBytes} bytes; the full bounded snapshot is persisted server-side. Finalize using evidence already observed.`,
-                    ],
-                  })
-                : compactText,
-            },
-          ],
-          details: {
-            toolCallId: recorded.callId,
-            summary: recorded.execution.summary,
-            rawRef: recorded.execution.rawRef,
+      // The protocol action is not part of the investigation budget. Once the
+      // final allowed investigation call completes, the next agent turn sees
+      // only submit_finding.
+      if (toolCallCount >= profile.maxToolCalls) {
+        activateFinalizePhase?.();
+      }
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: expertBudgetExceeded
+              ? JSON.stringify({
+                  toolCallId: recorded.callId,
+                  status: "partial",
+                  warnings: [
+                    `Specialist result budget exceeded ${LIVE_LIMITS.maxExpertResultBytes} bytes; the full bounded snapshot is persisted server-side. Finalize using evidence already observed.`,
+                  ],
+                })
+              : compactText,
           },
-        };
-      },
-    });
+        ],
+        details: {
+          toolCallId: recorded.callId,
+          summary: recorded.execution.summary,
+          rawRef: recorded.execution.rawRef,
+        },
+      };
+    };
 
     const validHypotheses = new Set(context.brief.hypothesisIds);
     const validModalities = new Set(profile.modalities);
-    const submitFindingTool = defineTool({
-      name: SUBMIT_FINDING_TOOL,
-      label: "Submit finding",
-      description:
-        "提交当前专家调查的最终结构化 finding。仅在 Finalize Phase 使用；该协议动作不消耗调查工具预算。",
-      promptSnippet: "Submit the final expert finding as validated structured data",
-      promptGuidelines: [
-        "Finalize Phase 中必须调用 submit_finding，不能用普通 assistant 文本代替。",
-        "evidenceClaims 只能引用当前 Session 已成功返回的 toolCallId。",
-      ],
-      parameters: findingToolParameters(),
-      async execute(_toolCallId, params) {
-        try {
-          for (const claim of params.evidenceClaims) {
-            if (!recordedToolCallIds.has(claim.toolCallId)) {
-              throw new Error(
-                `submit_finding 引用了不存在或未成功完成的 toolCallId: ${claim.toolCallId}`,
-              );
-            }
-            if (!validModalities.has(claim.modality as EvidenceModality)) {
-              throw new Error(
-                `submit_finding 使用了当前 Profile 不允许的 modality: ${claim.modality}`,
-              );
-            }
-            for (const hypothesisId of [...claim.supports, ...claim.contradicts]) {
-              if (!validHypotheses.has(hypothesisId)) {
-                throw new Error(
-                  `submit_finding 引用了当前 brief 之外的 hypothesis: ${hypothesisId}`,
-                );
-              }
+    const submitFinding = async (
+      _toolCallId: string,
+      input: Record<string, unknown>,
+      signal?: AbortSignal,
+    ) => {
+      signal?.throwIfAborted();
+      context.signal?.throwIfAborted();
+      if (!finalizePhase) throw new Error("finding_finalize_phase_required");
+      try {
+        const params = validateFindingSubmission(input);
+        for (const claim of params.evidenceClaims) {
+          if (!recordedToolCallIds.has(claim.toolCallId)) {
+            throw new Error(
+              `submit_finding 引用了不存在或未成功完成的 toolCallId: ${claim.toolCallId}`,
+            );
+          }
+          if (!validModalities.has(claim.modality as EvidenceModality)) {
+            throw new Error(
+              `submit_finding 使用了当前 Profile 不允许的 modality: ${claim.modality}`,
+            );
+          }
+          for (const hypothesisId of [...claim.supports, ...claim.contradicts]) {
+            if (!validHypotheses.has(hypothesisId)) {
+              throw new Error(`submit_finding 引用了当前 brief 之外的 hypothesis: ${hypothesisId}`);
             }
           }
-          submittedFindingPayload = params as unknown as Record<string, unknown>;
-          submissionValidationError = undefined;
-          return {
-            content: [{ type: "text" as const, text: "Finding submitted." }],
-            details: { accepted: true },
-            terminate: true,
-          };
-        } catch (error) {
-          submissionValidationError = safeRuntimeDetail(error);
-          throw error;
         }
-      },
+        submittedFindingPayload = params as unknown as Record<string, unknown>;
+        submissionValidationError = undefined;
+        return {
+          content: [{ type: "text" as const, text: "Finding submitted." }],
+          details: { accepted: true },
+          terminate: true,
+        };
+      } catch (error) {
+        submissionValidationError = safeRuntimeDetail(error);
+        throw error;
+      }
+    };
+
+    const host: Record<string, unknown> = Object.fromEntries(
+      profile.tools.map((name) => [
+        name,
+        (id: string, params: Record<string, unknown>, signal?: AbortSignal) =>
+          executeQuery(name, id, params, signal),
+      ]),
+    );
+    host[SUBMIT_FINDING_TOOL] = submitFinding;
+    const toolDefinitions = await agentConfigStore.toolsFor(
+      context.investigation.agentConfigVersion ?? agentConfigStore.current.version,
+      role,
+      host,
+    );
+    const resourceLoader = new DefaultResourceLoader({
+      cwd: process.cwd(),
+      agentDir,
+      settingsManager,
+      noExtensions: true,
+      extensionFactories: [toolsExtensionFactory(toolDefinitions)],
+      noSkills: true,
+      noPromptTemplates: true,
+      noThemes: true,
+      noContextFiles: true,
+      systemPromptOverride: () => buildExpertSystemPrompt(profile, context.brief),
+      appendSystemPromptOverride: () => [],
     });
+    await resourceLoader.reload();
+    if (resourceLoader.getExtensions().errors.length)
+      throw new Error("config_extension_binding_failed");
 
     const { session } = await this.createSession({
       cwd: process.cwd(),
@@ -466,11 +418,12 @@ export class PiExpertRunner {
       settingsManager,
       sessionManager: SessionManager.inMemory(),
       noTools: "builtin",
-      customTools: [...toolDefinitions, submitFindingTool],
     });
 
-    const investigationToolNames = toolDefinitions.map((tool) => tool.name);
-    let finalizePhase = false;
+    await session.bindExtensions?.({});
+    const investigationToolNames = toolDefinitions
+      .filter((tool) => tool.name !== SUBMIT_FINDING_TOOL)
+      .map((tool) => tool.name);
     activateFinalizePhase = () => {
       if (finalizePhase) return;
       finalizePhase = true;

@@ -506,6 +506,7 @@ export class RcaService {
     investigationId: string,
     kind: RcaOverviewKind,
     query: Record<string, unknown> = {},
+    executionSignal?: AbortSignal,
   ): Promise<{
     evidenceId: string;
     toolCallId: string;
@@ -518,7 +519,11 @@ export class RcaService {
     this.assertLiveWritable(investigation);
     this.assertRunning(investigation);
     const bus = await this.busFor(investigationId);
-    const signal = this.agenticRunning.get(investigationId)?.controller.signal;
+    const investigationSignal = this.agenticRunning.get(investigationId)?.controller.signal;
+    const signals = [investigationSignal, executionSignal].filter((value): value is AbortSignal =>
+      Boolean(value),
+    );
+    const signal = signals.length ? AbortSignal.any(signals) : undefined;
     const releaseOperation = this.trackAgenticOperation(investigationId);
     try {
       const { tool, arguments_ } = this.overviewTool(investigation, kind, query);
@@ -1166,7 +1171,15 @@ export class RcaService {
         brief: task.brief!,
         model: options.model,
         signal,
-        invoke: (tool, args) => this.invokeRecordedToolV2(id, taskId, bus, tool, args, signal),
+        invoke: (tool, args, executionSignal) =>
+          this.invokeRecordedToolV2(
+            id,
+            taskId,
+            bus,
+            tool,
+            args,
+            executionSignal ? AbortSignal.any([signal, executionSignal]) : signal,
+          ),
         onThinking: (delta) =>
           bus
             .publish("expert.thinking.delta", "", { expertTaskId: taskId, delta })
