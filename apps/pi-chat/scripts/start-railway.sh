@@ -16,6 +16,14 @@ if [[ -n "${AGENT_CONFIG_MIGRATE_EXTENSION_SHA:-}" ]] || [[ -f "$LEGACY_PROFILE"
   pnpm exec tsx --tsconfig tsconfig.node.json scripts/migrate-agent-config-release.ts
 fi
 
+if [[ -f "$MIGRATION_RECEIPT" ]]; then
+  echo "Agent config migration receipt:"
+  cat "$MIGRATION_RECEIPT"
+  echo
+else
+  echo "Agent config migration receipt absent; legacy profile present: $([[ -f "$LEGACY_PROFILE" ]] && echo yes || echo no)"
+fi
+
 pnpm exec tsx --tsconfig tsconfig.node.json server/index.ts &
 API_PID=$!
 
